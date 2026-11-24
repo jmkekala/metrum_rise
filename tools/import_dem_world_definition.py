@@ -320,8 +320,9 @@ def read_interior_point(feature) -> tuple[float, float] | None:
 
 
 def load_hydrography(path: Path, epsg: int):
-    """Lakes (`jarvi`, level from `keskikorkeus` in mm), rivers (`virtavesialue`, which carry no
-    level attribute: the level is the lowest vertex height, the outlet) and shoals (`matalikko`)."""
+    """Lakes (`jarvi`, level from `keskikorkeus` in mm), rivers (`virtavesialue`, no level: an
+    imported river takes the level of the lakes it joins, `dem_water._river_joins`) and shoals
+    (`matalikko`)."""
     import shapely
     from osgeo import ogr
 
@@ -361,14 +362,13 @@ def load_hydrography(path: Path, epsg: int):
             )
         )
     for feature, geometry in features("virtavesialue"):
-        # The themed download stores 3D polygons; the whole-country database stores them flat,
-        # and then the level comes from the elevation model (`dem_water.apply_hydrography`).
-        z = shapely.get_coordinates(geometry, include_z=True)[:, 2] if shapely.has_z(geometry) else None
+        # The themed download stores 3D polygons, the whole-country database flat ones; the
+        # vertex heights are not used.
         bodies.append(
             WaterBody(
                 key=int(feature.GetField("mtk_id")),
                 kind="river",
-                level_mm=None if z is None else int(round(float(z.min()) * 1000.0)),
+                level_mm=None,
                 geometry=shapely.force_2d(geometry),
                 interior_en=read_interior_point(feature),
             )
@@ -640,8 +640,7 @@ def main() -> int:
             f"water: {water.report['bodies_in_world']} polygons, "
             f"{len(water.report['rivers_dropped_narrow'])} narrow rivers not imported "
             f"({', '.join(f"{r['key']} {r['inscribed_width_m']:.2f} m" for r in water.report['rivers_dropped_narrow'])}), "
-            f"{len(water.report['rivers_dropped_level'])} rivers joining lakes at different "
-            f"levels not imported, "
+            f"{len(water.report['rivers_not_joined'])} rivers not imported as straits, "
             f"{water.report['bodies_dropped_under_min_samples']} dropped, "
             f"{len(lake_fills)} lake fills, {len(open_water_fills)} open-water fills, "
             f"{water.report['water_samples']} water samples"

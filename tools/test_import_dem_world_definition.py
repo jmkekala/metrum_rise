@@ -101,16 +101,16 @@ class LakeRuleTest(unittest.TestCase):
 
     def test_river_narrower_than_two_cells_is_not_imported(self):
         # 41 x 41 samples at 8 m. Three 280 m strips across the map, 15.9, 16.1 and 6 m wide:
-        # the 15.9 m river is not imported, the 16.1 m river is, and the 6 m lake is (the rule
-        # is for rivers only; it keeps one row of samples).
+        # the 15.9 m river is dropped for its width, the 16.1 m river passes it, and the 6 m lake
+        # is imported (the rule is for rivers only; it keeps one row of samples).
         grid = SampleGrid(west_e=1000.0, north_n=2320.0, cell_m=8.0, width=41, height=41)
         dem = np.full((41, 41), 60.0, dtype=np.float32)
         narrow = shapely.box(1020.0, 2040.0, 1300.0, 2055.9)
         wide = shapely.box(1020.0, 2120.0, 1300.0, 2136.1)
         lake = shapely.box(1020.0, 2203.0, 1300.0, 2209.0)
         bodies = [
-            WaterBody(key=1, kind="river", level_mm=50_000, geometry=narrow),
-            WaterBody(key=2, kind="river", level_mm=50_000, geometry=wide),
+            WaterBody(key=1, kind="river", level_mm=None, geometry=narrow),
+            WaterBody(key=2, kind="river", level_mm=None, geometry=wide),
             WaterBody(key=3, kind="lake", level_mm=50_000, geometry=lake),
         ]
         result = apply_hydrography(dem, grid, bodies, [], WaterRule())
@@ -121,21 +121,24 @@ class LakeRuleTest(unittest.TestCase):
         self.assertEqual(sorted(b.key for b in result.bodies), [2, 3])
         narrow_rows = slice((2320 - 2055) // 8, (2320 - 2040) // 8 + 1)
         self.assertTrue(np.all(result.heights[narrow_rows] == 60.0), "dry, the elevation model")
-        self.assertEqual(len(result.fills), 2)
+        # The wide river joins no lake, so the strait rule leaves it out in turn.
+        self.assertEqual([r["key"] for r in result.report["rivers_not_joined"]], [2])
+        self.assertEqual(len(result.fills), 1)
 
         # A width within the tolerance of the limit is not decided either way.
         edge = shapely.box(1020.0, 2040.0, 1300.0, 2055.9995)
         with self.assertRaises(ValueError):
             apply_hydrography(
-                dem, grid, [WaterBody(key=4, kind="river", level_mm=50_000, geometry=edge)], [],
+                dem, grid, [WaterBody(key=4, kind="river", level_mm=None, geometry=edge)], [],
                 WaterRule(),
             )
 
 
 class RiverJoinTest(unittest.TestCase):
-    # 41 x 41 samples at 8 m, source E 1000..1320, N 2000..2320, ground at 60 m. Two lakes,
-    # west and east, and a 40 m wide river between them whose samples are 4-neighbours of both
-    # lakes' samples (x 1096 lake, 1104 river; 1216 river, 1224 lake).
+    # 41 x 41 samples at 8 m, source E 1000..1320, N 2000..2320. Two lakes, west and east, and
+    # a 40 m wide river between them whose samples are 4-neighbours of both lakes' samples
+    # (x 1096 lake, 1104 river; 1216 river, 1224 lake). The ground rises east 0.1 m a sample
+    # from 60 m, so a flat river surface would lie under it.
     GRID = SampleGrid(west_e=1000.0, north_n=2320.0, cell_m=8.0, width=41, height=41)
     WEST = shapely.box(1020.0, 2100.0, 1100.0, 2260.0)
     EAST = shapely.box(1220.0, 2100.0, 1300.0, 2260.0)
@@ -144,11 +147,7 @@ class RiverJoinTest(unittest.TestCase):
     RIVER_COLS = slice((1104 - 1000) // 8, (1216 - 1000) // 8 + 1)
 
     def dem(self):
-        dem = np.full((41, 41), 60.0, dtype=np.float32)
-        # The elevation model's lowest sample in the river, 0.3 m under the lakes: the level a
-        # river without vertex heights would take by itself.
-        dem[self.RIVER_ROWS, self.RIVER_COLS][1, 3] = 49.7
-        return dem
+        return np.tile(np.float32(60.0) + np.arange(41, dtype=np.float32) * np.float32(0.1), (41, 1))
 
     def run_rule(self, bodies):
         result = apply_hydrography(self.dem(), self.GRID, bodies, [], WaterRule())
@@ -165,25 +164,25 @@ class RiverJoinTest(unittest.TestCase):
             WaterBody(key=2, kind="lake", level_mm=east_mm, geometry=self.EAST),
         ]
 
+    def river(self, key=3, geometry=None):
+        return WaterBody(key=key, kind="river", level_mm=None, geometry=geometry or self.RIVER)
+
     def test_strait_between_equal_lakes_takes_their_level(self):
-        # A river without vertex heights alone would stand at 49.7 m and pull both lakes down.
-        river = WaterBody(key=3, kind="river", level_mm=None, geometry=self.RIVER)
-        result = self.run_rule(self.lakes(50_000, 50_000) + [river])
+        result = self.run_rule(self.lakes(50_000, 50_000) + [self.river()])
 
         self.assertEqual([(f.kind, f.surface_elevation_m, f.bodies) for f in result.fills],
                          [("lake", 50.0, [1, 2, 3])])
-        self.assertEqual(result.report["rivers_dropped_level"], [])
+        self.assertEqual(result.report["rivers_not_joined"], [])
         entry = next(b for b in result.report["bodies"] if b["key"] == 3)
-        self.assertEqual((entry["level_m"], entry["joined_lake_level_m"]), (49.7, 50.0))
+        self.assertEqual((entry["level_m"], entry["joined_lake_level_m"]), (None, 50.0))
         self.assertTrue(np.all(result.group_of_sample[self.RIVER_ROWS, self.RIVER_COLS] == 0))
 
     def test_river_between_lakes_at_different_levels_is_not_imported(self):
-        river = WaterBody(key=3, kind="river", level_mm=49_700, geometry=self.RIVER)
-        result = self.run_rule(self.lakes(50_000, 53_000) + [river])
+        result = self.run_rule(self.lakes(50_000, 53_000) + [self.river()])
 
         self.assertEqual(sorted((f.surface_elevation_m, f.bodies) for f in result.fills),
                          [(50.0, [1]), (53.0, [2])])
-        self.assertEqual(result.report["rivers_dropped_level"], [{
+        self.assertEqual(result.report["rivers_not_joined"], [{
             "key": 3,
             "reason": "joins lake water at levels further apart than the tolerance",
             "joined_levels_m": [50.0, 53.0],
@@ -194,26 +193,42 @@ class RiverJoinTest(unittest.TestCase):
         np.testing.assert_array_equal(result.heights[self.RIVER_ROWS, self.RIVER_COLS],
                                       self.dem()[self.RIVER_ROWS, self.RIVER_COLS])
 
+    def test_inlet_joining_one_lake_is_not_imported_and_the_lake_is_unchanged(self):
+        # The river runs from the west lake up the slope to the world's east edge.
+        inlet = self.river(geometry=shapely.box(1100.0, 2160.0, 1330.0, 2200.0))
+        lake_only = self.run_rule(self.lakes(50_000, 50_000)[:1])
+        result = self.run_rule(self.lakes(50_000, 50_000)[:1] + [inlet])
+
+        self.assertEqual([(r["key"], r["reason"], r["lakes"]) for r in result.report["rivers_not_joined"]],
+                         [(3, "joins fewer than two lakes", [1])])
+        np.testing.assert_array_equal(result.heights, lake_only.heights)
+        self.assertEqual([f.__dict__ for f in result.fills], [f.__dict__ for f in lake_only.fills])
+
+    def test_river_joining_no_lake_is_not_imported(self):
+        result = self.run_rule([self.river()])
+
+        self.assertEqual(result.fills, [])
+        self.assertEqual([(r["key"], r["lakes"]) for r in result.report["rivers_not_joined"]], [(3, [])])
+        np.testing.assert_array_equal(result.heights, self.dem())
+
     def test_river_mouth_touching_a_lake_polygon_without_neighbour_samples_counts(self):
         # The river's polygon meets the east lake's at E 1224, a sample on both boundaries and
         # inside neither: no river sample is a 4-neighbour of a lake sample, the polygons touch.
-        river = WaterBody(key=3, kind="river", level_mm=49_700,
-                          geometry=shapely.box(1100.0, 2160.0, 1224.0, 2200.0))
-        east = WaterBody(key=2, kind="lake", level_mm=53_000,
+        river = self.river(geometry=shapely.box(1100.0, 2160.0, 1224.0, 2200.0))
+        east = WaterBody(key=2, kind="lake", level_mm=50_000,
                          geometry=shapely.box(1224.0, 2100.0, 1300.0, 2260.0))
-        result = self.run_rule(self.lakes(50_000, 53_000)[:1] + [east, river])
+        result = self.run_rule(self.lakes(50_000, 50_000)[:1] + [east, river])
 
-        self.assertEqual([river["lakes"] for river in result.report["rivers_dropped_level"]], [[1, 2]])
-        self.assertEqual(sorted(f.surface_elevation_m for f in result.fills), [50.0, 53.0])
+        self.assertEqual(result.report["rivers_not_joined"], [])
+        self.assertEqual(sorted(f.bodies for f in result.fills), [[1, 3], [2]])
+        self.assertEqual({f.surface_elevation_m for f in result.fills}, {50.0})
 
     def test_chain_of_rivers_is_decided_as_one_system_in_any_order(self):
-        # River 3 touches the west lake and river 4, river 4 the east lake: neither touches two
-        # lakes, but together they join both, so neither is imported. Within the tolerance
-        # (0.4 m) both are, at the lower lake's level.
-        west_part = WaterBody(key=3, kind="river", level_mm=None,
-                              geometry=shapely.box(1100.0, 2160.0, 1164.0, 2200.0))
-        east_part = WaterBody(key=4, kind="river", level_mm=None,
-                              geometry=shapely.box(1164.0, 2160.0, 1220.0, 2200.0))
+        # River 3 touches the west lake and river 4, river 4 the east lake: each joins one lake,
+        # together they are a strait. Within the tolerance (0.4 m) both are imported at the lower
+        # lake's level; 3 m apart, neither.
+        west_part = self.river(3, shapely.box(1100.0, 2160.0, 1164.0, 2200.0))
+        east_part = self.river(4, shapely.box(1164.0, 2160.0, 1220.0, 2200.0))
         for east_mm, kept in ((53_000, False), (50_400, True)):
             orders = [
                 self.lakes(50_000, east_mm) + [west_part, east_part],
@@ -222,25 +237,16 @@ class RiverJoinTest(unittest.TestCase):
             first, second = (self.run_rule(bodies) for bodies in orders)
             np.testing.assert_array_equal(first.heights, second.heights)
             self.assertEqual([f.__dict__ for f in first.fills], [f.__dict__ for f in second.fills])
-            self.assertEqual(first.report["rivers_dropped_level"], second.report["rivers_dropped_level"])
-            dropped = [river["key"] for river in first.report["rivers_dropped_level"]]
+            self.assertEqual(first.report["rivers_not_joined"], second.report["rivers_not_joined"])
+            dropped = [river["key"] for river in first.report["rivers_not_joined"]]
             if kept:
                 self.assertEqual(dropped, [])
                 self.assertEqual([(f.surface_elevation_m, f.bodies) for f in first.fills],
                                  [(50.0, [1, 2, 3, 4])])
             else:
                 self.assertEqual(dropped, [3, 4])
-                self.assertEqual(first.report["rivers_dropped_level"][0]["system"], [3, 4])
+                self.assertEqual(first.report["rivers_not_joined"][0]["system"], [3, 4])
                 self.assertEqual(sorted(f.surface_elevation_m for f in first.fills), [50.0, 53.0])
-
-    def test_river_without_vertex_heights_touching_no_lake_takes_its_lowest_sample(self):
-        river = WaterBody(key=3, kind="river", level_mm=None, geometry=self.RIVER)
-        result = self.run_rule([river])
-
-        self.assertEqual([(f.kind, f.surface_elevation_m) for f in result.fills], [("lake", 49.7)])
-        entry = result.report["bodies"][0]
-        self.assertEqual((entry["level_m"], entry["joined_lake_level_m"]), (49.7, None))
-        self.assertEqual(int(np.count_nonzero(result.group_of_sample == 0)), 4 * 15)
 
     def test_lake_without_interior_point_seeds_at_its_deepest_sample(self):
         # Samples E 1024..1096, N 2024..2096; the four central ones lie 36 m from the shore, and

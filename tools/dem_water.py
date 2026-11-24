@@ -16,14 +16,15 @@ exactly its own samples:
 - Water connected across polygon boundaries is one group with one fill at the lowest level
   among its polygons (the runtime holds one flat surface per connected body of water); a group
   touching the world edge is an open-water fill, any other a lake fill.
-- A river is imported only where it joins lake water of one level (within
-  `river_join_tolerance_mm`), and then takes that level; a river system joining lakes at levels
-  further apart is not imported, so no river drags a lake down to another lake's level
-  (`_river_joins` defines "touches" and "system").
+- A river is imported only as a strait: where it joins at least two lake polygons whose water
+  stands at one level (within `river_join_tolerance_mm`), and then it takes that level. Any
+  other river (one joining lakes at levels further apart, an inlet or outlet joining one lake,
+  a river joining none) is not imported: its samples keep the elevation model. A flat surface
+  on a river that slopes away from its lake would be carved under the ground upstream or held
+  above it by raised shores downstream (`_river_joins` defines "touches" and "system").
 - A river polygon narrower than `min_river_width_cells` terrain cells is not imported: no bed,
-  no fill, its samples keep the elevation model. A river holds one flat level (its lowest
-  vertex), so a narrow river climbing its valley was carved into a trench, and at a few
-  samples across it broke into fragments. Lakes are not subject to this rule.
+  no fill, its samples keep the elevation model. At a few samples across, a river breaks into
+  fragments. Lakes are not subject to this rule.
 
 A polygon's width is its inscribed width: twice the largest distance from a point inside it to
 its boundary (the diameter of its largest inscribed circle), over the whole polygon, not the part
@@ -37,7 +38,7 @@ step depends on hash or thread order.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 import shapely
@@ -59,9 +60,9 @@ class WaterRule:
     min_samples: int = 4
     min_river_width_cells: float = 2.0
     width_tolerance_m: float = 0.001
-    # A river system that joins lake water is imported only when the lake levels it joins agree
-    # within this spread (`_river_joins`). The levels are given to 0.1 m; one lake system's
-    # polygons span 0.3 m on the shipped Kuopio and straits on the 60 km Kuopio join 0.1-0.4 m.
+    # A strait is imported only when the lake levels it joins agree within this spread
+    # (`_river_joins`). The levels are given to 0.1 m; one lake system's polygons span 0.3 m on
+    # the shipped Kuopio and straits on the 60 km Kuopio join 0.1-0.4 m.
     river_join_tolerance_mm: int = 500
 
 
@@ -104,15 +105,14 @@ class WaterBody:
 
     key: int
     kind: str  # "lake" or "river"
-    # None only for a river whose polygon carries no vertex heights: `apply_hydrography` then
-    # takes its level from the elevation model.
+    # A lake's level; None for a river, which takes the level of the lakes it joins.
     level_mm: int | None
     geometry: object
     interior_en: tuple[float, float] | None = None
 
     @property
-    def level_m(self) -> float:
-        return self.level_mm / 1000.0
+    def level_m(self) -> float | None:
+        return None if self.level_mm is None else self.level_mm / 1000.0
 
 
 @dataclass
@@ -171,8 +171,9 @@ def river_too_narrow(body: WaterBody, cell_m: float, rule: WaterRule) -> tuple[b
 
 
 def sort_bodies(bodies: list[WaterBody]) -> list[WaterBody]:
-    # The lower level owns a sample two polygons share; kind and key break ties.
-    return sorted(bodies, key=lambda b: (b.level_mm, b.kind != "lake", b.key))
+    # A lake owns a sample it shares with a river, the lower lake one two lakes share; key breaks
+    # ties.
+    return sorted(bodies, key=lambda b: (b.kind != "lake", b.level_mm or 0, b.key))
 
 
 def _subgrid(grid: SampleGrid, bounds) -> tuple[int, int, int, int] | None:
@@ -232,7 +233,8 @@ def _east_south_pairs(array: np.ndarray):
 
 
 def _river_joins(body_of: np.ndarray, bodies: list[WaterBody], rule: WaterRule):
-    """The river join rule, on the polygons that hold samples after the minimum-sample drop.
+    """The river rule, on the polygons that hold samples after the minimum-sample drop: a river is
+    imported only as a strait.
 
     Two such polygons touch when they intersect (a shared edge or vertex counts) or when a sample
     of one is a 4-neighbour of a sample of the other. The second makes the rule match the groups
@@ -240,22 +242,20 @@ def _river_joins(body_of: np.ndarray, bodies: list[WaterBody], rule: WaterRule):
     by a cell. A river system is a set of rivers linked by touches between rivers (not through a
     lake). The water a lake polygon joins a system at is every lake component its samples lie in
     (4-connected lake samples, each at the lowest level among its lakes: the level that water
-    stands at). Then a system that touches:
+    stands at). A system is a strait when it touches at least two lake polygons and their
+    components' levels span at most `river_join_tolerance_mm`: every river of it takes the lowest
+    of those levels, the level its group stands at. No river of any other system is imported. Two
+    lakes are counted as polygons, not components, because a strait between two parts of one lake
+    system joins a single component.
 
-    - no lake: is unchanged (each river at its own level);
-    - lakes whose components' levels span at most `river_join_tolerance_mm`: every river of it
-      takes the lowest of those levels, the level its group stands at;
-    - lakes whose levels span more: no river of it is imported.
-
-    Returns `{body index: level_mm}` for rivers that take a lake level and
-    `{body index: report entry}` for rivers not imported. Touches, systems and components are
-    symmetric relations and their connected components, so the result does not depend on the
-    order of the polygons."""
+    Returns `{body index: level_mm}` for the rivers of straits and `{body index: report entry}`
+    for the rivers not imported. Touches, systems and components are symmetric relations and
+    their connected components, so the result does not depend on the order of the polygons."""
     is_river = np.array([b.kind == "river" for b in bodies] + [False])
     if not is_river.any():
         return {}, {}
     count = len(bodies)
-    level = np.array([b.level_mm for b in bodies] + [0], dtype=np.int64)
+    level = np.array([b.level_mm or 0 for b in bodies] + [0], dtype=np.int64)
     lake = (body_of >= 0) & ~is_river[body_of]  # LAND (-1) reads the trailing False
     lake_comp, comp_count = ndimage.label(lake)
     comp_level = np.full(comp_count + 1, np.iinfo(np.int64).max, dtype=np.int64)
@@ -286,19 +286,23 @@ def _river_joins(body_of: np.ndarray, bodies: list[WaterBody], rule: WaterRule):
 
     joined = {}
     dropped = {}
-    for system in np.unique(system_of[touch_river]):
-        members = np.nonzero(is_river[:-1] & (system_of == system))[0]
+    for system in np.unique(system_of[rivers]):
+        members = rivers[system_of[rivers] == system]
         lakes = np.unique(touch_lake[np.isin(touch_river, members)])
         levels = np.unique(comp_level[comp_of_lake[np.isin(lake_of_comp, lakes)]])
-        if levels[-1] - levels[0] <= rule.river_join_tolerance_mm:
+        if lakes.size >= 2 and levels[-1] - levels[0] <= rule.river_join_tolerance_mm:
             joined.update({int(index): int(levels[0]) for index in members})
             continue
+        reason = (
+            "joins lake water at levels further apart than the tolerance" if lakes.size >= 2
+            else "joins fewer than two lakes"
+        )
         system_keys = sorted(bodies[int(index)].key for index in members)
         lake_keys = sorted(bodies[int(index)].key for index in lakes)
         for index in members:
             dropped[int(index)] = {
                 "key": bodies[int(index)].key,
-                "reason": "joins lake water at levels further apart than the tolerance",
+                "reason": reason,
                 "joined_levels_m": [int(v) / 1000.0 for v in levels],
                 "lakes": lake_keys,
                 "system": system_keys,
@@ -328,22 +332,7 @@ def apply_hydrography(
             if narrow:
                 narrow_rivers.append({"key": body.key, "inscribed_width_m": width})
     narrow_keys = {river["key"] for river in narrow_rivers}
-    bodies = [b for b in bodies if b.key not in narrow_keys]
-    # A river without vertex heights (the whole-country database stores 2D polygons) takes the
-    # lowest elevation sample inside it, the same outlet rule as the lowest vertex: the elevation
-    # model stands at the water surface over water. A river with no sample inside it has no
-    # level and is left out.
-    unlevelled_rivers = []
-    levelled = []
-    for body in bodies:
-        if body.level_mm is None:
-            rows, cols = _samples_inside(grid, body.geometry)
-            if rows.size == 0:
-                unlevelled_rivers.append(body.key)
-                continue
-            body = replace(body, level_mm=int(round(float(dem[rows, cols].min()) * 1000.0)))
-        levelled.append(body)
-    bodies = sort_bodies(levelled)
+    bodies = sort_bodies([b for b in bodies if b.key not in narrow_keys])
     body_of = np.full(dem.shape, LAND, dtype=np.int32)
     body_samples = []
     for index, body in enumerate(bodies):
@@ -360,13 +349,13 @@ def apply_hydrography(
             body_of[body_of == index] = LAND
             dropped.append(body.key)
 
-    level_of_body = np.array([b.level_mm for b in bodies] + [0], dtype=np.int64)
-    joined_rivers, level_dropped = _river_joins(body_of, bodies, rule)
-    body_of[np.isin(body_of, sorted(level_dropped))] = LAND
+    level_of_body = np.array([b.level_mm or 0 for b in bodies] + [0], dtype=np.int64)
+    joined_rivers, not_joined = _river_joins(body_of, bodies, rule)
+    body_of[np.isin(body_of, sorted(not_joined))] = LAND
     for index, level in joined_rivers.items():
         level_of_body[index] = level
-    level_dropped_rivers = sorted(level_dropped.values(), key=lambda river: river["key"])
-    level_dropped_keys = {river["key"] for river in level_dropped_rivers}
+    not_joined_rivers = sorted(not_joined.values(), key=lambda river: river["key"])
+    not_joined_keys = {river["key"] for river in not_joined_rivers}
 
     # Groups: water connected 4-way across polygon boundaries. The runtime holds one flat surface
     # per connected water body, so a group takes the lowest level among its polygons (the polygons
@@ -390,7 +379,7 @@ def apply_hydrography(
     max_distance = rule.depth_cap_m / rule.slope
     kept = [
         body.geometry for body in bodies
-        if body.key not in dropped and body.key not in level_dropped_keys
+        if body.key not in dropped and body.key not in not_joined_keys
     ]
     if kept:
         reach = world.buffer(max_distance + 2.0 * grid.cell_m, join_style="mitre")
@@ -432,8 +421,7 @@ def apply_hydrography(
         "rule": rule.__dict__,
         "bodies_in_world": bodies_in_world,
         "rivers_dropped_narrow": narrow_rivers,
-        "rivers_without_level": unlevelled_rivers,
-        "rivers_dropped_level": level_dropped_rivers,
+        "rivers_not_joined": not_joined_rivers,
         "bodies_dropped_under_min_samples": len(dropped),
         "dropped_keys": dropped,
         "fragment_samples_returned_to_land": fragment_samples,
