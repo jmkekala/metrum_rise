@@ -20570,7 +20570,7 @@ and counts the unequal ones; the stream benchmark records the running counts per
 8,442 rectangles
 checked on the 60 km copy and 5,473 on the shipped Kuopio, none unequal and none walked (one run
 each with the final scripts). The round's first build, without the screen edges' ground, was equal
-on 7,845 and 5,792 rectangles too, but fell back to the walk for 6 of the 60 km ones (5 in
+on 7,845 rectangles of the 60 km flights too, but fell back to the walk for 6 of them (5 in
 `flight_high`'s motion, 1 in `flight_jump`'s).
 
 **Measured** (`flight_high`, 60 km Kuopio, R75's command: `tools/stream_benchmark.py run --phases
