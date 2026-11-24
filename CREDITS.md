@@ -36,6 +36,12 @@ under `GPL-3.0-or-later`. Each asset folder has a `credits.txt` with the exact t
 
 - Kuopio map: contains data from the National Land Survey of Finland, Kuopio height model and
   Topographic Database, retrieved 2026-04-19. Licence: CC BY 4.0.
+- Kuopio map, 18,432 m import (`tools/import_dem_world_definition.py`): contains data from the
+  National Land Survey of Finland Elevation model 2 m (`Korkeusmalli 2 m`, 25 sheets around
+  Kuopio, retrieved 2026-04-19) and Topographic Database hydrography (lakes, river areas and
+  shoals from the open topographic data service, retrieved 2026-04-17). Licence: CC BY 4.0, the
+  National Land Survey's open data licence; the downloaded files carry no licence text, so this
+  was not confirmed from the files themselves.
 - [Kenney](https://kenney.itch.io/): building models used by tests only, not in release
   packages. Licence: CC0 1.0.
 - [Quaternius](https://quaternius.com/): character models. Licence: CC0 1.0.

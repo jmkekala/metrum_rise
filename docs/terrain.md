@@ -22229,11 +22229,59 @@ Allowed compatibility boundary:
 - DEM import may materialize one dense temporary mosaic and one dense target raster because import
   is an offline editor operation, not a hot simulation path
 
+World size and centre (grid alignment `A4`, 2026-11-24):
+
+- by default the world covers the source tiles' extent; `--size-m S --centre-e E --centre-n N`
+  cuts a square world of side `S` around a source-coordinate centre instead. `S` must be a whole
+  number of `terrain_cell_m` cells and the square must lie inside the source extent
+- sample `(i, j)` lies at source `E - S/2 + i * cell`, `N + S/2 - j * cell`: world X is easting
+  minus the centre's, world Z the centre's northing minus the sample's (north is -Z)
+- the new Kuopio is `--size-m 18432 --terrain-cell-m 8 --centre-e 533000 --centre-n 6975000`
+  from the 900 km² `Korkeusmalli 2 m` batch (25 sheets), with the hydrography below. It is a
+  build product, not yet the shipped Kuopio
+
+Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`):
+
+- source: the National Land Survey Topographic Database hydrography as a GeoPackage in the DEM's
+  coordinates (EPSG:3067 and its EUREF-FIN code 10690 are treated as one). Layers: `jarvi`
+  (lakes; level `keskikorkeus` in mm, interior point `sijainti_piste`), `virtavesialue` (river
+  areas; no level attribute, so the level is the polygon's lowest vertex height, its outlet),
+  `matalikko` (shoals). Streams under 5 m wide (`virtavesikapea`) are not used
+- a laser-scanned DEM is flat at the water surface, so beds are synthetic: a terrain sample
+  whose centre lies inside a water polygon gets
+  `bed = level - min(depth_cap, slope * d)`, `d` the distance to the shore (the boundary of all
+  water polygons together, so a line two polygons share is not a shore, and a polygon cut by the
+  world edge keeps its real shore beyond it). Defaults: `slope` 0.15, `depth_cap` 12 m, 1 m
+  inside a shoal polygon. Samples outside every polygon keep the DEM
+- a polygon with fewer than four samples inside is dropped (counted in the report); a connected
+  water fragment smaller than four samples returns to land with its DEM heights
+- water connected across polygon boundaries (4-neighbour samples) is one group at the lowest level
+  among its polygons, with one fill: the runtime solves one flat surface per connected body of
+  water, and neighbouring polygons of one lake system carry levels a few decimetres apart (on
+  Kuopio 82.1, 82.3 and 82.4 m; the DEM shows the whole system at about 82.35 m). Sills at the
+  real levels were tried and rejected: they drew dry lines up to a kilometre long across open
+  water
+- the fill seed is the sample nearest the interior point of the group's largest polygon, else the
+  group's deepest sample; a group with a sample on the world edge is an open-water fill, any
+  other a lake fill
+- the runtime fill floods 4-connected over samples at or below its level
+  (`apply_lake_fill_to_depth`), so every land sample beside water (shores, islands, polygon holes)
+  is raised to at least the highest adjacent water level plus `--shore-margin-m` (0.05 m). A fill
+  therefore floods exactly its group's samples and no land
+- `--report-dir` writes `water_report.json` (per polygon: area, samples, level, water level) and
+  `water_labels.npz` (per-sample polygon and group, DEM and final heights) for checks
+- determinism: inputs are sorted (shoals by id, polygons by level, kind and id; a sample two
+  polygons share goes to the first), ties break by sample index, and SQLite rows are written in
+  one fixed order; two runs give equal bytes
+- tool dependencies beyond GDAL: `shapely` (2.x) and `scipy`; `tools/test_import_dem_world_definition.py`
+  covers the frame and the bed and shore rules
+
 Explicit non-goals of v1 DEM import:
 
 - automatic extraction of rivers, lakes, or hydrology from the DEM
 - automatic terrain texturing or biome painting
-- importing hydrography vectors/raster as water gameplay state
+- hydrography rasters, sloped river surfaces (a river polygon is one flat level) and streams
+  narrower than a terrain cell
 - preserving external CRS coordinates as live gameplay-space coordinates
 - patch-importing one DEM over part of an already edited authored world
 
