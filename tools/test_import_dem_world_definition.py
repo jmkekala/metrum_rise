@@ -23,7 +23,7 @@ from import_dem_world_definition import world_frame
 
 
 def flood(heights, seed, level):
-    # The runtime's fill (`apply_lake_fill_to_depth`): 4-connected over samples at or below the
+    # The runtime's fill (`FillFlood::flood`): 4-connected over samples at or below the
     # level, from the seed sample.
     i, j = seed
     seen = np.zeros(heights.shape, dtype=bool)

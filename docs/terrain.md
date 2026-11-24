@@ -20614,6 +20614,26 @@ Current deterministic rules:
 
 - untouched water cells are implicitly dry
 - `Lake Fill` and `Open Water` rebuild baseline depth from authored still-water records
+- the solve (`rebuild_authored_water_preview_internal`) floods each fill 4-connected from its seed
+  over the samples at or below its level (`FillFlood::flood`) and keeps the deepest fill per sample.
+  Cost: `O(W)` for the `W` world samples, one pass each for the dense terrain copy, the zeroed
+  depth buffer and the sparse rebuild of the result; plus `O(k)` per fill for its `k` flooded
+  samples (flood, merge, and the debug cache's row-major radix sort); plus `O(fills)`. The visit
+  stamps and work lists are allocated once per solve and shared by its fills; no fill allocates,
+  clears or scans the world. Grid alignment round `A4c` (2026-11-24) replaced a solve that gave
+  every fill (an edge-escaping lake included) two zeroed world-sized buffers (depth, visited) and
+  two scans of the world (the merge, the debug cache), `O(fills x W)`; the products are bitwise
+  equal
+  (`authored_water_solve_matches_the_dense_reference_bitwise`). Every terrain edit still
+  re-solves every fill (`finish_terrain_authoring_edit_in_pool`, once per gameplay sculpt
+  frame); an exact per-fill re-solve is not done. Diagnostic release runs (one each, machine
+  shared, not acceptance; an uncommitted probe in the release `$TEST_BINARY`): the shipped Kuopio (110 fills, 5.31 M
+  samples) solves in 0.070 s instead of 1.157 s and a sculpt edit beside its water takes
+  0.065-0.071 s instead of 0.86-0.94 s; the retired 18,000 m Kuopio (23 fills, 3.24 M samples)
+  0.043 s instead of 0.138 s. What remains is the `O(W)` part: the dense copy, the zeroed
+  buffers' page faults and the sparse rebuild
+- the debug cache (`get_water_patch_authored_fill_debug`: per render patch, which fills put water
+  there) is read only by the road-geometry debug dump in `water.gd`, and is built by every solve
 - water save/load persists one dense row-major baseline-depth snapshot at the serialization boundary
 - no source/sink, velocity, or flux state exists in the shipped runtime
 
@@ -22268,7 +22288,9 @@ The Kuopio fixture on the shipped world (`benchmarks/fixtures/kuopio-terrain`, g
 - `residential-buildability.json` takes its ground from the shipped world at 8 m over the same
   area (72 x 138 samples from sample (24, 1396), now covering node 1, which lay 9.5 m beyond the
   old world's edge); its roads, nodes and parcels are stored authority, as a save holds them, and
-  stay as recorded. All 16 parcels stay feasible and the five hillside houses build the same assets
+  stay as recorded. All 16 parcels stay feasible and the five hillside houses build the same assets.
+  `tools/resample_buildability_fixture.py` regenerates that ground byte for byte (`--check`
+  compares only)
 - one measured value moved with the ground: the conflict wall at node 50 (`kuopio_conflict_wall_closes_the_step`)
   still closes the step at all 175 walled samples, its highest 0.24 m (0.37 m on the old ground)
 - what depends on the terrain layout rather than heights and queries: `world_config` (cell and
@@ -22304,7 +22326,7 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   group's deepest sample; a group with a sample on the world edge is an open-water fill, any
   other a lake fill
 - the runtime fill floods 4-connected over samples at or below its level
-  (`apply_lake_fill_to_depth`), so every land sample beside water (shores, islands, polygon holes)
+  (`FillFlood::flood`), so every land sample beside water (shores, islands, polygon holes)
   is raised to at least the highest adjacent water level plus `--shore-margin-m` (0.05 m). A fill
   therefore floods exactly its group's samples and no land
 - `--report-dir` writes `water_report.json` (per polygon: area, samples, level, water level) and

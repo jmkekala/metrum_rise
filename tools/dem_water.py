@@ -9,7 +9,7 @@ flat at the water surface over lakes, so the lake bed is synthetic:
 with `d` the distance from the sample to the shore of the water at the sample's level, and
 `depth_cap` lowered to the shoal cap inside a shoal polygon. Samples outside every water polygon
 keep the elevation model. The runtime floods an authored fill 4-connected over samples at or
-below its level (`apply_lake_fill_to_depth`), so the shore rules below make each fill flood
+below its level (`FillFlood::flood`), so the shore rules below make each fill flood
 exactly its own samples:
 
 - A land sample beside water is raised to at least the water's level plus a margin.
