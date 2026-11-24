@@ -76,6 +76,18 @@
 ## order, each block from the settled base pose, and tag every sample with its `shadows` variant
 ## and `block` index; a quartet `full,X,X,full` (or a chain `full,X,X,full,Y,Y,full`) gives each
 ## variant a C B B C verdict from one load (`tools/stream_benchmark.py split`, then `compare`).
+## The flight phases (`TERRAIN-41`; not in the default matrix, each meant for a fresh load of a large
+## world) travel FLIGHT_M along x through the world's centre at the game's default pitch, looking
+## along the flight, the pivot on the ground: `flight_low` and `flight_high` at keyboard pan speed
+## for orbit distances FLIGHT_LOW_M and FLIGHT_HIGH_M (CameraNode's speed scaled by the distance),
+## `flight_jump` in one frame. Each records its start's settle from the load's pose
+## (`<phase>_start`), the motion, a 1 s 180-degree turn right after it (`<phase>_turn`) and the
+## settle after it (`<phase>_settle`, at most FLIGHT_SETTLE_MAX_FRAMES). With the drawn probe each
+## row carries the terrain's and water's backlog (`backlog`: waiting, oldest wait in frames, waiting
+## with the payload ready, in-view holes); every flight settle point records what a built terrain
+## patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
+## frame back) saves the view at a quarter, half and three quarters of each motion and after its
+## turn. Every sample records the process's memory at its end (`memory`).
 ## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
 ## timestamps) every sample records
 ## `gpu_passes`: per pass, named by its starting mark and that mark's occurrence in the frame, the
@@ -113,6 +125,13 @@ const JUMP_MAX_FRAMES := 3000
 const POST_LOAD_MAX_FRAMES := 6000
 # CameraNode::pan scales its speed by the orbit distance over INITIAL_DISTANCE_M (400 m).
 const PAN_REFERENCE_DISTANCE_M := 400.0
+# The flight phases (`TERRAIN-41`): the travel, the two orbit distances, the settle cap.
+const FLIGHT_M := 20000.0
+const FLIGHT_LOW_M := 800.0
+const FLIGHT_HIGH_M := 4000.0
+const FLIGHT_SETTLE_MAX_FRAMES := 30000
+# Built patches whose held bytes a flight settle point measures.
+const PATCH_BYTES_SAMPLE := 16
 const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water", "water_turns"]
 const WATER_STEP_M := 250.0
 const WATER_SCAN_M := 250.0
@@ -422,6 +441,9 @@ func run(bench: Node) -> void:
 			_report.samples.append(await _capture_frames(bench, "water_still", WATER_FRAMES))
 	if phases.has("water_turns") and not await _water_turns(bench, turns, base, world):
 		return
+	for flight: String in ["flight_low", "flight_high", "flight_jump"]:
+		if phases.has(flight) and not await _flight(bench, flight, world):
+			return
 	if _probe != null:
 		RenderingServer.frame_post_draw.disconnect(_on_probe_post_draw)
 		_report.drawn_probe = _probe.report()
@@ -543,6 +565,151 @@ func _water_turns(bench: Node, turns: Array, base: PackedFloat32Array, world: Ve
 	_report.water_turns_from = from
 	print("[STREAM] WATER_TURNS_POSE %s %s" % [from, str(Array(pose))])
 	return await _still_and_turns(bench, ["still", "turns"], turns, pose, "water_turns_still", "water_")
+
+# A flight phase (see the header); false (the run failed) when a settle did not come.
+func _flight(bench: Node, phase: String, world: Vector2) -> bool:
+	var half := minf(FLIGHT_M, world.x * 0.6) * 0.5
+	var distance := FLIGHT_HIGH_M if phase == "flight_high" else FLIGHT_LOW_M
+	# Yaw -PI/2: the camera looks along +x, the way a forward pan moves it.
+	var pose := func(x: float) -> PackedFloat32Array:
+		return PackedFloat32Array([x, _simulation.get_height_at(Vector2(x, 0.0)), 0.0, -PI * 0.5,
+			FAR_PITCH_RAD, distance, 0.0])
+	var start: PackedFloat32Array = pose.call(-half)
+	var end: PackedFloat32Array = pose.call(half)
+	for leg: Array in [["_start", start], ["", end]]:
+		var label: String = phase + leg[0]
+		var sample: Dictionary
+		if leg[0] == "" and phase != "flight_jump":
+			var speed_m_s: float = float(bench.camera.speed) * distance / PAN_REFERENCE_DISTANCE_M
+			sample = await _capture_flight(bench, label, 2.0 * half / speed_m_s, -half, half, pose)
+		else:
+			sample = await _capture_until_settled(bench, label, FLIGHT_SETTLE_MAX_FRAMES,
+				func() -> void: bench.camera.set_view_state(leg[1]))
+		_report.samples.append(sample)
+		_record_patch_bytes(label, sample)
+	_report.samples.append(await _capture_turn(bench, phase + "_turn", 1.0, 1.0))
+	_save_shot(phase + "_turn")
+	var settle := await _capture_until_settled(bench, phase + "_settle", FLIGHT_SETTLE_MAX_FRAMES, Callable())
+	_report.samples.append(settle)
+	_record_patch_bytes(phase + "_settle", settle)
+	if not bool(settle.settled):
+		bench._fail("%s did not settle" % phase, {"settle_ms": settle.settle_ms})
+		return false
+	return true
+
+# Moves the pivot along x from `from` to `to` over `duration_s` of wall time, on the ground under it.
+func _capture_flight(bench: Node, label: String, duration_s: float, from: float, to: float,
+		pose: Callable) -> Dictionary:
+	var rows := _begin(label)
+	var start_us := _last_us
+	var fraction := 0.0
+	var shots := [0.25, 0.5, 0.75]
+	while fraction < 1.0:
+		fraction = minf(1.0, float(Time.get_ticks_usec() - start_us) / (duration_s * 1000000.0))
+		bench.camera.set_view_state(pose.call(lerpf(from, to, fraction)))
+		await bench.get_tree().process_frame
+		var row := _row(rows.size())
+		row["fraction"] = fraction
+		rows.append(row)
+		if not shots.is_empty() and fraction >= float(shots[0]):
+			_save_shot("%s_%02d" % [label, int(float(shots.pop_front()) * 100.0)])
+	return _finish(label, duration_s, rows)
+
+# METRUM_STREAM_SHOTS (an untimed run): the last drawn frame as `<dir>/<name>.png`.
+func _save_shot(name: String) -> void:
+	var dir := OS.get_environment("METRUM_STREAM_SHOTS")
+	if dir.is_empty():
+		return
+	DirAccess.make_dir_recursive_absolute(dir)
+	_viewport.get_texture().get_image().save_png(dir.path_join(name + ".png"))
+
+# What a built terrain patch holds, measured at a flight settle point (`TERRAIN-41`): over up to
+# PATCH_BYTES_SAMPLE built patches, the bytes of the textures only they name (read back) and of the
+# images and arrays they keep in system memory, a patch's mean; textures shared between patches and
+# one layer of the shared mask pages apart. Untimed: it reads textures back.
+func _record_patch_bytes(label: String, sample: Dictionary) -> void:
+	var seen := {}
+	var counts := {"gpu_own": 0, "gpu_shared": 0, "cpu": 0}
+	var keys: Array = _terrain.patches.keys().slice(0, PATCH_BYTES_SAMPLE)
+	for key: Vector2i in keys:
+		_held_bytes(_terrain.patches[key], seen, counts)
+	var shared_uses := 0
+	for rid: RID in seen:
+		if int(seen[rid][0]) > 1:
+			counts.gpu_shared += int(seen[rid][1])
+			shared_uses += 1
+		else:
+			counts.gpu_own += int(seen[rid][1])
+	var pages: Array = _terrain._mask_pages
+	var mask_layer := 0
+	if not pages.is_empty():
+		var layer: Image = (pages[0] as Texture2DArray).get_layer_data(0)
+		mask_layer = layer.get_data_size() if layer != null else 0
+	var sampled := maxi(1, keys.size())
+	sample["patch_bytes"] = {"sampled": keys.size(), "gpu_own": counts.gpu_own / sampled,
+		"cpu": counts.cpu / sampled, "gpu_shared_total": counts.gpu_shared, "shared_textures": shared_uses,
+		"mask_layer": mask_layer, "mask_pages": pages.size()}
+	# The water patches the same way: their own textures and what they keep (dry ones share the
+	# empty depth texture).
+	var water_seen := {}
+	var water_counts := {"gpu_own": 0, "gpu_shared": 0, "cpu": 0}
+	var water_keys: Array = _water.patches.keys().slice(0, PATCH_BYTES_SAMPLE)
+	for key: Vector2i in water_keys:
+		_held_bytes(_water.patches[key], water_seen, water_counts)
+	for rid: RID in water_seen:
+		if int(water_seen[rid][0]) == 1:
+			water_counts.gpu_own += int(water_seen[rid][1])
+	var water_sampled := maxi(1, water_keys.size())
+	sample["water_patch_bytes"] = {"sampled": water_keys.size(), "gpu_own": water_counts.gpu_own / water_sampled,
+		"cpu": water_counts.cpu / water_sampled}
+	sample["patches_built"] = {"terrain": _terrain.patches.size(), "water": _water.patches.size()}
+	print("[STREAM] PATCH_BYTES %s %s water=%s built=%s" % [label, str(sample.patch_bytes),
+		str(sample.water_patch_bytes), str(sample.patches_built)])
+
+# Sums what `value` holds into `counts` (see _record_patch_bytes); textures by RID in `seen` as
+# [uses, bytes].
+static func _held_bytes(value: Variant, seen: Dictionary, counts: Dictionary) -> void:
+	if value is Texture2D:
+		var rid: RID = (value as Texture2D).get_rid()
+		if seen.has(rid):
+			seen[rid][0] = int(seen[rid][0]) + 1
+		else:
+			var image: Image = (value as Texture2D).get_image()
+			seen[rid] = [1, image.get_data_size() if image != null else 0]
+	elif value is Image:
+		counts.cpu += (value as Image).get_data_size()
+	elif value is Dictionary:
+		for item: Variant in (value as Dictionary).values():
+			_held_bytes(item, seen, counts)
+	elif value is Array:
+		for item: Variant in value:
+			_held_bytes(item, seen, counts)
+	elif value is PackedByteArray:
+		counts.cpu += (value as PackedByteArray).size()
+	elif value is PackedFloat32Array or value is PackedInt32Array:
+		counts.cpu += value.size() * 4
+	elif value is PackedVector2Array:
+		counts.cpu += value.size() * 8
+	elif value is PackedVector3Array:
+		counts.cpu += value.size() * 12
+	elif value is PackedColorArray:
+		counts.cpu += value.size() * 16
+
+# The process's memory: resident set (Linux), Godot's static allocations, and the renderer's
+# texture, buffer and video memory, bytes (`TERRAIN-41`).
+static func _memory() -> Dictionary:
+	var rss := -1
+	var status := FileAccess.open("/proc/self/status", FileAccess.READ)
+	# /proc files report no length: read by lines.
+	while status != null and not status.eof_reached():
+		var line := status.get_line()
+		if line.begins_with("VmRSS:"):
+			rss = int(line.split(":")[1].strip_edges().split(" ")[0]) * 1024
+			break
+	return {"rss": rss, "static": OS.get_static_memory_usage(),
+		"texture": int(Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED)),
+		"buffer": int(Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED)),
+		"video": int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED))}
 
 # Puts the camera at `view`, waits WARMUP_FRAMES frames and then until settled.
 func _start_from(bench: Node, view: PackedFloat32Array) -> bool:
@@ -1083,6 +1250,9 @@ func _row(index: int) -> Dictionary:
 		# hydrate, and the parked chunks drawn.
 		row["roads_pending"] = _stream.get_road_hydration_counts().x
 		row["parked_drawn"] = _stream.get_parked_drawn().size()
+		# The probe's last drawn frame (`TERRAIN-41`); a library without `backlog` records none.
+		if _probe.has_method("backlog"):
+			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water"))}
 	_previous_streams = streams
 	_last_us = now_us
 	return row
@@ -1159,7 +1329,7 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		over.over_22 += 1 if value > 22.0 else 0
 		over.over_33_3 += 1 if value > 33.3 else 0
 	var sample := {"label": label, "duration_s": duration_s, "frames": rows.size(),
-		"frame_ms": stats(times), "rows": rows}
+		"frame_ms": stats(times), "rows": rows, "memory": _memory()}
 	sample.merge(over)
 	if _gpu_profile:
 		var passes := {}
@@ -1211,7 +1381,7 @@ static func stats(values: PackedFloat64Array) -> Dictionary:
 # and counters only, no walk.
 func _streams() -> Dictionary:
 	var terrain: Dictionary = _terrain.get_pending_render_work_counts()
-	terrain.merge({"resident": _terrain.resident_patch_lookup.size(),
+	terrain.merge({"resident": _terrain.resident_patch_lookup.size(), "built": _terrain.patches.size(),
 		"creates_total": _terrain._terrain_debug_patch_creates, "removes_total": _terrain._terrain_debug_patch_removes,
 		"uploads_total": _terrain._terrain_debug_patch_uploads})
 	var water: Dictionary = _water.get_pending_render_work_counts()

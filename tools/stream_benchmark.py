@@ -21,6 +21,9 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
 `census` prints its tables (`RENDER-44`, `tools/draw_census.py`).
 `--drawn` runs the drawn probe (METRUM_STREAM_DRAWN, `RENDER-32-N`: an instrumented run) and
 `drawn` prints its table: per sample and layer, entered-to-drawn and in-view holes in frames.
+`flight` prints a flight run's terrain streaming (`--phases flight_low,flight_high,flight_jump`,
+`TERRAIN-41`): per sample the builds a frame, the backlog over time and, instrumented, one build's
+split, the payload workers' time and the install ledger by owner.
 Every row names its display driver: `--display-driver x11` (the default, the rows on record) or
 `wayland` (`RENDER-62`, analysis A8: gamescope exposes its Wayland socket). Godot 4.7's Wayland
 driver can hang after its window closes (godot#123059): a Wayland row whose Godot is still there
@@ -706,6 +709,83 @@ def drawn(args):
     return status
 
 
+# `flight`: a flight run's terrain streaming (`--phases flight_low,flight_high,flight_jump`,
+# `TERRAIN-41`): per sample the rates, the backlog over time and, instrumented, the costs.
+
+def _flight_detail(row, record, key):
+    entry = (row.get("scripts") or {}).get(record) or {}
+    return float((entry.get("details") or {}).get(key, 0.0))
+
+
+def flight_lines(report, every_s):
+    lines = []
+    for sample in report["samples"]:
+        rows = sample["rows"]
+        if not rows:
+            continue
+        frame_ms = [row["frame_ms"] for row in rows]
+        wall_s = sum(frame_ms) / 1000.0
+        median = statistics.median(frame_ms)
+        first, last = rows[0]["streams"]["terrain"], rows[-1]["streams"]["terrain"]
+        builds = last.get("creates_total", 0) - first.get("creates_total", 0)
+        missing = [row["streams"]["terrain"].get("terrain_missing", 0) for row in rows]
+        lines.append(f"## {sample['label']}: {wall_s:.1f} s, {len(rows)} frames ({len(rows) / wall_s:.0f} fps), "
+                     f"frame p50 {median:.1f} p95 {percentile(frame_ms, 0.95):.1f} ms; builds {builds} "
+                     f"({builds / len(rows):.2f} a frame, {builds / wall_s:.0f}/s); missing max {max(missing)}, "
+                     f"end {missing[-1]}; built {first.get('built')} -> {last.get('built')}")
+        memory = sample.get("memory")
+        if memory:
+            lines.append("   memory at the end, MiB: " + ", ".join(
+                f"{key} {value / 2**20:.0f}" for key, value in memory.items()))
+        for key in ("patch_bytes", "water_patch_bytes"):
+            if key in sample:
+                lines.append(f"   {key}: {sample[key]}")
+        built_parts = ["resources", "height", "node", "masks", "params", "land_cover"]
+        count = sum(_flight_detail(row, "terrain", "build_count") for row in rows)
+        if count:
+            parts = ", ".join(f"{part} {1000 * sum(_flight_detail(row, 'terrain', f'build_{part}_ms') for row in rows) / count:.0f}"
+                              for part in built_parts)
+            total = 1000 * sum(_flight_detail(row, "terrain", "build_ms") for row in rows) / count
+            lines.append(f"   one build {total:.0f} us: {parts}")
+        payloads = sum(_flight_detail(row, "terrain", "worker_built") for row in rows)
+        if payloads:
+            run = sum(_flight_detail(row, "terrain", "worker_run_ms") for row in rows)
+            source = sum(_flight_detail(row, "terrain", "worker_source_ms") for row in rows)
+            lines.append(f"   payload workers: {run / payloads:.3f} ms a payload ({source / payloads:.3f} under the "
+                         f"core lock), {run / 1000 / wall_s:.2f} workers busy, retried "
+                         f"{sum(_flight_detail(row, 'terrain', 'worker_retried') for row in rows):.0f}")
+        owners = ["terrain_commit", "graded", "water", "stream", "free"]
+        if any(_flight_detail(row, "vegetation", "ledger_predicted_ms") for row in rows):
+            lines.append("   install ledger, mean ms a frame: " + ", ".join(
+                f"{owner} {statistics.mean(_flight_detail(row, 'vegetation', f'ledger_{owner}_ms') for row in rows):.2f}"
+                for owner in owners) + f"; measured {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_ms') for row in rows):.2f}"
+                f", predicted {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_predicted_ms') for row in rows):.2f}")
+        lines.append("   t s | wanted | missing | in flight | ready | resident | built | oldest wait s | in-view holes")
+        elapsed, due = 0.0, 0.0
+        for row in rows:
+            elapsed += row["frame_ms"] / 1000.0
+            if elapsed < due and row is not rows[-1]:
+                continue
+            due += every_s
+            terrain = row["streams"]["terrain"]
+            wanted = (terrain.get("terrain_resident", 0) - terrain.get("terrain_leaving", 0)
+                      + terrain.get("terrain_missing", 0))
+            backlog = (row.get("backlog") or {}).get("terrain")
+            oldest = f"{backlog[1] * median / 1000:.2f}" if backlog else "-"
+            holes = backlog[3] if backlog else "-"
+            lines.append(f"   {elapsed:5.1f} | {wanted} | {terrain.get('terrain_missing', 0)} | "
+                         f"{terrain.get('payload_requested', 0)} | {terrain.get('payload_ready', 0)} | "
+                         f"{terrain.get('terrain_resident', 0)} | {terrain.get('built', '-')} | {oldest} | {holes}")
+    return lines
+
+
+def flight(args):
+    for path in args.metrics:
+        print(f"# {Path(path).name}")
+        print("\n".join(flight_lines(json.loads(Path(path).read_text()), args.every)))
+    return 0
+
+
 def split_blocks(report):
     """A shadow-sequence run's quartets (`RENDER-15`): per variant X whose blocks run `full, X, X,
     full`, the reports `ctl1`, `br1`, `br2`, `ctl2` holding those blocks' samples, as a series'
@@ -1174,6 +1254,9 @@ def main(argv=None):
     probe.add_argument("--bar", type=int, default=3, help="frames: the p95 and hole bar (RENDER-32-N: 3)")
     blocks = commands.add_parser("split")
     blocks.add_argument("metrics", help="a run with a `full,X,X,full` METRUM_STREAM_SHADOWS sequence")
+    flown = commands.add_parser("flight", help="a flight run's terrain streaming (TERRAIN-41)")
+    flown.add_argument("metrics", nargs="+", help="runs with --phases flight_low, flight_high or flight_jump")
+    flown.add_argument("--every", type=float, default=1.0, help="seconds between backlog lines")
     still = commands.add_parser("stills").add_subparsers(dest="stills_command", required=True)
     shot = still.add_parser("capture")
     shot.add_argument("--label", required=True)
@@ -1214,6 +1297,8 @@ def main(argv=None):
         return split(args)
     if args.command == "drawn":
         return drawn(args)
+    if args.command == "flight":
+        return flight(args)
     if args.command == "stills":
         return stills(args)
     if args.command == "census":

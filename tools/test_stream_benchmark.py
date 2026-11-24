@@ -587,3 +587,25 @@ class CensusTests(unittest.TestCase):
         # The batch's box holds the camera: the full mesh for both; the far one alone would draw 2.
         self.assertEqual(stats["prims"].sum(), 24)
         self.assertEqual(stats["own_prims"].sum(), 14)
+
+
+class FlightTests(unittest.TestCase):
+    """`flight` (`TERRAIN-41`): the builds a frame and the backlog lines of a flight sample."""
+
+    @staticmethod
+    def row(frame_ms, creates, missing, resident, backlog=None):
+        terrain = {"creates_total": creates, "terrain_missing": missing, "terrain_resident": resident,
+                   "terrain_leaving": 0, "payload_requested": 0, "payload_ready": missing, "built": creates}
+        row = {"frame_ms": frame_ms, "streams": {"terrain": terrain}, "scripts": {}}
+        if backlog is not None:
+            row["backlog"] = {"terrain": backlog}
+        return row
+
+    def test_builds_a_frame_and_the_backlog_over_time(self):
+        rows = [self.row(500.0, 10, 4, 6, [4, 0, 4, 2]), self.row(500.0, 13, 1, 9, [1, 1, 1, 0])]
+        lines = sb.flight_lines({"samples": [{"label": "flight_high", "rows": rows}]}, 1.0)
+        self.assertIn("## flight_high: 1.0 s, 2 frames (2 fps)", lines[0])
+        self.assertIn("builds 3 (1.50 a frame, 3/s); missing max 4, end 1; built 10 -> 13", lines[0])
+        # One line a second: the first frame's and the last's; the oldest wait at the median frame.
+        self.assertEqual(lines[-2], "     0.5 | 10 | 4 | 0 | 4 | 6 | 10 | 0.00 | 2")
+        self.assertEqual(lines[-1], "     1.0 | 10 | 1 | 0 | 1 | 9 | 13 | 0.50 | 0")
