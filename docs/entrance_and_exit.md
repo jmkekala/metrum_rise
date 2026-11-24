@@ -170,8 +170,9 @@ arrival ticks move.
    routing turns it round. Its wait is emptied, so its next leg may cross again. The round-2
    trace showed why: of the leaving waits over 300 s, nearly all stood behind a queue standing
    across the slot of the far lane, the target lane, while the near lane was free. A truck or a
-   drop-off keeps waiting (its plan ends at a gate, a door or a border). The vehicles behind it
-   wait in the leaving line (below).
+   drop-off keeps waiting (its plan ends at a gate, a door or a border); from 30 s on it holds
+   its place in its target lane (`TRAFFIC-45`, below). The vehicles behind it wait in the
+   leaving line (below).
 6. **The gap test** (`crossing_gap_clear`): the slot (`lane_attach_slot_clear`, both half
    lengths and `IDM_S_MIN`) at the crossing's distance, and the nearest body upstream, in the
    lane's own direction, at least a further `speed x crossing time` away, the crossing time being
@@ -550,6 +551,105 @@ run, as the lot's legs are held to):
 | In the lot (built) | each leg | 2.5 m on legs of 5 m or more at 90° | 6 m on legs of 12 m or more at 90° |
 
 As built the arc keeps its class radius on the lane whatever the run, and the hop half adapts.
+
+#### Joining a queued lane (`TRAFFIC-45`), as built
+
+Built 2026-11-24 on branch `traffic-45` (not landed). A simulation change: positions, waits and
+arrival ticks move.
+
+1. **The fault.** A vehicle joins a lane from a lot, driveway, yard or kerb stop only into a hole
+   about two bodies long around its lane point (`lane_attach_slot_clear`; `crossing_clear` from
+   a far-side mouth). A queue that stands or creeps closes every hole, so the wait had no bound:
+   the standing-cars analysis found a car waiting 596 game minutes at its lane point with three
+   cars of its lot's leaving line behind it, and a truck 501 minutes at its mouth, its far lane
+   queued (trucks never give up there).
+2. **The rule.** A car or truck that has waited `CROSSING_GIVE_UP_S` (30 s) to join its lane holds
+   its place in it, as a crossing vehicle holds the lane it crosses: it puts a stop line in the
+   lane's bucket just behind its slot (its rear there less the standstill gap). The body behind
+   stops short of the line, and the joiner enters as soon as no body lies in its slot. That
+   covers a car held at its lane point after its pull-out (lots, driveways, a drop-off's kerb
+   stop), a vehicle waiting at its lane point on its access leg (doors, a truck's kerb stop),
+   and a vehicle waiting at its mouth to cross into its far lane (trucks and drop-offs; a
+   resident's car still leaves on the near lane at 30 s, `PARK-32` item 5, and joins there by
+   the same rule). Its wait is `crossing_wait_s`, widened from "waiting to cross" to "waiting
+   to join"; it is emptied when the vehicle joins.
+3. **Who stops.** The nearest body behind the line stops for it: its car following sees the line
+   as a body standing there and stops it, as behind any vehicle standing ahead. Two bodies are
+   let through: one already across the line, and, on the tick the hold is taken (before any car
+   following has seen it), one that would run past it in that tick at its speed (at 32× a tick
+   is 0.53 s). The line then stands at that body's rear and moves up with it, and the joiner
+   waits until the line holds again. The line never lies past the rear of the body just ahead
+   of it, so the bodies it holds never run into that one, and the hold never moves a body back.
+4. **Entering.** When the line holds (nobody let through) and no body lies in the slot, ahead of
+   it or across its centre, the joiner claims the lane (the tick's one entry per lane, in agent
+   order) and enters. Other holds' stop lines are not bodies: two joiners at overlapping slots
+   both see their slot free and the claim lets one in; the other then waits for that body to
+   clear. A far-side joiner at its mouth holds its target lane only while the lane it crosses
+   passes the gap test (`lane_distance` below zero meanwhile): a far lane held for a busy near
+   lane would only stand. It crosses when the crossed lane is clear and its target slot is
+   ready, and keeps its stop line in the target lane, at the line itself, while it crosses: it
+   holds both lanes for the crossing's 2-3 s.
+5. **Bucket entries.** The stop line is a zero-length entry (`off_lane_bucket_entries`, the one
+   membership test of crossings and holds for the fill, its patches and its rebuild check): at
+   the joiner's `lane_distance` while it crosses nothing, at the line while it crosses. The
+   overlap correction never moves it; IDM, slot tests, crossings, junction entries at a lane's
+   start and lane changes see it as a point. An agent may hold two entries (a crossing and a
+   hold), in two lanes.
+6. **Order.** A step that may take, move or use a hold runs in the movement pass's serial part,
+   in agent order (`lane_step`: every egress step whose wait reaches 30 s; a car held at its lane
+   point is `HeldEntry`, skipped with its wait counted, only while its wait stays under 30 s), so
+   the outcome is the same for any worker count (`PERF-33`).
+7. **Release.** The hold ends when the vehicle enters its lane (its wait emptied), when a road
+   edit touches its lane (`invalidate_lane_ids_for_edges` empties a wait of 30 s or more on an
+   affected attach lane, as it drops a crossing there: it waits 30 s again where the edit left
+   it), when a truck stops in its yard after its plan was dropped (`stand_in_yard`), when its
+   building or plan is lost on its access leg (`reset_invalid_access_plan` empties the network
+   state with the wait), and when the agent is removed (the swap-remove patch drops its
+   entries). A demolished target building on the road does not end it: the car still waits to
+   join where it stands.
+8. **Save.** Nothing new: the hold is a function of saved columns (`crossing_wait_s` in
+   `agent_crossings`, `lane_distance`, the planned attach lane and point, the access flags), so
+   a save during a hold continues exactly; format unchanged.
+9. **Cost.** O(log bucket) per waiting vehicle per tick from 30 s on (two binary searches and a
+   short walk), in the serial part; the bucket fill reads one more column (the wait) for agents
+   off every lane, and builds an entry only for the few holding; no allocation.
+10. **Measured** (2026-11-24, fresh, release test binaries: the standing-cars probe
+    `standing_cars_probe` patched onto the branch, the prepared 30k baseline city from its day-12
+    snapshot, 56 game hours at 32× with 8 workers; the control is the analysis's run of `dev`
+    b93b3f2df, whose simulation code this branch starts from). Episodes are vehicles standing 60
+    game minutes or more that ended in the 56 hours; "join" counts the classes held at an attach
+    slot, in a leaving line behind one, at a mouth waiting to cross, and at a lane point on an
+    access leg.
+
+    | 56 game hours, 30k | `dev` | `traffic-45` |
+    | --- | --- | --- |
+    | Join episodes over 60 min (cars and trucks) | 116 | 24 |
+    | Car held at its lane point (D): episodes / longest / minutes | 55 / 630 / 12,024 | 11 / 638 / 2,378 |
+    | Car in a leaving line behind one (E) | 9 / 596 / 3,551 | 3 / 209 / 549 |
+    | Truck at its mouth to cross | 31 / 377 / 6,730 | 10 / 349 / 2,119 |
+    | Truck at its lane point (kerb stop, gate) | 21 / 367 / 4,277 | 0 |
+    | Join vehicles standing 60+ min, most at one 2 h sample / sum of samples | 31 / 209 | 10 / 33 |
+    | Cars queued in congestion (A): episodes / car-minutes | 749 / 149,625 | 388 / 55,934 |
+    | Cars at a merge (B): episodes / car-minutes | 4 / 378 | 2 / 205 |
+    | All cars: episodes 60+ / 240+ / 720+ | 1,840 / 296 / 0 | 1,493 / 28 / 0 |
+    | Car-minutes standing in episodes of 60+ | 249,991 | 148,849 |
+    | Longest car episode, minutes | 630 | 638 |
+
+    Every join wait over 60 minutes left was traced: a car's slot under a vehicle standing in a
+    queue that itself stood longer than the wait (the longest, 638 minutes, under a truck
+    standing 8 hours in a queue whose head waited at a junction entry, the merge order of
+    `TRAFFIC-44`), and trucks at their mouth whose far lane stood the same way or whose near lane
+    carried traffic at the limit, so no gap passed. None waited for a hole a moving queue never
+    opened. The congestion rows (A, B) are for information: they swing between runs, and the
+    join rule changes when vehicles enter the queues. Trips are not counted by the probe.
+11. **Limits.** A queue standing across the slot still keeps the joiner out until it moves on:
+    the hold only stops the vehicles behind. A far-side joiner still needs a gap in the crossed
+    near lane: it holds only its target lane while it waits, so a near lane standing across its
+    crossing keeps it waiting. Two joiners next to each other enter one after the
+    other in agent order. Seen by the player: a car or truck at a driveway, kerb or lot mouth on
+    a jammed street waits half a minute, then the next car in the queue stops short with a gap in
+    front of it, and the waiting vehicle pulls into that gap as the car ahead moves on; the lot's
+    leaving line follows it out one by one.
 
 ## Current System
 
