@@ -12311,8 +12311,11 @@ The water input of record is the pond on the 30k city (`RENDER-32-M` step 0):
 `stream_pond_30000_v118.sqlite` beside the prepared cities, made by
 `generate_stream_pond_fixture` from `populated_city_30000.sqlite` (the recipe and SHA-256 in the
 [record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)); a `SAVE_VERSION` bump
-names a new file the recipe makes again. Every settle point also records the terrain and water
-patches (`patch_digests`), and `post_load` the hand-over (`ready_ms`).
+names a new file the recipe makes again. On the aligned grid both inputs are new worlds
+(`populated_city_30000.sqlite` at 4,736 m, 8 m and `stream_pond_30000_v131.sqlite`, grid
+alignment round `A10`, [section 1](#1-worldconfig-is-the-authoritative-world-metadata)); the old
+city of record stays as `populated_city_30000.sqlite.pre-grid`. Every settle point also records
+the terrain and water patches (`patch_digests`), and `post_load` the hand-over (`ready_ms`).
 
 The perf channel's records join the frame they belong to: the benchmark takes them as
 `process_frame` resumes it, which ends the frame it has just timed (that frame's scripts and its
@@ -20384,6 +20387,73 @@ Current deterministic rules:
   world off them fails in debug builds. Unit fixtures that build a `TerrainSystem`, `WaterSystem`
   or deposit grid directly (`with_chunking`, 1 m or 10 m cells, small chunks) test the general
   storage and patch code below the world rules and are not worlds.
+
+**Benchmark inputs on the aligned grid (grid alignment round `A10`, 2026-11-24).** Every stored
+input made on the old layout is refused (699 `.sqlite` files under the local Cargo target
+directory, none legal). The timing cache's economy and K22 cities regenerate themselves: their
+file names carry the fixture revision, which hashes `populated_city.rs` (changed by the 128 m
+rounding), and the commit cities' key also hashes the test binary, so the branch prepares its
+own files and can never load the old ones (a load also checks the stored revision). The stream
+benchmark's inputs of record were made again with the branch's release `$TEST_BINARY`: the 30k
+city (`populated_city_30000.sqlite` in the timing cache, now the branch's prepared baseline,
+4,736 m at 8 m, SHA-256 `3839588a`; the old 4,624 m, 10 m city of record `e9a62f0e` stays beside
+it as `populated_city_30000.sqlite.pre-grid` for controls built before the grid) and the pond
+(`generate_stream_pond_fixture` on it: `stream_pond_30000_v131.sqlite`, 1,853 cells, 2.95 m at
+the centre, SHA-256 `f4a80fff`, two runs equal bytes; the old `stream_pond_30000_v118.sqlite`
+keeps its own name). Cities built by playing or by other rounds' scripts on the old map (Kuopio
+city saves, parking captures, round artifacts) cannot be made again as the same city and were
+left as they are.
+
+**Landing timing (round `A10`, 2026-11-24, `TERRAIN-34`).** One level L session,
+`./run.sh --timing --level L --control <dev's $TEST_BINARY> --branch "$TEST_BINARY" --base dev
+--artifacts "$ARTIFACTS"`, then `--rerun k22-1-ctl,contract-1-ctl` for the two cache-only control
+rows (no cached row on this boot). One boot, eight workers pinned to the performance cores,
+`RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, no build, Godot or backup during a row; load average
+6.25 at the start (the prepare had just ended) and 2.70 at the end, 0.73 (5 min) before the
+rerun. Control `dev` `483e46e34` (release test binary SHA-256 `a6e737929ec042a8`) on its own
+cities; branch `terrain-grid` `f582bd770` (`e01b2411534db04e`) on cities its prepare generated.
+**The two sides ran on different worlds**, so no row below compares the code:
+
+| City (fixture, prepared by the side's binary) | World | Agents | Households | Cars | Road edges | Buildings |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| control 30k baseline (day 12) | 4,624 m, 10 m cells | 32,154 | 15,589 | 17,098 | 1,345 | 21,416 |
+| branch 30k baseline (day 12) | 4,736 m, 8 m cells | 32,136 | 15,588 | 16,977 | 1,345 | 21,416 |
+| branch 10k baseline (day 12) | 3,456 m, 8 m cells | 11,722 | 5,703 | 6,970 | 528 | 8,169 |
+| branch 30k K22 commit city | 4,736 m, 8 m cells | 31,467 | 15,526 | 16,740 | 1,345 | 21,416 |
+
+| Row (30k) | Control (old world) | Branch (new world) |
+| --- | --- | --- |
+| 32x, 2 runs a side: mean / p99 / p99.9 ms | 4.02-4.04 / 6.63-6.65 / 7.23-7.55 | 3.98-3.99 / 6.56-6.69 / 7.20-7.94 |
+| 32x worst unpreempted frame (acceptance 8 ms) | 7.31, 7.23 | **8.01**, 7.96 |
+| 1x day (control 1, branch 2): mean / p99 / p99.9 ms | 1.70 / 3.28 / 5.74 | 1.60-1.62 / 3.10-3.13 / 3.48-3.54 |
+| 1x worst unpreempted frame | 4.06 | 4.62, 4.44 |
+| load (s) | 2.29-2.30 | 2.30-2.31 |
+| K22 click-to-ack / commit (ms) | 7.57 / 7.53 | 7.38 / 7.35 |
+| Contract day, mean hour 10k / 30k (ms; limits 40 / 120) | 0.96 / 2.98 | 0.90 / 2.86 |
+| Contract fiscal day, mean hour 10k / 30k (ms) | 6.58 / 12.80 | 5.87 / 12.59 |
+| Contract limits | fails `supplier_searches` (the parked `PERF-03`-`PERF-05` kind) | all pass |
+
+On its own numbers the branch meets every budget but one: one of its two 30k 32x days has a frame
+of 8.013 ms (the other 7.957 ms), unpreempted, at minute 1,315 (21:55) in both runs, its minute
+work 2.75-2.84 ms against at most 2.0 ms in any frame of the control's days; it is not one of
+`PERF-17`'s minute-4 frames, so the runner reports it as a miss. The frame belongs to the branch's
+city: its economy has already diverged from the control's by day 12 (121 fewer cars, 21 fewer
+employed by day 13), and no change on the branch touches agent, economy or scheduler code.
+That is an inference: a control run on the new layout would settle it, but `dev`'s city builder
+makes its world with `WorldConfig::new(side, side, 40, 10)` on the default 10 m cell and the
+unrounded margin side, with no setting for either, and every load checks that the city's fixture
+revision is the binary's own, so no like-for-like city pair exists without a code change and none
+was made.
+
+Like for like, one run each on the same legal world (the shipped Kuopio, 18,432 m, 8 m, 95 lake
+and 12 open-water fills), both binaries with an uncommitted probe in the release
+`$TEST_BINARY`, pinned as above: Kuopio load with the lake solve 0.342 s (control) and 0.349 s
+(branch), peak resident memory 165 and 166 MB; one gameplay sculpt edit (`sculpt_terrain_internal`,
+the `TERRAIN-38` path; a shore cut, a dam, an island) 0.070 / 0.063 / 0.062 s and 0.067 / 0.062 /
+0.063 s, water and heights bitwise equal after the load and after every edit. A blank world as the
+world editor creates it (`create_blank_world_internal`; storage is sparse, so the extra samples
+cost nothing until written): the old 20,000 m, 10 m default (2,001^2 samples) 4.2 ms and +4.1 MB
+peak on the control, the new 20,480 m, 8 m default (2,561^2) 3.9 ms and +4.7 MB on the branch.
 
 ### 2. Terrain And Water Grid Sizing Is Now Explicit
 
