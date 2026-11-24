@@ -1490,7 +1490,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   ([findings and tasks](archive/roads_legacy_surface_2026-10-23.md#preview-compile-bottlenecks-road-37road-42)).
   [Ordered plan and acceptance criteria](archive/roads_legacy_surface_2026-10-23.md#preview-display-performance-plan-road-30road-36).
 
-- **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).
+- **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in `code_audit.md`.
   The current passes correct household/freight accounting and persistence, indexed agent removal,
   deterministic demand totals, duplicated shopping helpers, commute-clock conversions and
   save-file preservation on failed writes, shared world-size/malformed-state validation and

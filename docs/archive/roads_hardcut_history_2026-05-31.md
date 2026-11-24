@@ -2,8 +2,8 @@
 
 ## Purpose
 
-This document owns the shipped roadbed runtime for surface roads, the completed [`ROAD-01`](roadmap.md)
-handover contract, and later road-surface hardening such as [`ROAD-02`](roadmap.md).
+This document owns the shipped roadbed runtime for surface roads, the completed [`ROAD-01`](../roadmap.md)
+handover contract, and later road-surface hardening such as [`ROAD-02`](../roadmap.md).
 
 It answers these questions:
 
@@ -20,8 +20,8 @@ It does not own:
 - the shared engineered-ground / earthworks contract used by roads, pads, and future foundations
 - terrain storage internals or large-world terrain streaming policy
 
-Those remain owned by [`entrance_and_exit.md`](entrance_and_exit.md),
-[`earthworks.md`](earthworks.md), and [`terrain.md`](terrain.md).
+Those remain owned by [`entrance_and_exit.md`](../entrance_and_exit.md),
+[`earthworks.md`](../earthworks.md), and [`terrain.md`](../terrain.md).
 
 ## Document Conventions
 
@@ -1362,7 +1362,7 @@ Sidewalk ownership remains explicit per side before boolean resolution:
 - left and right sidewalk bands are separate authored / derived bands at the mouth
 - footpath connections attach to one side or the other, not to an abstract road-center sidewalk
 - after boolean resolution, those side labels may map to split or collapsed regions
-- crosswalk and frontage-side semantics must stay aligned with [`entrance_and_exit.md`](entrance_and_exit.md)
+- crosswalk and frontage-side semantics must stay aligned with [`entrance_and_exit.md`](../entrance_and_exit.md)
 - pedestrian crosswalk mouths must use the same deterministic conflict-bounded mouth positions as
   the visible road surface; they must not invent a separate shallower node boundary
 
@@ -1397,7 +1397,7 @@ graded geometry shades correctly. Banking / crossfall is not part of the roadbed
 
 ## Road Earthworks Boundary
 
-The shared engineered-ground contract now lives in [`earthworks.md`](earthworks.md). This document
+The shared engineered-ground contract now lives in [`earthworks.md`](../earthworks.md). This document
 only owns the road-specific side of that boundary.
 
 Road-specific requirements:
@@ -1409,7 +1409,7 @@ Road-specific requirements:
 - grounded roads require an outer deterministic cut / fill margin derived from those same compiled
   sections
 - grounded-road crossfall, crown, and banking are intentionally not generated; the shared tie-in
-  back to terrain is owned by [`earthworks.md`](earthworks.md)
+  back to terrain is owned by [`earthworks.md`](../earthworks.md)
 
 Road-class-specific earthwork rules:
 
@@ -1719,7 +1719,7 @@ After region ownership is resolved, CDT input obeys these rules:
 - road seam vertices are inserted exactly from the compiled road piece and use road-owned seam
   height
 - source-terrain vertices use source / visual terrain height according to the terrain patch
-  contract in [`terrain.md`](terrain.md)
+  contract in [`terrain.md`](../terrain.md)
 - input vertex and constraint order must be canonical:
   - patch corners first
   - road loops sorted by stable piece ID and local loop index
@@ -2202,7 +2202,7 @@ Regression coverage for the conflict-first node hardcut:
 ### Later Extensions
 
 Retaining walls, richer structural tie-in materials, and building-pad engineered-ground clients are
-later extensions of the shared earthworks system in [`earthworks.md`](earthworks.md). They do not
+later extensions of the shared earthworks system in [`earthworks.md`](../earthworks.md). They do not
 block the Spade terrain-patch hardcut.
 
 Rounded sidewalks and smoother junction corners are later visual-quality work. They must operate

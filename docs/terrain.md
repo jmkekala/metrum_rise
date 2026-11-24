@@ -1617,6 +1617,7 @@ At the shipped range from the same poses the error on the tiles past it falls fr
 `1.6%` and from `2.3%` to `1.9%`; those poses hold only `9-13` such tiles. GPU p50 at those two
 far poses on the GTX 1060, same session: `6.14` to `6.16 ms` and `7.53` to `7.52-7.57 ms`.
 
+### Each impostor is lit by its own yaw (2026-09-25)
 
 In play a birch changed its lighting as it handed over, from a crown lit on one side to one lit
 on the other. A same-pose render in the game, every tree near against every tree an impostor,
@@ -1646,6 +1647,7 @@ highlight against a low sun ahead that the impostor does not. E24 on the GTX 106
 `27.1-27.2 ms` in the stand and `20.5 ms` from the air, against `26.8-27.2` and `20.3-20.5 ms`
 for the previous commit, which is inside the run-to-run spread.
 
+### A tree keeps its form across the patch grids (2026-09-25)
 
 A terrain patch is drawn as sixteen `127.5 m` vegetation patches inside the fine radius and as
 one `510 m` patch past it. Rust packed each plant relative to the patch it was fetched for, and

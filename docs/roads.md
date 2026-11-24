@@ -15219,6 +15219,7 @@ the last two runs followed another session's test suite, load 13.0 and 9.6 at th
   289.7 us (level), branch 168.1 / 229.6 us with another Godot process running throughout
   (overlapped, not a reading; still under the bar).
 
+### Batch commit, grouped undo and undo refund (round F)
 
 Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch
 bar, fixed and measured again by round F2 (below), landed on `dev` 2026-11-14 from branch `roadtools-f2`. The

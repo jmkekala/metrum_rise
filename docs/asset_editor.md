@@ -1207,7 +1207,7 @@ Building assets should use canonical `+Z` frontage when practical. The exported
 meshes whose frontage is not yet canonical can be represented without pack-specific runtime fixes.
 
 Vehicle compatibility rule: see
-[`vehicles.md`](vehicles.md#orientation-of-imported-vehicles).
+[`vehicles.md`](vehicles.md#frame).
 
 Per-asset pivot rules:
 
@@ -1655,7 +1655,7 @@ V1 parks use the prop asset contract plus grouping metadata.
 
 ### Vehicle
 
-The vehicle asset contract is in [`vehicles.md`](vehicles.md#v1-vehicle-asset-contract), with the
+The vehicle asset contract is in [`vehicles.md`](vehicles.md#the-vehicle-pack-class), with the
 model contract that replaces it ([`vehicles.md`](vehicles.md#model-contract-tools-41)).
 
 ### Character Source Asset
@@ -2659,7 +2659,7 @@ Prop rules:
 
 ### V1 Vehicle `asset.toml` Schema
 
-The vehicle `asset.toml` schema is in [`vehicles.md`](vehicles.md#v1-vehicle-assettoml-schema).
+The vehicle `asset.toml` schema is in [`vehicles.md`](vehicles.md#the-vehicle-pack-class).
 
 ### V1 Character `asset.toml` Schema
 
