@@ -89,7 +89,9 @@ impl Graded {
     }
 
     // The patch range a tile meets, in the GDScript's real_t arithmetic.
-    fn tile_patch_range(&self, tile: Tile) -> ([i32; 2], [i32; 2]) {
+    /// The first and last patch keys a copy of `tile` is placed for (the copy rule; one patch
+    /// on a world that keeps the aligned grid's rules).
+    pub(crate) fn tile_patch_range(&self, tile: Tile) -> ([i32; 2], [i32; 2]) {
         let span = self.shape.patch_span;
         let origin = [
             tile.x as f32 * TILE_M - self.shape.world_min[0],

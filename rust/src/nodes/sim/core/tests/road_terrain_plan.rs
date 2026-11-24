@@ -591,7 +591,7 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
     }
 }
 
-const KUOPIO_REFERENCE_SAVE: &str = concat!(
+pub(super) const KUOPIO_REFERENCE_SAVE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
 );

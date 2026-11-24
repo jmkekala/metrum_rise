@@ -11,6 +11,7 @@ mod construction_throughput;
 mod graded_edits;
 mod gridlock_fixture;
 mod graded_queries;
+mod grid_alignment;
 mod junction_connector_sweep;
 pub(super) mod fields;
 pub(super) mod graded_stage;

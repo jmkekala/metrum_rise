@@ -332,19 +332,25 @@ impl PopulatedCity {
     }
 }
 
-fn side_m_for(residents: u32) -> f32 {
+pub(super) fn side_m_for(residents: u32) -> f32 {
     (residents as f32 / RESIDENTS_PER_M2).sqrt() * SIDE_HEADROOM
 }
 
 // The cross streets of a `side_m` grid: whole blocks, floored.
-fn crosses_for(side_m: f32) -> usize {
+pub(super) fn crosses_for(side_m: f32) -> usize {
     (side_m / CROSS_SPACING_M) as usize + 1
 }
 
 /// Builds the street grid of a `side_m` square city with every zoned lot built and complete.
 #[cfg(test)]
 pub(super) fn zoned_city(side_m: f32) -> SimCore {
-    let (mut core, row_z, half_x) = street_grid(side_m);
+    zoned_city_with_crosses(side_m, crosses_for(side_m))
+}
+
+/// [`zoned_city`] with `crosses` cross streets, as [`PopulatedCity::build`] widens a grid.
+#[cfg(test)]
+pub(super) fn zoned_city_with_crosses(side_m: f32, crosses: usize) -> SimCore {
+    let (mut core, row_z, half_x) = street_grid_with_crosses(side_m, crosses);
     add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
     // No household is admitted, so no smaller store is filled (`ECON-32`).
