@@ -715,6 +715,9 @@ build_gate_targets() {
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_terrain_replay.py; then
         return 1
     fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_import_dem_world_definition.py; then
+        return 1
+    fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
         return 1
     fi
