@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import perf_contract
-from perf_contract import (BOUNDED, PHASES, check_fiscal_coverage, check_limits,
-                           run_test, selected_phases)
+from perf_contract import (BOUNDED, PHASES, check_coverage, check_fiscal_coverage,
+                           check_limits, run_test, selected_phases, uncompared)
 
 
 class ContractTests(unittest.TestCase):
@@ -18,9 +18,11 @@ class ContractTests(unittest.TestCase):
         rows = []
         for tier, scale in ((10000, 1), (30000, 3)):
             counts = {name: scale * 10 for name in BOUNDED}
-            counts.update(cch_point_searches=scale * 4, cch_bucket_sources=scale * 6)
+            counts.update(cch_point_searches=scale * 4, cch_bucket_sources=scale * 6,
+                          staffing_operations=scale * 10, buyer_site_rebuilds=24)
             rows.append(dict(residents=tier, hourly_ms=scale * 20, daily_ms=scale * 5,
                              households=scale * 5000, counts=counts,
+                             phases={"workplace_queries": {"calls": 948}},
                              building_churn=[[1, 0] for _ in range(24)]))
         return rows
 
@@ -80,9 +82,42 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(check_limits(rows), [])
         rows[1]["phases"]["workplace_queries"]["calls"] = 948
         self.assertIn("job_search_keys per search batch", " ".join(check_limits(rows)))
-        rows[0]["counts"]["job_search_keys"] = 0
-        rows[0]["phases"] = {}
-        self.assertTrue(check_limits(rows))
+
+    def test_no_event_at_10k_needs_the_other_workload(self):
+        # PERF-34: the baseline 10k city had no buyer-site rebuild and no search batch, the
+        # 30k city two rebuilds (4 rows) and 26 batches; the fiscal cities compare both.
+        baseline, fiscal = self.rows(), self.fiscal_rows()
+        for row, rebuilds, built, batches in ((baseline[0], 0, 0, 0), (baseline[1], 2, 4, 26)):
+            row["counts"].update(buyer_site_rebuilds=rebuilds, buyer_sites_built=built,
+                                 job_search_keys=batches)
+            row["phases"] = {"workplace_queries": {"calls": batches}} if batches else {}
+        self.assertEqual(check_limits(baseline), [])
+        self.assertEqual(uncompared(baseline), ["job_search_keys", "buyer_sites_built"])
+        self.assertEqual(check_coverage(baseline, fiscal), [])
+        fiscal[0]["counts"]["buyer_site_rebuilds"] = 0
+        self.assertEqual(check_coverage(baseline, fiscal),
+                         ["buyer_sites_built: no buyer-site rebuild in either 10k city, not compared"])
+
+    def test_rows_per_rebuild_use_the_household_margin(self):
+        rows = self.fiscal_rows()
+        for row, built in ((rows[0], 760), (rows[1], 2140)):
+            row["counts"]["buyer_sites_built"] = built
+        self.assertEqual(check_limits(rows), [])
+        rows[1]["counts"]["buyer_site_rebuilds"] = 6
+        self.assertIn("buyer_sites_built per buyer-site rebuild", " ".join(check_limits(rows)))
+
+    def test_more_events_alone_pass_but_costlier_events_fail(self):
+        # PERF-34, the 2026-11-22 control: staffing operations grew 3.53x for 2.73x the
+        # households. Trials per operation flat passes; 1.06 -> 1.29 fails.
+        rows = self.rows()
+        for row, households, operations, trials in ((rows[0], 5706, 38820, 41070),
+                                                    (rows[1], 15589, 137026, 144970)):
+            row["households"] = households
+            row["counts"].update(staffing_operations=operations, staffing_trials=trials,
+                                 supplier_searches=0, supplier_routes=0)
+        self.assertEqual(check_limits(rows), [])
+        rows[1]["counts"]["staffing_trials"] = 176857
+        self.assertIn("per staffing operation 1.06 -> 1.29", " ".join(check_limits(rows)))
 
     def test_missing_tier_is_failure(self):
         self.assertTrue(check_limits(self.rows()[:1]))

@@ -25,6 +25,29 @@ PATH_PHASES = (
 BOUNDED = ("census_buildings", "reservation_rows_copied", "owner_slots_prepared",
            "buyer_sites_built", "spawn_parcels_scanned", "staffing_trials",
            "supplier_searches", "supplier_routes", "job_search_keys")
+
+
+def _counted(name):
+    return lambda row: row["counts"][name]
+
+
+def phase_calls(row, phase):
+    return row.get("phases", {}).get(phase, {}).get("calls", 0)
+
+
+# Counts whose day total is the number of driving events times the work per event; how many
+# events a day holds is the economy's outcome (`PERF-32`, `PERF-34`). Each maps to its driver's
+# name, the driver's day count, and whether that count is set by the day's schedule (bounded
+# per day whatever the city's size) rather than growing with the city.
+DRIVERS = {
+    "job_search_keys": ("search batch", lambda row: phase_calls(row, "workplace_queries"), True),
+    "buyer_sites_built": ("buyer-site rebuild", _counted("buyer_site_rebuilds"), True),
+    "staffing_trials": ("staffing operation", _counted("staffing_operations"), False),
+    "supplier_searches": ("staffing trial", _counted("staffing_trials"), False),
+    "supplier_routes": ("supplier search", _counted("supplier_searches"), False),
+}
+# Work per event of a driver that grows with the city is expected flat: this is its margin.
+PER_EVENT_MARGIN = 1.2
 TEST_PREFIX = "nodes::sim::core::populated_city::contract::"
 AGENT_TEST = "simulation::economy::agents::tick::contract::benchmark_agent_tick_contract"
 
@@ -84,32 +107,56 @@ def check_limits(rows, require_churn=False, workload=None):
     if small["households"] <= 0 or large["households"] < small["households"]:
         return labeled(failures + ["invalid final household scaling denominator"])
     ratio = 1.2 * large["households"] / small["households"]
+    skipped = uncompared(rows)
     for name in (*BOUNDED, "cch_searches"):
         def count(row):
             if name == "cch_searches":
                 return row["counts"]["cch_point_searches"] + row["counts"]["cch_bucket_sources"]
             return row["counts"][name]
         low, high = count(small), count(large)
-        if name == "job_search_keys":
-            # Per search batch (`PERF-32`): how many of the day's job-queue slots meet an open
-            # job is the economy's outcome (one or two hours of them in the fiscal cities),
-            # not the search's scaling. A city with keys and no batch reads as new work.
-            low, high = (keys_per_search_batch(row) for row in (small, large))
-            if high > ratio * low:
-                failures.append(f"{name} per search batch: {low:.2f} -> {high:.2f}, "
-                                f"limit {ratio:.4f}x")
+        if name in skipped:
+            continue
+        if name in DRIVERS:
+            label, _, scheduled = DRIVERS[name]
+            per_low, per_high = (per_event(row, name) for row in (small, large))
+            if scheduled:
+                # The schedule bounds the events, so work per event may grow with the city
+                # (`PERF-32`): keys per batch, rows per rebuild, at the household margin.
+                if per_high > ratio * per_low:
+                    failures.append(f"{name} per {label}: {per_low:.2f} -> {per_high:.2f}, "
+                                    f"limit {ratio:.4f}x")
+            elif high > ratio * low and per_high > PER_EVENT_MARGIN * per_low:
+                # A total over the limit is new scaling only if each event costs more too;
+                # more events alone are the city's history (`PERF-34`).
+                failures.append(f"{name}: {low} -> {high}, limit {ratio:.4f}x; per {label} "
+                                f"{per_low:.2f} -> {per_high:.2f}, limit {PER_EVENT_MARGIN}x")
             continue
         if high > ratio * low:
             failures.append(f"{name}: {low} -> {high}, limit {ratio:.4f}x")
     return labeled(failures)
 
 
-def keys_per_search_batch(row):
-    """Household job-search keys per search batch: a job-queue slot whose searches ran against
-    an open job board, counted as the calls of the `workplace_queries` phase."""
-    batches = row.get("phases", {}).get("workplace_queries", {}).get("calls", 0)
-    keys = row["counts"]["job_search_keys"]
-    return keys / batches if batches else float(keys)
+def per_event(row, name):
+    """Work per driving event; a city with work and no event reads as new work."""
+    events = DRIVERS[name][1](row)
+    work = row["counts"][name]
+    return work / events if events else float(work)
+
+
+def uncompared(rows):
+    """Per-event counts this workload cannot compare: its 10k city had no driving event, so
+    there is no work per event to grow from. `check_coverage` requires another workload."""
+    small = next((row for row in rows if row.get("residents") == 10000), None)
+    if small is None:
+        return []
+    return [name for name, (_, driver, _) in DRIVERS.items() if not driver(small)]
+
+
+def check_coverage(baseline_rows, fiscal_rows):
+    """Fail a per-event count that neither workload's 10k city could compare."""
+    both = set(uncompared(baseline_rows)) & set(uncompared(fiscal_rows))
+    return [f"{name}: no {DRIVERS[name][0]} in either 10k city, not compared"
+            for name in DRIVERS if name in both]
 
 
 def check_fiscal_coverage(rows):
@@ -246,7 +293,7 @@ def main():
     report_started = time.monotonic()
     timed_started = None
 
-    def write_report(status, failures=None, error=None):
+    def write_report(status, failures=None, error=None, not_compared=None):
         report = {
             "identity": identity,
             "retained_baseline": baseline,
@@ -258,6 +305,8 @@ def main():
             "fiscal_records": fiscal_records,
             "failures": failures or [],
         }
+        if not_compared is not None:
+            report["not_compared"] = not_compared
         if error is not None:
             report["error"] = str(error)
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -342,10 +391,17 @@ def main():
         failures.extend(check_limits(days, require_churn=False, workload="baseline"))
         failures.extend(check_limits(fiscal_records, workload="fiscal_stress"))
         failures.extend(check_fiscal_coverage(fiscal_records))
+        failures.extend(check_coverage(days, fiscal_records))
+    not_compared = None if args.phase else {
+        "baseline": uncompared(days), "fiscal_stress": uncompared(fiscal_records)}
     elapsed = time.monotonic() - started
     if elapsed > 300:
         failures.append(f"runtime {elapsed:.1f}s exceeds 300s")
-    write_report("failed" if failures else "passed", failures=failures)
+    write_report("failed" if failures else "passed", failures=failures, not_compared=not_compared)
+    for workload, names in (not_compared or {}).items():
+        for name in names:
+            print(f"NOTE: {workload}: {name} not compared, no {DRIVERS[name][0]} in the 10k city",
+                  flush=True)
     for failure in failures:
         print("FAIL: " + failure, file=sys.stderr)
     print(f'{"FAIL" if failures else "PASS"}: {elapsed:.1f}s; {output / "report.json"}', flush=True)
