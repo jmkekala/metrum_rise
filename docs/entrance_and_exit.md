@@ -176,9 +176,11 @@ arrival ticks move.
    lengths and `IDM_S_MIN`) at the crossing's distance, and the nearest body upstream, in the
    lane's own direction, at least a further `speed x crossing time` away, the crossing time being
    two lane widths and the body's length at driveway speed (car 2.3 s, truck 3.0 s: 32 m and 42 m
-   at 50 km/h). A body ahead needs only the slot. Leaving, the speed is that body's own: a car
-   egress runs in the movement pass's serial part (`MovementClaimMode::Dynamic`), after every
-   lane car's speed is written, so a standing or crawling queue that leaves the slot free lets
+   at 50 km/h). A body ahead needs only the slot. Leaving, the speed is that body's own: the
+   test runs in the movement pass's serial part, after every lane car's speed is written (a car
+   egress is `MovementClaimMode::Egress`: its step runs in the parallel part only while it stays
+   off every lane, and a step whose test fails on the buckets alone, at zero speed behind, fails
+   whatever the speeds; `PERF-33`), so a standing or crawling queue that leaves the slot free lets
    a car in, as a driver joins a queue where someone leaves room, and a body standing at the
    slot never does. Entering, the test runs in the parallel part, where those speeds are being
    written, so it takes the lane's speed limit and a body standing within that margin blocks.
@@ -372,9 +374,104 @@ arrival ticks move.
     frame at 8.18 and 8.19 ms (over 8, the `PERF-17` known exception), the cut's at 7.95 and
     7.91, all in the departure waves.
 
-    What remains is the busier city, not idle code: see `PERF-33` for the serial pass of
-    waiting and pulling-out cars and the per-frame ground solve of cars standing still off the
-    road.
+    What remained was the busier city, not idle code: the serial pass of waiting and pulling-out
+    cars and the per-frame ground solve of cars standing still off the road (second round below).
+
+    *Second round* (2026-11-24, branch `perf-33`). Two cuts, both outcome- and draw-neutral: the
+    `SIM-02` envelope and determinism records equal `dev` c0a5173a8's (whose simulation is
+    9bb3d1f14's), and every `vehicle_products_on_a_prepared_city` hash (2,400 a city, 10k and 30k)
+    equals that of the landed cut's binary.
+
+    - *Car egress in the parallel part.* A car egress was `MovementClaimMode::Dynamic`, so its
+      whole step ran in the serial part every tick, because some steps write shared state: the
+      step that reaches the lane point tests the attach slot and claims the lane's entry (an
+      owner atomic), the step at the mouth tests a crossing against the live speed of the body
+      behind it (which the parallel part writes) and claims two lanes, and a give-up plans. Every
+      other step writes only the car's own row: it drives along its lot's way, stands held in the
+      leaving line, or waits at the mouth where the crossing is refused on the buckets alone (the
+      slot is taken, or the body behind is too near even standing still: the margin is its speed,
+      never below zero, times the crossing's time, so zero speed is the most lenient reading).
+      Such a car is in no bucket (a car that is crossing holds an entry and stays `Dynamic`), so
+      no other step reads what it writes, and it reads no other agent's row. A car egress is now
+      `MovementClaimMode::Egress`: the parallel part runs its step up to the point where it would
+      test or claim, and if the step would, puts back what it wrote (its position and speed) and
+      notes the car in the worker's list; the serial part runs the noted steps whole, merged with
+      the dynamic handoffs in ascending agent order. The serial order rule is unchanged (ascending
+      agent index), and the steps removed from it touched nothing another serial step reads, so
+      every claim and every live-speed read happens in the order it had. O(1) a car to classify,
+      O(D log D) a tick to merge the D noted steps (a few a tick), no allocation past the largest
+      tick (the lists keep their storage). Tested: six cars leaving one mouth across a stream,
+      four to their near lane and three crossing in from the far side, among idle residents past
+      the parallel threshold, equal at every tick to the run with every car egress serial, for 1,
+      3 and 8 workers.
+    - *A standing car's ground pose kept.* The snapshot grounds every off-lane car each frame
+      (`vehicle_ground_pose`, about 17 µs a car). A car standing in its bay, in the leaving line
+      or at the mouth has the same inputs frame after frame: its bucket's model, its drawn
+      position and heading, which solve the camera's distance picks, and the ground. The
+      snapshot's pose scratch keeps, per car bucket, the last snapshot's solves by render id; a
+      car whose inputs are bitwise those of its last solve, under the same stamp (world epoch,
+      `vehicle_ground_generation`, which counts every change of the ground a car stands on, the
+      full-detail radius and the catalogue revision), takes the kept rows instead of solving. 72
+      bytes a drawn off-lane car in each of two lists whose storage is kept; O(log m) a lookup in
+      a bucket of m such cars, O(m log m) to order them. Tested: a standing car on a yard keeps
+      its pose bit for bit while another car moves, and both are solved again after a terrain
+      edit under the standing one.
+
+    The probe build of each side (the phase timers above; same 30k day at 32×, C B B C on a quiet
+    machine, means of two):
+
+    | 30k 32×, per frame | `dev` c0a5173a8 | `perf-33` | peak `dev` | peak `perf-33` |
+    | --- | --- | --- | --- | --- |
+    | frame (probe) | 4.335 ms | 4.268 | 6.176 | 5.948 |
+    | agent tick | 2.223 | 2.179 | 3.353 | 3.189 |
+    | of it: movement pass, parallel / serial part | 0.402 / 0.823 | 0.414 / 0.776 | 0.499 / 1.195 | 0.523 / 1.056 |
+    | of it: serial egress steps | 0.070 | 0.027 | 0.203 | 0.075 |
+    | of it: parking commits | 0.322 | 0.317 | 0.772 | 0.754 |
+    | snapshot | 1.032 | 1.012 | 1.746 | 1.687 |
+    | of it: agent instances / parked chunks | 0.719 / 0.233 | 0.689 / 0.238 | 1.304 / 0.363 | 1.240 / 0.362 |
+
+    The state counts (cars on access legs, waiting to cross, in leaving lines) are equal on both
+    sides, hour by hour. The serial egress steps fall from 0.203 to 0.075 ms a peak frame (what
+    is left: the steps that reach the lane point or a crossing whose slot is open on the buckets,
+    and the parallel attempt they repeat), the parallel part takes 0.024 more, and agent
+    instances fall 0.064: the peak frame 6.18 to 5.95 ms (-3.7 %), the day's 4.34 to 4.27.
+
+    Like for like (level F, two sessions, the same prepared city both sides, control the landed
+    cut's binary, `dev` c0a5173a8, branch the code above):
+
+    | 30k | `dev` | `perf-33` | delta (verdict) |
+    | --- | --- | --- | --- |
+    | 32× mean, session 1 / 2 | 4.134 / 4.071 ms | 4.085 / 4.041 | -1.2 % / -0.7 % (level) |
+    | 32× p99, session 1 / 2 | 6.865 / 6.808 | 6.801 / 6.762 | level |
+    | 32× p99.9, session 1 / 2 | 7.601 / 7.594 | 7.448 / 7.796 | level |
+    | 32× worst unpreempted, four days a side | 7.64, 7.89, 7.97, 7.75 | 7.55, 7.73, 7.98, 7.41 | level |
+    | 32× agent / snapshot / slot, session 1 | 2.031 / 1.010 / 1.035 | 2.009 / 0.977 / 1.039 | level / -3.2 % (better) / level |
+    | 32× agent / snapshot / slot, session 2 | 2.002 / 0.982 / 1.033 | 1.999 / 0.955 / 1.032 | level / -2.7 % (better) / level |
+    | 1× mean / p99 / p99.9 (control cached, same boot) | 1.804 / 3.444 / 3.836 | 1.722 / 3.240 / 3.611 and 1.723 / 3.237 / 3.604 | -4.5 % / -6 % (better) / level |
+    | 1× worst unpreempted | 5.55 | 4.29, 4.59 | better |
+
+    Every worst frame of either side is a departure-wave frame (05:31-05:44, 13:32-13:44,
+    21:34): agent 3.0-4.0 ms, snapshot 1.7-2.3, the minute's slot work 1.3-2.4. A third session
+    (a build with one more change, since dropped, below) read the same: branch 7.95 and 7.74 ms,
+    `dev` 7.94 and 8.18 (the 8.18 now reported as a miss, not `PERF-17`), 32× mean -1.7 %
+    (better), snapshot -4.0 %. So the waves' worst frame stands at 7.4-8.0 ms on the branch
+    against 7.6-8.2 on `dev`: about 0.15 ms lower, under 8 ms in every day measured but not with
+    margin. The rest of the wave frame is the busier city's per-event work, measured above.
+
+    Tried and dropped: a car at its detach point read its access's whole entrance (a copy with
+    its lanes projected afresh) every tick it stood there, for the one kerb side the crossing
+    rule reads; reading the place's stored side instead was exact (envelope, determinism and
+    product hashes equal, the side checked against the entrance in every debug test) but measured
+    nothing: the serial network part read 0.632 ms a peak frame without it and 0.633 with it (the
+    probe, means of two), so it is not on the branch.
+
+    Not cut, with the reason: parking commits (+0.26 ms at the peak against
+    crossings off) are per event, a visit for each car due (a departure's plan and route search,
+    a pull-out's start, a bay's release), with no repeated per-tick work; the walks became
+    drives, so there are more of them. Parked chunks (+0.11) are not re-solved when a car leaves:
+    a chunk is rebuilt from the poses its places keep (a solve only for a place without one), but
+    a rebuild copies every parked car of its 512 m chunk, so a chunk with hundreds of cars pays
+    for one leaving; a finer publication is a renderer change, not done here.
 
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the

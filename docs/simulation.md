@@ -1617,7 +1617,13 @@ day), so the levels differ in how many whole days they run.
 Diagnostics come from the acceptance run's own records (its 12 worst frames with their component
 split), not from extra attribution days. **Known exceptions:** an acceptance miss the user
 accepted on `dev` (today `PERF-17`, 30k 32×) is reported as "known exception" with its id, starts
-no second day and does not fail the session; its comparison against the control still runs. A
+no second day and does not fail the session; its comparison against the control still runs. An
+exception names the frames it accepts (`PERF-17`: minute 4 of an hour, the building-change
+frames), and covers a day only when every frame over the limit for each missed key is one of
+them, as the day's lists of its 12 worst frames (all, and unpreempted) show; a list whose every
+frame is over the limit may hide others and covers nothing. Any other frame over 8 ms, such as a
+departure-wave frame at 30k 32× (`PERF-33`), is a miss. The same test decides whether a day near
+a limit is near only through the exception's frames (no second day). A
 second day near a limit means within 5% of it on either side; a clear miss gets none.
 
 **Path rule** (from `git diff --name-only <base>`; the runner prints its level beside the

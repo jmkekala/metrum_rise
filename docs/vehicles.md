@@ -1343,6 +1343,19 @@ of the car, which the graded surface needs for an exact value anywhere in the wi
 samples, the planned connector), run for every car because `PERF-07` has no eye; nothing in it is
 repeated work.
 
+**A standing car's solve kept** (`PERF-33`, 2026-11-24). The rounds above found that a moving
+off-lane car never kept an identical pose from one frame to the next; since `PARK-32` many stand
+(in their bay waiting their turn, in the leaving line, at the mouth waiting to cross). The
+snapshot's pose scratch keeps each car bucket's solves of the last snapshot by render id, and a
+car whose inputs are bitwise those of its last solve takes the kept rows: the drawn position and
+heading, which solve the camera's distance picks, under the same stamp (world epoch,
+`vehicle_ground_generation`, the full-detail radius, the catalogue revision). The solve is a
+pure function of those, so the products are a fresh solve's (`vehicle_products_on_a_prepared_city`
+hashes equal at 10k and 30k). 72 bytes a drawn off-lane car in each of two lists, storage kept.
+Agent instances at 30k 32x: 0.719 to 0.689 ms a frame, 1.304 to 1.240 at the departure waves (the
+probe build, means of two); the whole snapshot 1x mean -7 % in the timing rows
+([`entrance_and_exit.md`](entrance_and_exit.md#lanes-to-cross-park-32-as-built), item 15).
+
 **Proof.** `vehicle_products_on_a_prepared_city` (above): all 2,400 hashes of the 10k and 30k
 cities equal those of the first round's build. The replay compared every recorded solve with the
 memo on and off: equal. `SIM-02` envelope and determinism records equal the `park-31` binary's.

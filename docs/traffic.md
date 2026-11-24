@@ -185,7 +185,15 @@ lane-change decision. There are no per-agent allocations or additional per-agent
 A lateral move that cannot reach another lane end or frontage handoff this tick reserves its
 target in the existing per-lane array. Atomic minimum selects the lowest agent index independently
 of worker scheduling; these cars then move in parallel. Dynamic handoffs execute afterward in
-stable agent-index order and use the remaining unreserved lanes. Fixed lateral reservations
+stable agent-index order and use the remaining unreserved lanes. A car on its way out of a lot,
+not crossing a lane, is `Egress` (`PERF-33`): the parallel part runs its step when the step stays
+off every lane (it neither reaches its lane point, nor starts or gives up a crossing, and a
+crossing test fails on the buckets alone), and otherwise leaves its row untouched and notes it in
+the worker's list; the serial part runs those steps whole, merged with the dynamic handoffs in
+agent-index order. Such a car is in no bucket and reads no other agent's row, so the part that
+runs it changes nothing; the order of every claim is the one it had when every car egress was
+dynamic. O(D log D) a tick for the D steps left to the serial part, no allocation past the
+largest tick. Fixed lateral reservations
 therefore have priority over connector/frontage arrivals for that tick. Reusing one's own
 reservation is allowed, including entry followed by a frontage detach.
 
