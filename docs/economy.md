@@ -1775,7 +1775,7 @@ snapshots. The full contract is required before merging an economy change.
 2. **30k time:** at most **120 ms** per mean hour and **30 ms** per mean day: 3× the 10k
    *budget*, never 3× the measured 10k time, so a faster 10k city cannot tighten it.
 3. **Work scaling:** from 10k to 30k each bounded count grows at most **1.2× the final
-   household ratio**. Bounded: census building rows, reservation rows copied, owner slots
+   household ratio**. Bounded: census building rows, owner slots
    prepared, proposed site rows generated, spawn parcels scanned, staffing trials, supplier
    searches, supplier route quotes, household job-search keys, and CCH searches (point searches
    plus bucket sources, which replace them). Job-search keys are compared per search batch, a
@@ -2241,8 +2241,8 @@ and no driving event still reads as new work.
 
 The staffing operations themselves are not bounded: how many businesses the census evaluates
 is the economy's outcome, and the census's own visits are bounded as census building rows.
-`reservation_rows_copied` is zero in both cities of both workloads in every run since the
-fixture change, so its absolute rule (any copy at 30k without one at 10k fails) is unexercised.
+`reservation_rows_copied` read zero in every run: planning lends the live books, and only test
+forks copy them. The counter and its rule were removed on 2026-11-24.
 Runner change only; the table re-reads each session's saved report with the new rule. A fresh
 contract run of `dev` `b93b3f2df` with the new runner (release test binary, shared snapshot
 cache, eight workers, 50.5 s) reproduces the 2026-11-24 branch row count for count: the old rule
@@ -2393,7 +2393,7 @@ part of this acceptance.
    - **B1, work scaling.** `benchmark_populated_work_counts` runs one 10k and one 100k city for
      11 days ([work counts](#econ-13-work-counts-and-live-book-planning-2026-10-12)). Each bounded
      total may grow at most 1.2× the final household ratio (10.2× for the current fixture, so
-     12.2×). The bounded totals are census building rows, reservation rows copied, owner slots
+     12.2×). The bounded totals are census building rows, owner slots
      prepared, proposed site rows generated, spawn parcels scanned, staffing trials, supplier
      searches, supplier route quotes, household job-search keys, and CCH searches (point
      searches plus bucket sources, which replace point searches). Counts are deterministic and

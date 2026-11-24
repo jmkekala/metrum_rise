@@ -68,9 +68,9 @@ class ContractTests(unittest.TestCase):
 
     def test_zero_small_count_does_not_hide_new_work(self):
         rows = self.rows()
-        rows[0]["counts"]["reservation_rows_copied"] = 0
+        rows[0]["counts"]["spawn_parcels_scanned"] = 0
         self.assertTrue(check_limits(rows))
-        rows[1]["counts"]["reservation_rows_copied"] = 0
+        rows[1]["counts"]["spawn_parcels_scanned"] = 0
         self.assertEqual(check_limits(rows), [])
 
     def test_job_search_keys_are_bounded_per_search_batch(self):

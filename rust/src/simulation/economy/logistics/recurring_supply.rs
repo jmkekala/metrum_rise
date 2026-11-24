@@ -304,15 +304,6 @@ impl RecurringSupply {
                 }
             }
         }
-        crate::debug::work::add(
-            crate::debug::work::Work::ReservationRowsCopied,
-            (self.committed.len()
-                + 2 * self.owner_receipts.len()
-                + self.source_receipts.len()
-                + self.remaining.len()
-                + self.production.len()
-                + self.active.len()) as u64,
-        );
     }
 
     /// Whether any funded staffed source has a positive remaining production rate.

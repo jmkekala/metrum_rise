@@ -22,7 +22,7 @@ PATH_PHASES = (
     ("rust/src/simulation/economy/households/employment", {"census", "planning", "execution", "settlement", "routing"}),
     ("rust/src/simulation/zoning/", {"planning", "execution", "lots"}),
 )
-BOUNDED = ("census_buildings", "reservation_rows_copied", "owner_slots_prepared",
+BOUNDED = ("census_buildings", "owner_slots_prepared",
            "buyer_sites_built", "spawn_parcels_scanned", "staffing_trials",
            "supplier_searches", "supplier_routes", "job_search_keys")
 

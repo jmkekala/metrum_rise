@@ -97,15 +97,6 @@ impl BusinessBudgets {
         self.staged_finance.clear();
         self.staged_finance.reserve(self.finance.len());
         self.finance_staged.clone_from(&source.finance_staged);
-        crate::debug::work::add(
-            crate::debug::work::Work::ReservationRowsCopied,
-            (self.accounts.len()
-                + 2 * self.buyer_accounts.len()
-                + 2 * self.finance.len()
-                + self.committed.len()
-                + self.owners.len()
-                + self.staged_slots.len()) as u64,
-        );
     }
 
     /// Gives this copy of `live` the capacity of the receipt arena a census refills

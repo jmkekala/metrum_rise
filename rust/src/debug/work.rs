@@ -36,8 +36,6 @@ pub(crate) enum Work {
     ConstructionEpochSkips,
     /// Building rows visited across all censuses.
     CensusBuildings,
-    /// Live business/customer reservation rows copied into a planning fork.
-    ReservationRowsCopied,
     /// Project owner rows prepared for planning (live buildings plus parcel slots).
     OwnerSlotsPrepared,
     /// Rebuilds of the projected supplier-source table.
@@ -250,7 +248,6 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "construction_epochs",
     "construction_epoch_skips",
     "census_buildings",
-    "reservation_rows_copied",
     "owner_slots_prepared",
     "supplier_source_rebuilds",
     "supplier_sources_built",
