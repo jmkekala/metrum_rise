@@ -16,6 +16,16 @@ exactly its own samples:
 - Water connected across polygon boundaries is one group with one fill at the lowest level
   among its polygons (the runtime holds one flat surface per connected body of water); a group
   touching the world edge is an open-water fill, any other a lake fill.
+- A river polygon narrower than `min_river_width_cells` terrain cells is not imported: no bed,
+  no fill, its samples keep the elevation model. A river holds one flat level (its lowest
+  vertex), so a narrow river climbing its valley was carved into a trench, and at a few
+  samples across it broke into fragments. Lakes are not subject to this rule.
+
+A polygon's width is its inscribed width: twice the largest distance from a point inside it to
+its boundary (the diameter of its largest inscribed circle), over the whole polygon, not the part
+inside the world. GEOS's maximum inscribed circle returns a centre within `width_tolerance_m` of
+the true one, so the true radius lies in `[r, r + tolerance]` of the returned `r`; a river whose
+interval straddles the limit stops the import instead of being decided either way.
 
 Everything here is deterministic: inputs are sorted, ties are broken by sample index, and no
 step depends on hash or thread order.
@@ -41,6 +51,8 @@ class WaterRule:
     shoal_depth_cap_m: float = 1.0
     shore_margin_m: float = 0.05
     min_samples: int = 4
+    min_river_width_cells: float = 2.0
+    width_tolerance_m: float = 0.001
 
 
 @dataclass(frozen=True)
@@ -125,6 +137,27 @@ def synthetic_bed(level_m, distance_m, cap_m, rule: WaterRule) -> np.ndarray:
     return np.where(bed < surface, bed, np.nextafter(surface, np.float32(-np.inf)))
 
 
+def inscribed_width_m(geometry, tolerance_m: float) -> float:
+    """Twice the radius GEOS's maximum inscribed circle returns: a lower bound on the polygon's
+    inscribed width, at most `2 * tolerance_m` below it."""
+    return 2.0 * float(shapely.maximum_inscribed_circle(geometry, tolerance=tolerance_m).length)
+
+
+def river_too_narrow(body: WaterBody, cell_m: float, rule: WaterRule) -> tuple[bool, float]:
+    """Whether a river's inscribed width is under `min_river_width_cells` cells, and the width.
+    Raises when the tolerance leaves the answer open (the true width may lie on either side)."""
+    limit = rule.min_river_width_cells * cell_m
+    width = inscribed_width_m(body.geometry, rule.width_tolerance_m)
+    if width >= limit:
+        return False, width
+    if width + 2.0 * rule.width_tolerance_m < limit:
+        return True, width
+    raise ValueError(
+        f"river {body.key}: inscribed width {width:.4f} m is within the "
+        f"{rule.width_tolerance_m} m tolerance of the {limit} m limit"
+    )
+
+
 def sort_bodies(bodies: list[WaterBody]) -> list[WaterBody]:
     # The lower level owns a sample two polygons share; kind and key break ties.
     return sorted(bodies, key=lambda b: (b.level_mm, b.kind != "lake", b.key))
@@ -192,7 +225,18 @@ def apply_hydrography(
     if dem.shape != (grid.height, grid.width):
         raise ValueError(f"DEM shape {dem.shape} does not match the sample grid")
     world = grid.box()
-    bodies = sort_bodies([b for b in bodies if b.geometry.intersects(world)])
+    bodies = [b for b in bodies if b.geometry.intersects(world)]
+    bodies_in_world = len(bodies)
+    river_width = {}
+    narrow_rivers = []
+    for body in sorted(bodies, key=lambda b: b.key):
+        if body.kind == "river":
+            narrow, width = river_too_narrow(body, grid.cell_m, rule)
+            river_width[body.key] = width
+            if narrow:
+                narrow_rivers.append({"key": body.key, "inscribed_width_m": width})
+    narrow_keys = {river["key"] for river in narrow_rivers}
+    bodies = sort_bodies([b for b in bodies if b.key not in narrow_keys])
     body_of = np.full(dem.shape, LAND, dtype=np.int32)
     body_samples = []
     for index, body in enumerate(bodies):
@@ -269,7 +313,8 @@ def apply_hydrography(
 
     report = {
         "rule": rule.__dict__,
-        "bodies_in_world": len(bodies),
+        "bodies_in_world": bodies_in_world,
+        "rivers_dropped_narrow": narrow_rivers,
         "bodies_dropped_under_min_samples": len(dropped),
         "dropped_keys": dropped,
         "fragment_samples_returned_to_land": fragment_samples,
@@ -291,6 +336,7 @@ def apply_hydrography(
                 "samples_water": int(np.count_nonzero(body_of == k)),
                 "overlap_samples": body_samples[k]["overlap_samples"],
                 "dropped": b.key in dropped,
+                "inscribed_width_m": river_width.get(b.key),
                 "clipped_area_m2": float(shapely.intersection(b.geometry, world).area),
                 "clipped_perimeter_m": float(shapely.intersection(b.geometry, world).length),
                 "cut_by_world_edge": bool(not b.geometry.within(world)),

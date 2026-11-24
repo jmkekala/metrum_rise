@@ -19,7 +19,7 @@ which is world X = E - centre_e and world Z = centre_n - N (north is -Z).
 
 `--hydrography` adds lakes and rivers from a national hydrography GeoPackage in the same
 coordinate system (layers `jarvi`, `virtavesialue`, `matalikko`); see `dem_water.py` for
-the bed, shore and fill rules. The output is deterministic: the same inputs give the same
+the bed, shore and fill rules and the river width rule. The output is deterministic: the same inputs give the same
 bytes.
 """
 
@@ -505,6 +505,12 @@ def parse_args() -> argparse.Namespace:
         help="Height above its water that a shore or sill sample is raised to at least",
     )
     parser.add_argument(
+        "--min-river-width-cells",
+        type=float,
+        default=2.0,
+        help="A river polygon whose inscribed width is under this many terrain cells is not imported",
+    )
+    parser.add_argument(
         "--report-dir",
         help="Directory for water_report.json and water_labels.npz (per-sample polygon and group)",
     )
@@ -590,6 +596,7 @@ def main() -> int:
             depth_cap_m=args.lake_depth_cap_m,
             shoal_depth_cap_m=args.shoal_depth_cap_m,
             shore_margin_m=args.shore_margin_m,
+            min_river_width_cells=args.min_river_width_cells,
         )
         grid = SampleGrid(
             west_e=min_e,
@@ -621,6 +628,8 @@ def main() -> int:
         elevation_m = water.heights
         print(
             f"water: {water.report['bodies_in_world']} polygons, "
+            f"{len(water.report['rivers_dropped_narrow'])} narrow rivers not imported "
+            f"({', '.join(f"{r['key']} {r['inscribed_width_m']:.2f} m" for r in water.report['rivers_dropped_narrow'])}), "
             f"{water.report['bodies_dropped_under_min_samples']} dropped, "
             f"{len(lake_fills)} lake fills, {len(open_water_fills)} open-water fills, "
             f"{water.report['water_samples']} water samples"
