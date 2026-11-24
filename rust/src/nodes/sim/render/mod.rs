@@ -41,6 +41,8 @@ pub(crate) mod walker_visual;
 pub mod water;
 /// The water a view ray first comes down onto, for the planar reflection's mirror planes.
 pub(crate) mod water_reflection;
+/// The resident water patches' hull, for the planar reflection's screen rectangle (`RENDER-76`).
+pub(crate) mod water_screen_hull;
 /// Zoning and environment rendering (image overlays).
 pub mod zoning;
 pub(crate) mod zoning_mask;

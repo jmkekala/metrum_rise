@@ -36,6 +36,17 @@ class CountedPatches extends RefCounted:
 		reads += 1
 		return book.get(key, default)
 
+	func has(key: Variant) -> bool:
+		reads += 1
+		return book.has(key)
+
+# The water renderer's resident patches as the reflection's screen rectangle reads them (`RENDER-76`).
+class WaterSource extends Node3D:
+	var patches := CountedPatches.new()
+	var resident_patch_lookup := CountedPatches.new()
+	var terrain_patch_span_m := 256.0
+	var terrain_world_size := Vector2.ZERO
+
 class VoteSource extends Node:
 	var sources := PackedInt64Array([0, 0, 1])
 	var marches := 0
@@ -82,6 +93,7 @@ func _run() -> void:
 	_test_vote_cache()
 	_test_fixed_target()
 	_test_proxy_events()
+	_test_rect_kept()
 	# The mirror clip lives in the surface include the terrain shader pulls in.
 	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader") \
 		+ FileAccess.get_file_as_string("res://scripts/shaders/terrain_surface.gdshaderinc")
@@ -228,6 +240,101 @@ func _test_proxy_events() -> void:
 	_expect(renderer._proxies.is_empty(), "a reset must free every proxy")
 	renderer.free()
 	terrain.free()
+
+# The screen rectangle is kept by the water patches' events (`RENDER-76`): with nothing changed it
+# reads no patch, a camera move projects the hull's outline (and a few patches by the near plane's
+# cut), not every resident patch, and every rectangle equals the walk over every resident patch.
+func _test_rect_kept() -> void:
+	const SIDE := 60
+	const SPAN := 256.0
+	var renderer := Reflection.new()
+	var water := WaterSource.new()
+	water.terrain_world_size = Vector2(SIDE * SPAN, SIDE * SPAN)
+	root.add_child(water)
+	var dry := ArrayMesh.new()
+	var wet := PlaneMesh.new()
+	wet.size = Vector2(SPAN, SPAN)
+	# Every terrain patch has a water patch: a dry one's bounds are its centre, a wet one's its
+	# footprint (a lake and a river here). A disc of them is resident, as about a camera.
+	for z in SIDE:
+		for x in SIDE:
+			var key := Vector2i(x, z)
+			if Vector2(key - Vector2i(30, 30)).length() > 27.5:
+				continue
+			var node := MeshInstance3D.new()
+			var lake := Vector2(key - Vector2i(38, 24)).length() < 6.0 or x == 17
+			node.mesh = wet if lake else dry
+			node.position = Vector3((x + 0.5) * SPAN - water.terrain_world_size.x * 0.5, 0.0,
+				(z + 0.5) * SPAN - water.terrain_world_size.y * 0.5)
+			water.add_child(node)
+			water.patches.book[key] = {"node": node}
+			water.resident_patch_lookup.book[key] = true
+	var resident := water.resident_patch_lookup.book.size()
+	renderer._water = water
+	renderer._rect_hull = WaterScreenHull.new()
+	for key: Vector2i in water.resident_patch_lookup.book:
+		renderer._on_water_patch_bounds_changed(key)
+	renderer._sync_rect_hull()
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1920, 1080)
+	root.add_child(viewport)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.near = 0.5
+	camera.far = 20000.0
+	# Poses: high and low obliques along and across the grid (hull edges then lie along the level
+	# lines), a turn, straight down, at the horizon, outside the resident disc looking in.
+	var poses := [
+		[Vector3(120.0, 900.0, 40.0), Vector3(-0.75, -PI * 0.5, 0.0)],
+		[Vector3(120.0, 900.0, 40.0), Vector3(-0.75, 0.0, 0.0)],
+		[Vector3(-1300.0, 60.0, 700.0), Vector3(-0.35, 0.9, 0.0)],
+		[Vector3(400.0, 25.0, -200.0), Vector3(-0.12, 2.4, 0.0)],
+		[Vector3(0.0, 3000.0, 0.0), Vector3(-PI * 0.5, 0.0, 0.0)],
+		[Vector3(2000.0, 200.0, 2000.0), Vector3(0.0, -2.2, 0.0)],
+		[Vector3(9000.0, 1500.0, 0.0), Vector3(-0.3, PI * 0.5, 0.0)],
+	]
+	for pose: Array in poses:
+		camera.position = pose[0]
+		camera.rotation = pose[1]
+		for plane: float in [0.0, 12.5]:
+			var walked: Rect2 = renderer._water_screen_rect_walk(camera, plane)
+			water.resident_patch_lookup.reads = 0
+			water.patches.reads = 0
+			renderer._rect_points = 0
+			renderer._rect_walks = 0
+			var kept: Rect2 = renderer._water_screen_rect(camera, plane, 0)
+			_expect(kept == walked, "pose %s plane %.1f: kept %s, walk %s" % [pose, plane, kept, walked])
+			_expect(renderer._rect_walks == 0,
+				"pose %s plane %.1f: the hull must settle the rectangle without the walk" % [pose, plane])
+			var reads: int = water.resident_patch_lookup.reads + water.patches.reads
+			_expect(reads <= 60 and renderer._rect_points < resident / 4,
+				"pose %s: a camera move read %d of %d resident patches and projected %d points"
+					% [pose, reads, resident, renderer._rect_points])
+			# Nothing changed: no patch read, no point projected.
+			water.resident_patch_lookup.reads = 0
+			water.patches.reads = 0
+			renderer._rect_points = 0
+			for frame in 10:
+				_expect(renderer._water_screen_rect(camera, plane, 0) == walked, "a kept frame must repeat the rectangle")
+			_expect(water.resident_patch_lookup.reads + water.patches.reads == 0 and renderer._rect_points == 0,
+				"frames without a change must read no patch (read %d, projected %d)"
+					% [water.resident_patch_lookup.reads + water.patches.reads, renderer._rect_points])
+	# Events: the lake drains from its edge and patches leave; the rectangle follows exactly.
+	camera.position = Vector3(120.0, 900.0, 40.0)
+	camera.rotation = Vector3(-0.75, -PI * 0.5, 0.0)
+	for key: Vector2i in [Vector2i(44, 24), Vector2i(57, 30), Vector2i(30, 3), Vector2i(31, 3)]:
+		water.resident_patch_lookup.book.erase(key)
+		renderer._on_water_patch_bounds_changed(key)
+	(water.patches.book[Vector2i(38, 24)]["node"] as MeshInstance3D).mesh = dry
+	renderer._on_water_patch_bounds_changed(Vector2i(38, 24))
+	renderer._sync_rect_hull()
+	_expect(renderer._water_screen_rect(camera, 0.0, 0) == renderer._water_screen_rect_walk(camera, 0.0),
+		"the rectangle must follow residency and bounds events")
+	renderer._on_water_patches_cleared()
+	_expect(renderer._water_screen_rect(camera, 0.0, 0) == Rect2(), "no patch held, no rectangle")
+	renderer.free()
+	water.free()
+	viewport.free()
 
 # The mirror's target keeps one size across crops (`RENDER-27` WR1a), and every texel of the
 # crop's block, its top left, sees the ray it saw in a target of the crop's own size.

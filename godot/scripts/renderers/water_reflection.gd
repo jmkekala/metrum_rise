@@ -82,6 +82,30 @@ var _vote_offsets := Vector2.ZERO
 # took, for the perf channel.
 var _vote_us := 0
 var _rect_us := 0
+# The resident water patches' bounds and their hull, kept in Rust by water.gd's events
+# (`RENDER-76`): patch keys marked since the last frame, a count of the frames that changed the
+# book (a side may rest on a patch inside the hull), the boundary as last read and its revision, and
+# per mirror the inputs of its last rectangle with the rectangle ([book epoch, plane, screen,
+# transform, camera transform, projection, near, rectangle]).
+var _rect_hull: WaterScreenHull
+var _rect_dirty := {}
+var _rect_epoch := 0
+var _rect_boundary := PackedVector2Array()
+var _rect_revision := -1
+var _rect_cache: Array = [[], []]
+# The running extremes of the rectangle being made, in screen shares.
+var _rect_lo := Vector2.ZERO
+var _rect_hi := Vector2.ZERO
+# Points the last frame's rectangles projected, and its rectangles that walked every resident
+# patch, for the perf channel; walks since setup.
+var _rect_points := 0
+var _rect_walks := 0
+var _rect_walks_total := 0
+# METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run): every rectangle is made the old way too,
+# by the walk; rectangles checked, and of them unequal.
+var _rect_checking := false
+var _rect_checked := 0
+var _rect_differences := 0
 var _proxy_us := 0
 var _scaffold_us := 0
 # Per vote ray, the water level it last came down onto, or NAN.
@@ -121,6 +145,12 @@ func setup(
 	if water != null:
 		_terrain = water.get_node_or_null("../Terrain")
 		_vegetation = water.get_node_or_null("../Vegetation")
+		_rect_hull = WaterScreenHull.new()
+		water.patch_bounds_changed.connect(_on_water_patch_bounds_changed)
+		water.patches_cleared.connect(_on_water_patches_cleared)
+		# Patches made resident before this connection sent their events.
+		for key: Vector2i in water.resident_patch_lookup:
+			_rect_dirty[key] = true
 	if _terrain != null:
 		_terrain.patch_render_will_change.connect(_on_terrain_patch_will_change)
 		_terrain.patch_visibility_changed.connect(_on_terrain_patch_visibility_changed)
@@ -147,6 +177,7 @@ func reflection_scenario() -> RID:
 
 func _ready() -> void:
 	add_to_group("water_reflections")
+	_rect_checking = OS.get_environment("METRUM_WATER_RECT_CHECK") == "1"
 	_world = World3D.new()
 	_link_vegetation()
 	_building_proxies = ReflectionSources.new()
@@ -205,6 +236,8 @@ func _update_before_draw() -> void:
 	var start_us := Time.get_ticks_usec()
 	_vote_us = 0
 	_rect_us = 0
+	_rect_points = 0
+	_rect_walks = 0
 	_proxy_us = 0
 	_proxy_visits = 0
 	_update_mirrors()
@@ -212,6 +245,8 @@ func _update_before_draw() -> void:
 		PerfDebug.record("water_reflection", float(Time.get_ticks_usec() - start_us) / 1000.0, {
 			"vote_ms": float(_vote_us) / 1000.0,
 			"rect_ms": float(_rect_us) / 1000.0,
+			"rect_points": _rect_points,
+			"rect_walks": _rect_walks,
 			"proxy_ms": float(_proxy_us) / 1000.0,
 			"scaffold_ms": float(_scaffold_us) / 1000.0,
 			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3]),
@@ -240,6 +275,9 @@ func _update_mirrors() -> void:
 		var proxy_start := Time.get_ticks_usec()
 		_sync_proxies()
 		_proxy_us = Time.get_ticks_usec() - proxy_start
+	var hull_start := Time.get_ticks_usec()
+	_sync_rect_hull()
+	_rect_us = Time.get_ticks_usec() - hull_start
 	var synced := false
 	for index in MIRROR_COUNT:
 		var mirror: Array = _mirrors[index]
@@ -249,7 +287,7 @@ func _update_mirrors() -> void:
 			continue
 		mirror[2] = level + WATER_SURFACE_LIFT_M
 		var rect_start := Time.get_ticks_usec()
-		var crop := _water_screen_rect(main_camera, mirror[2])
+		var crop := _water_screen_rect(main_camera, mirror[2], index)
 		_rect_us += Time.get_ticks_usec() - rect_start
 		if not crop.has_area():
 			_set_active(mirror, false)
@@ -343,57 +381,230 @@ func _place_camera(
 		Vector4(0.0, 0.0, float(size.x) / float(target.x), float(size.y) / float(target.y)))
 
 # Screen rectangle, in [0, 1], covering the water: the union of the resident water patches laid
-# on the plane at `plane_y`, each clipped to the space in front of the camera.
-# Patch bounds are coarse, so the rectangle can include land, never exclude water. Empty when
-# no such patch is in front of the camera. O(resident water patches) per frame: a water patch is
-# drawn only while resident, and the built ones that left are only hidden, so a walk over every
-# built patch grew with the distance travelled (`RENDER-75`).
-func _water_screen_rect(camera: Camera3D, plane_y: float) -> Rect2:
+# on the plane at `plane_y`, each clipped to the space in front of the camera, with room for the
+# ripples. Patch bounds are coarse (a dry patch's is its centre), so the rectangle can include land,
+# never exclude water. Empty when no such patch is in front of the camera. It crops the mirror's
+# frustum and the block of its target the water samples (_place_camera), and an empty one turns the
+# mirror off: a pixel of difference moves every texel of the reflection, so it is kept exactly
+# equal to the walk over every resident patch (_water_screen_rect_walk), not approximated.
+#
+# Cost (`RENDER-76`): O(1) when no water patch event came, and the plane, the screen and the camera
+# are as at this mirror's last rectangle. Otherwise O(h) projections, h the hull's boundary corners (the resident
+# set's outline: it does not grow with the patches inside it), plus, where the near plane cuts the
+# hull, at most 27 patches around the cut's ends and the camera's foot; the walk, O(resident
+# patches), only when those cannot settle a side (counted as `rect_walks`; none on the flights).
+func _water_screen_rect(camera: Camera3D, plane_y: float, index: int) -> Rect2:
 	if _water == null:
 		return Rect2(0.0, 0.0, 1.0, 1.0)
+	var rect := (_water_screen_rect_kept(camera, plane_y, index) if _rect_hull != null
+		else _water_screen_rect_walk(camera, plane_y))
+	if _rect_checking:
+		_rect_checked += 1
+		var walked := _water_screen_rect_walk(camera, plane_y)
+		if walked != rect:
+			_rect_differences += 1
+			MetrumDebug.log("terrain", "water rect differs: kept %s walk %s" % [rect, walked])
+	return rect
+
+# The rectangle from the resident patches' hull. A perspective is a projective map on the half-plane
+# in front of the camera (its divisor, the depth, is positive there), so each screen coordinate is
+# monotone along every segment there and takes its extremes over a convex region at the region's
+# vertices. The walk's points (the patches' corners in front, and where their edges cross the
+# clipping line) all lie in the hull cut to that half-plane, whose vertices are the hull's corners
+# in front (each one a patch's corner the walk projects too) and the two points where the hull's
+# boundary crosses the clipping line. A side is settled exactly when the corners give an extreme
+# beyond what those two crossings can (the walk's own point attains it), or when a point of the
+# walk's own set reaches the screen's edge there (the side is clamped to the margin past it either
+# way). The hull keeps collinear boundary corners, so a side whose extreme lies along a hull edge
+# takes the float the walk would take from any of them.
+func _water_screen_rect_kept(camera: Camera3D, plane_y: float, index: int) -> Rect2:
+	var revision := _rect_hull.revision()
+	if revision != _rect_revision:
+		_rect_boundary = _rect_hull.boundary()
+		_rect_revision = revision
+	var screen := camera.get_viewport().get_visible_rect().size
+	var transform := camera.global_transform
+	var view := camera.get_camera_transform()
+	var projection := camera.get_camera_projection()
+	var cache: Array = _rect_cache[index]
+	if (not cache.is_empty() and cache[0] == _rect_epoch and cache[1] == plane_y
+			and cache[2] == screen and cache[3] == transform and cache[4] == view
+			and cache[5] == projection and cache[6] == camera.near):
+		return cache[7]
+	var forward := -transform.basis.z
+	var eye := camera.global_position
+	var near_m := camera.near * 1.5
+	_rect_lo = Vector2(INF, INF)
+	_rect_hi = Vector2(-INF, -INF)
+	var cut_lo := Vector2(INF, INF)
+	var cut_hi := Vector2(-INF, -INF)
+	var cuts := PackedVector3Array()
+	var count := _rect_boundary.size()
+	var previous := Vector3.ZERO
+	var previous_d := 0.0
+	var first := Vector3.ZERO
+	var first_d := 0.0
+	for i in count + 1:
+		var a := first
+		var da := first_d
+		if i < count:
+			var corner := _rect_boundary[i]
+			a = Vector3(corner.x, plane_y, corner.y)
+			da = (a - eye).dot(forward) - near_m
+			if da >= 0.0:
+				var point := camera.unproject_position(a) / screen
+				_rect_lo = _rect_lo.min(point)
+				_rect_hi = _rect_hi.max(point)
+				_rect_points += 1
+			if i == 0:
+				first = a
+				first_d = da
+		if i > 0 and (da >= 0.0) != (previous_d >= 0.0):
+			var cut := previous.lerp(a, previous_d / (previous_d - da))
+			var point := camera.unproject_position(cut) / screen
+			cut_lo = cut_lo.min(point)
+			cut_hi = cut_hi.max(point)
+			cuts.append(cut)
+			_rect_points += 1
+		previous = a
+		previous_d = da
+	if not cuts.is_empty() and not _rect_settled(cut_lo, cut_hi):
+		# The patches about the cut's ends and the camera's foot add the walk's own points there.
+		cuts.append(eye)
+		for cut in cuts:
+			_add_patches_near(cut, camera, plane_y, eye, forward, near_m, screen)
+		if not _rect_settled(cut_lo, cut_hi):
+			_rect_walks += 1
+			_rect_walks_total += 1
+			var walked := _water_screen_rect_walk(camera, plane_y)
+			_rect_cache[index] = [_rect_epoch, plane_y, screen, transform, view, projection,
+				camera.near, walked]
+			return walked
+	var rect := _rect_from_extremes()
+	_rect_cache[index] = [_rect_epoch, plane_y, screen, transform, view, projection, camera.near,
+		rect]
+	return rect
+
+# Whether every side of the running extremes is the walk's (see _water_screen_rect_kept), given the
+# extremes of where the hull's boundary crosses the clipping line. Slack covers the crossings' own
+# rounding.
+func _rect_settled(cut_lo: Vector2, cut_hi: Vector2) -> bool:
+	for axis in 2:
+		var high := _rect_hi[axis]
+		var low := _rect_lo[axis]
+		if not (high >= 1.0 or high > cut_hi[axis] + 1.0e-4 * maxf(1.0, absf(cut_hi[axis]))):
+			return false
+		if not (low <= 0.0 or low < cut_lo[axis] - 1.0e-4 * maxf(1.0, absf(cut_lo[axis]))):
+			return false
+	return true
+
+# Adds the walk's points of the resident patches in the 3 x 3 patch keys about `point`.
+func _add_patches_near(
+	point: Vector3, camera: Camera3D, plane_y: float, eye: Vector3, forward: Vector3, near_m: float,
+	screen: Vector2
+) -> void:
+	var span: float = _water.terrain_patch_span_m
+	if span <= 0.0:
+		return
+	var half: Vector2 = _water.terrain_world_size * 0.5
+	var centre := Vector2i(int(floor((point.x + half.x) / span)), int(floor((point.z + half.y) / span)))
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			var key := centre + Vector2i(dx, dz)
+			if _water.resident_patch_lookup.has(key):
+				_add_patch_points(key, camera, plane_y, eye, forward, near_m, screen)
+
+# The rectangle the walk, as before `RENDER-76`: every resident water patch, projected. O(resident
+# water patches). A water patch is drawn only while resident, and the built ones that left are only
+# hidden, so a walk over every built patch grew with the distance travelled (`RENDER-75`).
+func _water_screen_rect_walk(camera: Camera3D, plane_y: float) -> Rect2:
 	var screen := camera.get_viewport().get_visible_rect().size
 	var forward := -camera.global_transform.basis.z
 	var eye := camera.global_position
 	var near_m := camera.near * 1.5
-	var lo := Vector2(INF, INF)
-	var hi := Vector2(-INF, -INF)
+	_rect_lo = Vector2(INF, INF)
+	_rect_hi = Vector2(-INF, -INF)
 	for key: Vector2i in _water.resident_patch_lookup:
-		var node: MeshInstance3D = (_water.patches.get(key, {}) as Dictionary).get("node")
-		if node == null or not node.visible:
-			continue
-		# The mesh is flat; its height comes from the shader, so its bounds say nothing of level.
-		var bounds := node.global_transform * node.get_aabb()
-		var corners: Array[Vector3] = [
-			Vector3(bounds.position.x, plane_y, bounds.position.z),
-			Vector3(bounds.end.x, plane_y, bounds.position.z),
-			Vector3(bounds.end.x, plane_y, bounds.end.z),
-			Vector3(bounds.position.x, plane_y, bounds.end.z),
-		]
-		# Sutherland-Hodgman against the plane just in front of the near plane.
-		for i in corners.size():
-			var a := corners[i]
-			var b := corners[(i + 1) % corners.size()]
-			var da := (a - eye).dot(forward) - near_m
-			var db := (b - eye).dot(forward) - near_m
-			if da >= 0.0:
-				var point := camera.unproject_position(a) / screen
-				lo = lo.min(point)
-				hi = hi.max(point)
-			if (da >= 0.0) != (db >= 0.0):
-				var point := camera.unproject_position(a.lerp(b, da / (da - db))) / screen
-				lo = lo.min(point)
-				hi = hi.max(point)
+		_add_patch_points(key, camera, plane_y, eye, forward, near_m, screen)
+	return _rect_from_extremes()
+
+# Projects patch `key`'s bounds laid on the plane, clipped to the space in front of the camera,
+# into the running extremes.
+func _add_patch_points(
+	key: Vector2i, camera: Camera3D, plane_y: float, eye: Vector3, forward: Vector3, near_m: float,
+	screen: Vector2
+) -> void:
+	var node: MeshInstance3D = (_water.patches.get(key, {}) as Dictionary).get("node")
+	if node == null or not node.visible:
+		return
+	# The mesh is flat; its height comes from the shader, so its bounds say nothing of level.
+	var bounds := node.global_transform * node.get_aabb()
+	var corners: Array[Vector3] = [
+		Vector3(bounds.position.x, plane_y, bounds.position.z),
+		Vector3(bounds.end.x, plane_y, bounds.position.z),
+		Vector3(bounds.end.x, plane_y, bounds.end.z),
+		Vector3(bounds.position.x, plane_y, bounds.end.z),
+	]
+	# Sutherland-Hodgman against the plane just in front of the near plane.
+	for i in corners.size():
+		var a := corners[i]
+		var b := corners[(i + 1) % corners.size()]
+		var da := (a - eye).dot(forward) - near_m
+		var db := (b - eye).dot(forward) - near_m
+		if da >= 0.0:
+			var point := camera.unproject_position(a) / screen
+			_rect_lo = _rect_lo.min(point)
+			_rect_hi = _rect_hi.max(point)
+		if (da >= 0.0) != (db >= 0.0):
+			var point := camera.unproject_position(a.lerp(b, da / (da - db))) / screen
+			_rect_lo = _rect_lo.min(point)
+			_rect_hi = _rect_hi.max(point)
+	_rect_points += 4
+
+# The running extremes as the mirror's crop: room for the ripples' bend, kept past the screen's own
+# edges too: the water fades the reflection out over the outer 2% of the map
+# (water_planar_reflection), and with the rectangle clipped to the screen that fade showed as an
+# unreflected sliver along each side.
+func _rect_from_extremes() -> Rect2:
+	var lo := _rect_lo
+	var hi := _rect_hi
 	if lo.x > hi.x:
 		return Rect2()
-	# Room for the ripples' bend, kept past the screen's own edges too: the water fades the
-	# reflection out over the outer 2% of the map (water_planar_reflection), and with the
-	# rectangle clipped to the screen that fade showed as an unreflected sliver along each side.
 	var margin := Vector2(CROP_MARGIN, CROP_MARGIN)
 	lo = (lo - margin).max(-margin)
 	hi = (hi + margin).min(Vector2.ONE + margin)
 	if lo.x >= hi.x or lo.y >= hi.y:
 		return Rect2()
 	return Rect2(lo, hi - lo)
+
+# A water patch's part in the rectangle may have changed (water.gd's events); the next frame brings
+# the hull in step. A dict, so a patch's several events in a frame cost one update.
+func _on_water_patch_bounds_changed(key: Vector2i) -> void:
+	_rect_dirty[key] = true
+
+func _on_water_patches_cleared() -> void:
+	_rect_dirty.clear()
+	_rect_epoch += 1
+	if _rect_hull != null:
+		_rect_hull.clear()
+
+# Brings the hull to the marked patches: a resident, shown patch holds its bounds on the ground
+# (the walk's condition, and its arithmetic for the bounds); any other holds none. O(patches marked
+# since the last frame), each O(log corners) in Rust. The bounds are read in world space once: the
+# water node never moves.
+func _sync_rect_hull() -> void:
+	if _rect_hull == null or _rect_dirty.is_empty():
+		return
+	_rect_epoch += 1
+	for key: Vector2i in _rect_dirty:
+		var node: MeshInstance3D = (_water.patches.get(key, {}) as Dictionary).get("node")
+		if node != null and node.visible and _water.resident_patch_lookup.has(key):
+			var bounds := node.global_transform * node.get_aabb()
+			_rect_hull.set_patch(key, Vector2(bounds.position.x, bounds.position.z),
+				Vector2(bounds.end.x, bounds.end.z))
+		else:
+			_rect_hull.remove_patch(key)
+	_rect_dirty.clear()
 
 func _sync_key_light() -> void:
 	_reflection_sun.visible = _sun.visible

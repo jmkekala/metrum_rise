@@ -9,6 +9,12 @@
 ##   clear_water_patch_mesh_cache(), is_water_dirty(), acknowledge_water_patches()
 extends Node3D
 
+## A patch's part in the water reflection's screen rectangle may have changed (`RENDER-76`): it
+## became resident or left, was shown or hidden, moved, took another mesh (its bounds) or was freed.
+signal patch_bounds_changed(key: Vector2i)
+## Every patch was freed at once (`_clear_patches`).
+signal patches_cleared
+
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -565,6 +571,8 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		0.0,
 		float(patch_data["world_origin_z"]) + world_size_z * 0.5
 	)
+	# A new mesh above (dry) or a new position.
+	patch_bounds_changed.emit(key)
 	if _terrain_debug_enabled:
 		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if total_elapsed_ms >= 2.0:
@@ -622,6 +630,7 @@ func stream_activate(key: Vector2i, step: int) -> Vector2i:
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = true
 	resident_patch_lookup[key] = true
+	patch_bounds_changed.emit(key)
 	if int(patch.get("depth_nonzero_count", 0)) > 0:
 		_queue_patch_mesh_refresh(key, int(patch.get("lod_step", 1)))
 	_queue_height_texture_rebind(key)
@@ -639,6 +648,7 @@ func stream_deactivate(key: Vector2i) -> void:
 		var patch_node: MeshInstance3D = patches[key]["node"]
 		patch_node.visible = false
 		_queue_terrain_patch_binding(key)
+	patch_bounds_changed.emit(key)
 
 ## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers -1, or -2 when nothing was
 ## built (its payload went).
@@ -648,6 +658,7 @@ func stream_build(key: Vector2i, step: int) -> int:
 	if not patches.has(key):
 		return -2
 	(patches[key]["node"] as MeshInstance3D).visible = false
+	patch_bounds_changed.emit(key)
 	return -1
 
 ## Gives resident `key` the mesh of step `step`.
@@ -664,6 +675,7 @@ func _remove_patch(key: Vector2i) -> void:
 	mesh_refresh_requested_lod.erase(key)
 	mesh_pending_lod.erase(key)
 	_queue_terrain_patch_binding(key)
+	patch_bounds_changed.emit(key)
 	# The streaming core wants it again while its terrain patch is resident.
 	_stream.water_patch_removed(key)
 	_water_debug_patch_removes += 1
@@ -674,6 +686,7 @@ func _clear_patches() -> void:
 		_release_water_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
+	patches_cleared.emit()
 	patch_payload_requested.clear()
 	patch_payload_ready.clear()
 	pending_water_ack_states = PackedInt64Array()
@@ -1195,6 +1208,7 @@ func _set_patch_mesh_lod(key: Vector2i, target_lod_step: int) -> void:
 		_queue_patch_mesh_refresh(key, target_lod_step)
 	else:
 		patch_node.mesh = _empty_water_mesh_resource()
+		patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = mesh_stats
 
 func _queue_patch_mesh_refresh(key: Vector2i, lod_step: int) -> void:
@@ -1450,6 +1464,7 @@ func _submit_water_patch_mesh_requests(
 			if int(patch.get("depth_nonzero_count", 0)) <= 0:
 				var patch_node: MeshInstance3D = patch["node"]
 				patch_node.mesh = _empty_water_mesh_resource()
+				patch_bounds_changed.emit(key)
 				patch["mesh_stats"] = _empty_water_mesh_stats(int(patch.get("lod_step", 1)))
 				mesh_pending_lod.erase(key)
 				dry_count += 1
@@ -1686,6 +1701,7 @@ func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.mesh = _baked_water_patch_mesh(mesh_data)
+	patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = _water_mesh_stats_from_baked_data(mesh_data)
 	return true
 

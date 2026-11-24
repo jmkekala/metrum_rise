@@ -90,6 +90,9 @@
 ## turn. Every sample records the process's memory at its end (`memory`).
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
 ## terrain proxies against the patches the frame drew (`proxies`).
+## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
+## rectangle the old way too) records per row the reflection's running counts `rect_check`:
+## rectangles checked, of them unequal to the walk's, walks the kept hull fell back to.
 ## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
 ## timestamps) every sample records
 ## `gpu_passes`: per pass, named by its starting mark and that mark's occurrence in the frame, the
@@ -1267,6 +1270,9 @@ func _row(index: int) -> Dictionary:
 			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water"))}
 	if _proxy_checking:
 		row["proxies"] = _proxy_check
+	if _reflection != null and bool(_reflection.get("_rect_checking")):
+		row["rect_check"] = [_reflection.get("_rect_checked"), _reflection.get("_rect_differences"),
+			_reflection.get("_rect_walks_total")]
 	_previous_streams = streams
 	_last_us = now_us
 	return row
