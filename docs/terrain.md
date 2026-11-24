@@ -12254,6 +12254,25 @@ tools/stream_benchmark.py census "$ARTIFACTS/c30-census.census"
   exceeds `--bar` (3). The zoom phase ends with a far zoom-out (800 m to 40 km in 2.3 s) and a
   far-to-ground zoom (40 km to 10 m in 4.8 s) at the default pitch, each from a settled start
   ([record](#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)).
+- The flight phases (`--phases flight_low`, `flight_high`, `flight_jump`; `TERRAIN-41`, not in the
+  default matrix, one a fresh load of a large world) travel 20 km along x through the world's
+  centre at the game's default pitch, looking along the flight: at keyboard pan speed for an
+  800 m orbit (480 m/s) and a 4,000 m orbit (2,400 m/s), or in one frame. Each records its start's
+  settle from the load's pose (`<phase>_start`), the motion, a 1 s 180-degree turn right after it
+  (`_turn`) and the settle after it (`_settle`). With `--drawn` every row carries the terrain's and
+  water's backlog (`backlog`: waiting, oldest wait in frames, waiting with the payload ready,
+  in-view holes, `StreamDrawnProbe.backlog`); every flight settle point records what a built
+  terrain patch holds (`patch_bytes`: over 16 built patches, the textures only they name, read
+  back, the images and arrays they keep, one layer of the shared mask pages); every sample its
+  end's memory (`memory`: resident set, Godot's static memory, texture, buffer and video memory);
+  every row's terrain counters the built patches (`built`). `METRUM_STREAM_SHOTS=<dir>` (untimed)
+  saves the view at a quarter, half and three quarters of each motion and after its turn. With
+  the perf channel the `terrain` record carries the payload poll's answers (`poll_*`: payloads
+  completed, retried, emitted, stale, Rust's ready queue and requests before the poll, the Rust
+  call's own time) and the payload workers' times since the last poll (`worker_*`: jobs queued and
+  running, payloads built and retried, the queue wait, the sources under the core lock, the masks'
+  bake, the run and the longest run), the payload prune (`payload_prune`) and the built patches
+  ([record](#base-terrain-streaming-on-a-60-km-map-terrain-41-step-1-round-t41a-2026-11-24)).
 - `--still-s` (`METRUM_STREAM_STILL_S`) records the still for that many seconds instead of its
   180 frames, and `--settle-cap-s` (`METRUM_STREAM_SETTLE_CAP_S`) starts a phase unsettled after
   that long (`unsettled_starts` counts them): a city whose running simulation edits it every few
@@ -20321,6 +20340,104 @@ passed, 234 skipped; godot-main and godot-vehicle PASS, no SCRIPT ERROR). Two ea
 gate, on a machine loaded by other lanes' builds (load 20-80), failed one core-busy test each
 (`core_busy_input_test`: the hover found no road; `placement_demolition_test`: "Simulation busy");
 `core_busy_input_test` alone passed three times, and the third gate passed both.
+
+### Base terrain streaming on a 60 km map (`TERRAIN-41` step 1, round T41a, 2026-11-24)
+
+The measurement `TERRAIN-41` asked for before any redesign, on a copy of the 59,904 m Kuopio
+(8 m cells, 13,689 patches of 512 m, no roads or city; SHA-256 `0ad30b43`). Method: the stream
+benchmark's flight phases ([above](#stream-benchmark-perf-23)), one fresh load each, pinned to the
+eight P-cores with eight workers, gamescope headless at 1080p, isolated profile, paused at 10:00;
+`dev` `2995f4fe3` with this round's counters only (no behaviour change). Diagnostic rows, not
+acceptance timing: the counts and the backlog's shape are robust to machine load and repeated
+within a few percent between runs; the milliseconds are not (instrumented runs ran at 43-65 fps,
+uninstrumented ones at 55-95, a parallel world import held one core for part of the session).
+
+```bash
+tools/stream_benchmark.py run --label i-high --out "$ARTIFACTS" --world <kuopio_59904m_8m.sqlite> \
+    --library <release .so> --phases flight_high --detail --drawn     # instrumented
+tools/stream_benchmark.py run --label u-high ... --phases flight_high  # uninstrumented
+tools/stream_benchmark.py flight "$ARTIFACTS/i-high.metrics.json" --every 1
+```
+
+**The chain.** The wanted set is the square about the eye of half-side `min(far, max(8 km, 4 x
+height))` plus a patch of pad and two of hysteresis: 1,482 patches at the 800 m orbit (8 km), 2,809
+at the 4,000 m orbit (11.7 km). Beyond it nothing of the base terrain draws (the far plane is
+`max(9 km, 4 x distance + 1 km)`); there is no coarse stand-in, so a wanted patch not yet installed
+is a hole.
+
+| Step | Measured |
+|---|---|
+| Requests | 32 a frame; the in-flight count reaches 32 only in the first frame of a burst |
+| Payload job (worker) | 0.33-0.42 ms a payload: 0.11-0.19 under the core lock (heights, land cover), 0.21-0.27 the masks' bake; workers 0.04-0.35 busy on average; queue wait about 0; retries (core lock busy) 0-2 % |
+| Poll (64 a frame) | never binding: Rust's ready queue is empty at nearly every poll; 0.02-0.07 ms a frame mean, the Rust call (its dictionaries) most of it |
+| Install | the bound: 1.5-2.8 builds and 2.3-3.7 activations a frame, at every frame rate, with the polled payload ready for 96-99 % of a waiting patch's frames (`ready share`) |
+
+The install ledger (2.0 ms) is full in every frame of a backlog: measured 1.6-1.9 ms, predicted
+1.8-2.0 (the admission compares the larger). Of it, mean ms a frame on the high flight: the stream
+node's units (terrain and water patches) 0.78, the water's mesh pipeline 0.59, the graded book
+0.35 (it follows every terrain residency change though this world has no road), frees 0.11. So
+the patch units (terrain and water together) get about 0.4 of the ledger, and the terrain patches
+installed a second are the frame rate times about 3: 160-250 a second at 43-80 fps.
+
+One terrain build (`_create_patch`, 1,951-patch samples, instrumented): 238-258 us, of which the
+patch's resources 117-147 (a new node, `ShaderMaterial` with its constant parameters, a blank
+67 x 67 RF height image and texture: the pool misses on every build, because a patch that leaves
+is hidden, never released, so the pool never refills), the height upload 22-28, mesh and node
+17-21, mask layer 11-13, per-patch material parameters 31-38, land cover 30-36. The prediction is
+200 us.
+
+| Flight (20 km, looking along it) | Entering | Installed | Backlog | Wanted to drawn (frames) | In-view holes |
+|---|---|---|---|---|---|
+| 800 m orbit, 480 m/s, 41.7 s | 36 / s | keeps up | at most 39 | p50 3, p95 10, max 12 | none |
+| 4,000 m orbit, 2,400 m/s, 8.4 s | 247 / s | 160-170 / s (instrumented) | grows linearly to 540-750 (fewer at more fps) | p50 36-49, p95 453-489, max 816-833 | up to 430-468 at once; 1,960-1,970 runs, median 48-53 frames |
+| 20 km jump at 800 m | 1,482 at once | 156-247 / s | drains in 6-11 s | p50 230, p95 395, max 414 | 165 at once, gone in 2 s |
+| 180 degree turn after the high flight | 1,159 in 1 s | as above | 1,183, then 9-16 s to settle | p50 222-259, p95 384-427 | up to 350-395 |
+
+At 480 m/s the stream keeps up; at 2,400 m/s every second adds 65-90 patches to the backlog (four
+rows: 1.57-1.84 builds a frame at 51-65 fps) and
+the oldest wanted patch waits as long as the flight lasts (8-9 s at its end, 24 s after the turn).
+Holes in view are installed first (their class), so at speed the near ground is present and the
+holes lie at the square's leading edge, 8-12 km ahead: sky shows through them, at the default
+pitch inside the haze band (stills of the high flight, an untimed run, do not tell them from the
+haze; a view towards the horizon was not captured). The settled flights end with nothing missing:
+no `TERRAIN-35` hole on this world without an edit (no patch refused, every settle reached).
+
+**Memory.** Patches that leave are never released (above), so the built set only grows: 2,281
+built after the load and the 10 km move to the flight's start, 3,040-3,140 after the low flight
+or the jump, 5,459 after the high flight and its turn, against 1,482-2,809 wanted. Measured per
+built terrain patch (with its water patch): its own textures 28-44 KB read back (the 67 x 67 RF
+height, the land cover and its spare), one 10.7 KB layer of the mask pages (allocated for every
+patch of the world at the load: 14 pages, 146 MB here), 62 KB of images and arrays kept in system
+memory (the payload), a water patch 36 KB and, when wet, 39 KB of depth texture. As the process
+grows: video memory 82-155 KB a built patch (2.69 GB at 2,281 built, 2.99 GB at 5,459), Godot's
+static memory 150-340 KB, the resident set 240-740 KB. Everything built (13,689) would be
+0.7-1.3 GB more video memory (3.7-4.3 GB in all on this machine) and 1.2-2.8 GB more of Godot's
+static memory than at 5,459 built.
+
+**Not the terrain, measured beside it.** `water_reflection.gd`'s proxy sync walks every built
+terrain patch each frame (`_terrain.patches`, hidden ones included): its pre-draw hook took
+6-7 ms a frame at 2,300-3,100 built patches and 12 ms at 5,459 (instrumented), about 2 us a built
+patch, the largest main-thread item of every flight frame; it grows with the distance travelled
+(`RENDER-75`). The `terrain_stream` record's `terrain_wanted_changes` is a running total, not a
+frame's count (`PatchStream::frame` carries it over).
+
+**Setting changes alone** (the poll 256 a frame and `STREAM_BUDGET_US` 6.0 ms, a local build not
+committed; uninstrumented, one run a side, the parallel import running):
+
+| Leg | 2.0 ms ledger | 6.0 ms ledger |
+|---|---|---|
+| High flight's start (1,951 to build) | 12.9 s, 2.76 builds a frame, p50 18.1 ms | 7.0 s, 7.53 a frame, p50 28.1 ms |
+| High flight, 2,400 m/s | missing max 614, p50 19.3 / p95 23.7 ms, 2 frames over 33 ms | missing max 62, p50 25.3 / p95 33.6 ms, 19 over 33 ms |
+| Turn after it, then settle | missing max 915, settled 11.8 s after | missing max 420, settled 6.5 s after |
+| 20 km jump (1,482 wanted) | 6.3 s, 1.51 builds a frame, p50 12.4 ms | 3.8 s, 3.52 a frame, p50 19.8 ms |
+
+Instrumented with the drawn probe, the 6.0 ms ledger's high flight waits p50 2, p95 5, max 16
+frames from wanted to drawn (default: 36-49, 453-489, 816-833), with at most 63 in-view holes at
+once (430-468), and the turn after it p95 49 frames (384-427).
+The poll's cap changes nothing (it never binds). Three times the ledger keeps the 2,400 m/s flight
+within 62 missing but costs about 6-7 ms of frame time at the median while the backlog lasts: the
+installs a second rise by 1.3-1.9 times, not three, because the frames they lengthen are the
+frames they are counted in.
 
 ## Implemented Runtime Contract
 
