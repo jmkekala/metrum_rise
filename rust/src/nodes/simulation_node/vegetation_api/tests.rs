@@ -610,10 +610,11 @@ fn vegetation_point_plan_reports_each_refusal_without_planting() {
         AddRefusal::TreeSetback,
     );
 
-    core.heightmap.set_height(138, 138, 800.0);
+    // Sample (172, 172) of the 8 m grid lies at (96, 96).
+    core.heightmap.set_height(172, 172, 800.0);
     check(
         &mut core,
-        Vector2::new(100.0, 100.0),
+        Vector2::new(96.0, 96.0),
         6,
         AddRefusal::UnevenGround,
     );
@@ -819,21 +820,23 @@ fn vegetation_clears_under_a_committed_field_and_returns_when_it_is_removed() {
 fn vegetation_patch_revisions_touch_only_changed_plants() {
     let mut core = core();
     let layout = PatchLayout::new(&core);
-    let key = layout.key(1.0, 1.0);
-    let neighbor = layout.key(layout.span + 1.0, 1.0);
+    // A render boundary: the 2,560 m world's 512 m patches meet at x = 256 m.
+    let at = |x: f32, z: f32| Vector2::new(256.0 + x, z);
+    let key = layout.key(at(1.0, 1.0).x, 1.0);
+    let neighbor = layout.key(at(layout.span + 1.0, 1.0).x, 1.0);
     let terrain_generation = core.heightmap.source_generation();
-    assert!(add_at(&mut core, Vector2::ONE, 0));
+    assert!(add_at(&mut core, at(1.0, 1.0), 0));
     assert_eq!(core.vegetation_edits.patch_generation(key), 1);
     assert_eq!(core.vegetation_edits.patch_generation(neighbor), 0);
-    assert_eq!(remove_at(&mut core, Vector2::ONE, 0.01, 0), 1);
+    assert_eq!(remove_at(&mut core, at(1.0, 1.0), 0.01, 0), 1);
     assert_eq!(core.vegetation_edits.patch_generation(key), 2);
     assert_eq!(core.vegetation_edits.patch_generation(neighbor), 0);
     assert_eq!(core.heightmap.source_generation(), terrain_generation);
     // A disc straddling a render boundary touches both patches, not a third one.
-    assert!(add_at(&mut core, Vector2::new(-1.5, 1.0), 1));
-    assert!(add_at(&mut core, Vector2::ONE, 0));
-    let other = layout.key(-1.0, 1.0);
-    assert_eq!(remove_at(&mut core, Vector2::ZERO, 2.0, 0), 2);
+    assert!(add_at(&mut core, at(-1.5, 1.0), 1));
+    assert!(add_at(&mut core, at(1.0, 1.0), 0));
+    let other = layout.key(at(-1.0, 1.0).x, 1.0);
+    assert_eq!(remove_at(&mut core, at(0.0, 0.0), 2.0, 0), 2);
     assert_eq!(core.vegetation_edits.patch_generation(other), 2);
     assert_eq!(core.vegetation_edits.patch_generation(key), 4);
     assert_eq!(core.vegetation_edits.patch_generation(neighbor), 0);
@@ -884,7 +887,7 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
 fn vegetation_save_round_trip_reproduces_scatter() {
     let mut core = core();
     // Full world setup belongs here because this test exercises the actual save bridge.
-    core.create_blank_world_internal(2560.0, 2560.0, 10.0, 640.0, 400.0)
+    core.create_blank_world_internal(2560.0, 2560.0, 8.0, 400.0)
         .unwrap();
     let p = first_candidate(&core, true);
     assert_eq!(remove_at(&mut core, Vector2::new(p.x, p.z), 0.01, 0), 1);

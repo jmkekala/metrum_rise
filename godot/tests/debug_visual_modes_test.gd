@@ -23,7 +23,7 @@ void fragment() {
 """
 # Wide enough that some patches sit past both the residency cull distance and the first LOD
 # distance from a camera in one corner.
-const WORLD_M := 8000.0
+const WORLD_M := 8192.0
 const CAMERA_FAR_M := 3000.0
 const SETTLE_FRAMES := 1200
 
@@ -129,7 +129,7 @@ func _check_renderers(console: Node) -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 20.0, 1000.0, 0.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 0.0), "fixture world must be created")
 	# Flooding the flat world gives the water renderer a patch under every terrain patch.
 	simulation.begin_world_open_water_fill_preview(Vector2.ZERO, 5.0)
 	_expect(simulation.commit_world_open_water_fill_preview(), "fixture water must commit")

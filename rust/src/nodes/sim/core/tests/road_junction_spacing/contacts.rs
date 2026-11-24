@@ -64,7 +64,7 @@ pub(super) fn lay(core: &SimCore, points: &[Vector2]) -> Vec<Vector3> {
 // road ends, the touching ones unjoined) and loaded from a save; its edits record their undo.
 fn dump_city_without(left_out: usize) -> SimCore {
     let mut core = test_core();
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
         .expect("blank world");
     for (_, road) in dump_roads()
         .iter()

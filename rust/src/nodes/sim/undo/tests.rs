@@ -6,15 +6,16 @@ use crate::nodes::sim::core::{CityTreasury, SimCore};
 use crate::simulation::core::config::WorldConfig;
 use godot::prelude::Vector2;
 
-// A 2,000 m world at 10 m: 201 samples a side in 52-sample storage chunks (4 x 4), whose
-// borders fall at x or z = -480, 40 and 560 m.
+// A 2,048 m world at 8 m: 257 samples a side in 64-sample storage chunks (5 x 5, the last row
+// and column one sample), whose borders fall at x or z = -512, 0, 512 and 1,024 m (A2: it was
+// 2,000 m at 10 m, 52-sample chunks, borders at -480, 40 and 560 m).
 fn terrain_core() -> SimCore {
     SimCore {
         treasury: CityTreasury::new(0.0),
         terrain_dirty: false,
         water_dirty: false,
         benchmark_mode: true,
-        ..SimCore::new(WorldConfig::new(2_000.0, 2_000.0, 40.0, 10.0))
+        ..SimCore::new(WorldConfig::new(2_048.0, 2_048.0, 40.0, 10.0))
     }
 }
 
@@ -43,11 +44,11 @@ fn stroke(core: &mut SimCore, points: &[(f32, f32)], strength: f32) {
 
 fn slope(core: &mut SimCore) {
     core.slope_terrain_internal(
-        Vector2::new(560.0, -480.0),
+        Vector2::new(512.0, -512.0),
         110.0,
-        Vector2::new(500.0, -520.0),
+        Vector2::new(452.0, -552.0),
         5.0,
-        Vector2::new(620.0, -440.0),
+        Vector2::new(572.0, -472.0),
         45.0,
         0.5,
     );
@@ -72,11 +73,11 @@ fn terrain_and_water_undo_restore_the_recorded_grids_bitwise() {
     let mut core = terrain_core();
     // The grids before each record, in push order.
     let mut before = vec![grids(&core)];
-    stroke(&mut core, &[(20.0, 20.0), (60.0, 30.0), (100.0, 60.0)], 0.4);
+    stroke(&mut core, &[(-20.0, -20.0), (20.0, -10.0), (60.0, 20.0)], 0.4);
     before.push(grids(&core));
-    core.smooth_terrain_internal(Vector2::new(40.0, 40.0), 120.0, 0.3);
+    core.smooth_terrain_internal(Vector2::new(0.0, 0.0), 120.0, 0.3);
     before.push(grids(&core));
-    core.level_terrain_internal(Vector2::new(-480.0, 40.0), 100.0, 30.0, 0.2);
+    core.level_terrain_internal(Vector2::new(-512.0, 0.0), 100.0, 30.0, 0.2);
     before.push(grids(&core));
     slope(&mut core);
     set_water(&mut core, 1.5);
@@ -84,7 +85,7 @@ fn terrain_and_water_undo_restore_the_recorded_grids_bitwise() {
     core.push_undo_state(true, true, true);
     set_water(&mut core, 2.25);
     let sculpt_record = grids(&core);
-    core.sculpt_terrain_internal(Vector2::new(40.0, 560.0), 70.0, -0.3);
+    core.sculpt_terrain_internal(Vector2::new(0.0, 512.0), 70.0, -0.3);
     assert_eq!(core.undo_stack.len(), 6);
     // Every edit changed the grids, so no restore below holds by accident.
     assert!(before.windows(2).all(|pair| pair[0] != pair[1]));
@@ -104,7 +105,7 @@ fn terrain_and_water_undo_restore_the_recorded_grids_bitwise() {
     assert_eq!(grids(&core), with_water(&before[3]));
 
     // A new stroke across a border, then the slope again: both undo to where they began.
-    stroke(&mut core, &[(40.0, -480.0), (40.0, -440.0)], -0.25);
+    stroke(&mut core, &[(0.0, -512.0), (0.0, -472.0)], -0.25);
     let after_new = grids(&core);
     slope(&mut core);
     assert!(core.undo_action_internal());
@@ -132,9 +133,9 @@ fn terrain_and_water_records_share_the_chunks_later_edits_leave() {
         .map(|index| 0.5 + (index % 5) as f32 * 0.1)
         .collect();
     core.heightmap.replace_source_from_dense(&uneven).unwrap();
-    let stored = 16;
+    let stored = 25;
 
-    // A small sculpt inside the first chunk (samples 27..=33 of 0..52 on each axis).
+    // A small sculpt inside the first chunk (samples 37..=44 of 0..64 on each axis).
     core.sculpt_terrain_internal(Vector2::new(-700.0, -700.0), 30.0, 0.2);
     let first = core.undo_stack[0].terrain.as_ref().unwrap();
     assert_eq!(
@@ -147,15 +148,15 @@ fn terrain_and_water_records_share_the_chunks_later_edits_leave() {
 
     // A sculpt on the corner of four chunks copies those four alone.
     let after_first = core.heightmap.clone_source_dense();
-    core.sculpt_terrain_internal(Vector2::new(40.0, 40.0), 30.0, 0.2);
+    core.sculpt_terrain_internal(Vector2::new(0.0, 0.0), 30.0, 0.2);
     let [first, second] = [0, 1].map(|index| core.undo_stack[index].terrain.as_ref().unwrap());
     assert_eq!(second.clone_dense(), after_first);
     let live = core.heightmap.source_snapshot();
     assert_eq!(second.shared_chunk_counts(&live), (stored - 4, stored));
     assert_eq!(first.shared_chunk_counts(second), (stored - 1, stored));
-    // Each record's own memory: the chunks no newer grid shares, 52 x 52 samples each, where
-    // the dense record held 201 x 201.
-    assert_eq!((width, height), (201, 201));
+    // Each record's own memory: the chunks no newer grid shares, 64 x 64 samples each, where
+    // the dense record held 257 x 257.
+    assert_eq!((width, height), (257, 257));
 
     // Water: the record is the live grid's `Arc` until the next write replaces it.
     set_water(&mut core, 1.5);

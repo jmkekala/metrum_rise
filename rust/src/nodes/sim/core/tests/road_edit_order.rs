@@ -145,7 +145,7 @@ fn committed_with(
     shape: impl Fn(&mut SimCore),
 ) -> SimCore {
     let mut core = test_core();
-    core.create_blank_world_internal(world_m, world_m, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(world_m, world_m, 8.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     shape(&mut core);

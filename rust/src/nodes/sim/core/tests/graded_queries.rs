@@ -70,7 +70,7 @@ fn surface_queries_answer_from_the_graded_surface() {
 }
 
 fn reset_and_commit(core: &mut SimCore, fixture: usize, rise_m: f32) {
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     if rise_m > 0.0 {
@@ -156,7 +156,7 @@ fn steep_t_near_query_matches_the_canonical_grade_at_the_south_reach() {
 fn a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base() {
     let (_, strokes, order) = reference_fixtures().swap_remove(0);
     let mut core = committed(&strokes, &order, false);
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     // A curved base over the tile [0, 64]^2, where the GL0 triangles leave the bilinear base.

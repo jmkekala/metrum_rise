@@ -185,7 +185,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(640.0, 640.0, 8.0, 128.0, 0.0), "fixture world must load")
+	_expect(simulation.create_blank_world(640.0, 640.0, 8.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	# Crossing A at the origin (1 + 1 roads, 150 m arms); crossing B at z = 250, whose 150 m west
 	# arm becomes a divided 2 + 2 road; crossing C at z = -250 of a 1 + 1 road and a one-way road

@@ -39,7 +39,7 @@ func _run() -> void:
 	current_scene = _main
 	await process_frame
 	_simulation = _main.get_node("SimulationNode")
-	_expect(_simulation.create_blank_world(2048.0, 2048.0, 2.0, 512.0, 0.0), "Capture world loads")
+	_expect(_simulation.create_blank_world(2048.0, 2048.0, 2.0, 0.0), "Capture world loads")
 	_simulation.set_simulation_speed(0.0)
 	var input: Node = _main.get_node("InputManager")
 	input._refresh_after_world_load()

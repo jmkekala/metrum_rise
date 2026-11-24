@@ -85,7 +85,7 @@ func _run() -> void:
 	root.add_child(scene)
 	simulation = SimulationNode.new()
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(1024.0, 1024.0, 4.0, 128.0, 0.0), "the blank world loads")
+	_expect(simulation.create_blank_world(1024.0, 1024.0, 4.0, 0.0), "the blank world loads")
 	simulation.set_simulation_speed(0.0)
 	await _cross(STREETS_X, 1)
 	# The commit publishes its chunks after its result: wait until the streets are drawn.

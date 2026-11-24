@@ -8,10 +8,13 @@ extends Node3D
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
-const DEFAULT_WIDTH_KM := 20.0
-const DEFAULT_HEIGHT_KM := 20.0
-const DEFAULT_TERRAIN_CELL_M := 10.0
-const DEFAULT_TERRAIN_CHUNK_M := 512.0
+# The world rules (`WorldConfig::validate`): sides in whole 128 m steps, a 2, 4 or 8 m cell;
+# the 512 m patch and storage chunk are fixed.
+const DEFAULT_WIDTH_M := 20480.0
+const DEFAULT_HEIGHT_M := 20480.0
+const WORLD_SIDE_STEP_M := 128.0
+const TERRAIN_CELLS_M: Array[float] = [2.0, 4.0, 8.0]
+const DEFAULT_TERRAIN_CELL_M := 8.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
 const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
 const MIN_SCULPT_DIAMETER_CELLS := 6.0
@@ -123,8 +126,7 @@ var _new_world_window: Window
 var _new_world_name_edit: LineEdit
 var _new_world_width_spin: SpinBox
 var _new_world_height_spin: SpinBox
-var _new_world_cell_spin: SpinBox
-var _new_world_chunk_spin: SpinBox
+var _new_world_cell_option: OptionButton
 var _new_world_base_spin: SpinBox
 # Read live so the debug console takes effect immediately.
 var _debug_enabled: bool:
@@ -1630,17 +1632,22 @@ func _ensure_new_world_window() -> void:
 	_new_world_name_edit.text = _current_world_name
 	_add_labeled_field(fields, "Name", _new_world_name_edit)
 
-	_new_world_width_spin = _make_spin_box(1.0, 500.0, 0.5, DEFAULT_WIDTH_KM)
-	_add_labeled_field(fields, "Width (km)", _new_world_width_spin)
+	_new_world_width_spin = _make_spin_box(
+		WORLD_SIDE_STEP_M, 500000.0, WORLD_SIDE_STEP_M, DEFAULT_WIDTH_M
+	)
+	_add_labeled_field(fields, "Width (m)", _new_world_width_spin)
 
-	_new_world_height_spin = _make_spin_box(1.0, 500.0, 0.5, DEFAULT_HEIGHT_KM)
-	_add_labeled_field(fields, "Height (km)", _new_world_height_spin)
+	_new_world_height_spin = _make_spin_box(
+		WORLD_SIDE_STEP_M, 500000.0, WORLD_SIDE_STEP_M, DEFAULT_HEIGHT_M
+	)
+	_add_labeled_field(fields, "Height (m)", _new_world_height_spin)
 
-	_new_world_cell_spin = _make_spin_box(1.0, 200.0, 1.0, DEFAULT_TERRAIN_CELL_M)
-	_add_labeled_field(fields, "Terrain cell (m)", _new_world_cell_spin)
-
-	_new_world_chunk_spin = _make_spin_box(64.0, 4096.0, 64.0, DEFAULT_TERRAIN_CHUNK_M)
-	_add_labeled_field(fields, "Terrain chunk (m)", _new_world_chunk_spin)
+	_new_world_cell_option = OptionButton.new()
+	for cell_m in TERRAIN_CELLS_M:
+		_new_world_cell_option.add_item("%d m" % int(cell_m))
+	_new_world_cell_option.select(TERRAIN_CELLS_M.find(DEFAULT_TERRAIN_CELL_M))
+	_new_world_cell_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_add_labeled_field(fields, "Terrain cell", _new_world_cell_option)
 
 	_new_world_base_spin = _make_spin_box(-2000.0, 4000.0, 1.0, DEFAULT_BASE_ELEVATION_M)
 	_add_labeled_field(fields, "Base elevation (m)", _new_world_base_spin)
@@ -1659,6 +1666,9 @@ func _ensure_new_world_window() -> void:
 	create_btn.text = "Create World"
 	create_btn.pressed.connect(_on_new_world_confirmed)
 	buttons.add_child(create_btn)
+
+func _new_world_cell_m() -> float:
+	return TERRAIN_CELLS_M[maxi(_new_world_cell_option.selected, 0)]
 
 func _add_labeled_field(parent: GridContainer, label_text: String, field: Control) -> void:
 	var label := Label.new()
@@ -1726,21 +1736,19 @@ func _on_new_world_confirmed() -> void:
 	if world_name.is_empty():
 		world_name = "Untitled World"
 	_debug_log(
-		"confirm new world name=%s width_km=%.1f height_km=%.1f terrain_cell_m=%.1f terrain_chunk_m=%.1f base_elevation_m=%.1f" % [
+		"confirm new world name=%s width_m=%.1f height_m=%.1f terrain_cell_m=%.1f base_elevation_m=%.1f" % [
 			world_name,
 			float(_new_world_width_spin.value),
 			float(_new_world_height_spin.value),
-			float(_new_world_cell_spin.value),
-			float(_new_world_chunk_spin.value),
+			_new_world_cell_m(),
 			float(_new_world_base_spin.value)
 		]
 	)
 	_cancel_lake_fill_preview("", false)
 	if sim.create_blank_world(
-		float(_new_world_width_spin.value) * 1000.0,
-		float(_new_world_height_spin.value) * 1000.0,
-		float(_new_world_cell_spin.value),
-		float(_new_world_chunk_spin.value),
+		float(_new_world_width_spin.value),
+		float(_new_world_height_spin.value),
+		_new_world_cell_m(),
 		float(_new_world_base_spin.value)
 	):
 		_current_world_name = world_name

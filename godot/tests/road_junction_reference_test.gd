@@ -78,7 +78,7 @@ func _run() -> void:
 			await _reference(fixture, slope[0], slope[1])
 	var manifest := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(),
 		"vendor": RenderingServer.get_video_adapter_vendor(), "capture_size": [CAPTURE_SIZE.x, CAPTURE_SIZE.y],
-		"world": {"size_m": WORLD_M, "cell_m": 8.0, "chunk_m": 128.0, "slope": "2.5% rising toward +x"},
+		"world": {"size_m": WORLD_M, "cell_m": 8.0, "chunk_m": 512.0, "slope": "2.5% rising toward +x"},
 		"conventions": CONVENTIONS, "lighting": "fixed directional light and ambient colour; weather scenario 0 (clear); no time-of-day API is used",
 		"fixtures": _records, "failures": _failures, "terrain_mode": "graded", "pinholes": _pinholes}
 	var file := FileAccess.open(_output.path_join("manifest.json"), FileAccess.WRITE)
@@ -219,7 +219,7 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	if fixture.has("save"):
 		_expect(simulation.load_game(ProjectSettings.globalize_path(fixture.save)), "%s: the save must load" % label)
 	else:
-		_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 128.0, 0.0), "Reference world must load")
+		_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 0.0), "Reference world must load")
 	simulation.set_simulation_speed(0.0)
 	simulation.set_weather_scenario(0, 0.0)
 	for brush: Array in fixture.get("sculpt", []):

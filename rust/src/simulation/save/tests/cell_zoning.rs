@@ -13,7 +13,7 @@ mod curves;
 fn fixture(angle: f64, erase: bool) -> (RegionGraph, ZoningSystem, BuildingAllocator) {
     let u = DVec2::new(angle.cos(), angle.sin());
     let v = u.perp();
-    let config = WorldConfig::new(400.0, 400.0, 10.0, 10.0);
+    let config = WorldConfig::new(512.0, 512.0, 10.0, 10.0);
     let mut graph = RegionGraph::new();
     let points: Vec<_> = [-60.0, 60.0]
         .into_iter()

@@ -99,7 +99,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(1024.0, 1024.0, 8.0, 128.0, 0.0), "fixture world must load")
+	_expect(simulation.create_blank_world(1024.0, 1024.0, 8.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	# The crossing at the origin, 150 m arms.
 	if not await _commit(_ground(-150.0, 0.0), _ground(150.0, 0.0)) \

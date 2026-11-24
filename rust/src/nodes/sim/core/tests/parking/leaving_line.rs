@@ -43,7 +43,6 @@ fn tick(c: &mut SimCore) {
 fn street() -> Street {
     let mut c = SimCore::new(
         WorldConfig::new(1024.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;

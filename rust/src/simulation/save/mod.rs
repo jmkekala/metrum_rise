@@ -429,7 +429,7 @@ fn write_snapshot(
             view.config.width_m,
             view.config.height_m,
             view.config.terrain_cell_m,
-            view.config.terrain_chunk_m,
+            WorldConfig::TERRAIN_CHUNK_M,
             view.config.terrain_base_elevation_m,
             view.config.env_cell_m,
             view.config.zone_cell_m
@@ -633,20 +633,24 @@ pub(crate) fn load_from_sqlite(
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let camera = camera::load_camera_state(&conn)?;
-    let mut config = conn.query_row(
+    let (mut config, terrain_chunk_m) = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
         |r| {
-            Ok(
+            Ok((
                 WorldConfig::new(r.get(0)?, r.get(1)?, r.get(5)?, r.get(6)?)
                     .with_terrain_resolution(r.get(2)?)
-                    .with_chunking(r.get(3)?, r.get(4)?),
-            )
+                    .with_base_elevation(r.get(4)?),
+                r.get::<_, f32>(3)?,
+            ))
         },
     )?;
     if !heights_in_metres {
         config.terrain_base_elevation_m *= LEGACY_HEIGHT_UNIT_M;
     }
+    // A save from before the aligned grid (10 m cells, 520 m chunks, other sides) is refused
+    // with the rule it breaks.
+    WorldConfig::check_stored_terrain_chunk_m(terrain_chunk_m)?;
     config.validate()?;
     let vegetation = {
         let row: (i64, i64, f32, f32) = conn.query_row(

@@ -8,24 +8,21 @@ use crate::nodes::camera_node::CameraNode;
 #[godot_api(secondary)]
 impl SimulationNode {
     /// Resets the runtime to a new blank authored world with the given terrain settings.
+    ///
+    /// The cell must be 2, 4 or 8 m and both sides whole multiples of 128 m; the render
+    /// patch and storage chunk are always 512 m. A world off these rules is refused (logged
+    /// error naming the rule, returns false).
     #[func]
     pub fn create_blank_world(
         &mut self,
         width_m: f32,
         height_m: f32,
         terrain_cell_m: f32,
-        terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> bool {
         let result = {
             let mut core = self.lock_core();
-            core.create_blank_world_internal(
-                width_m,
-                height_m,
-                terrain_cell_m,
-                terrain_chunk_m,
-                base_elevation_m,
-            )
+            core.create_blank_world_internal(width_m, height_m, terrain_cell_m, base_elevation_m)
         };
         match result {
             Ok(()) => {

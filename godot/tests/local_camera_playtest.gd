@@ -49,7 +49,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	if not simulation.create_blank_world(1024.0, 1024.0, 4.0, 128.0, 1000.0):
+	if not simulation.create_blank_world(1024.0, 1024.0, 4.0, 1000.0):
 		push_error("Camera fixture world creation failed")
 		quit(1)
 		return

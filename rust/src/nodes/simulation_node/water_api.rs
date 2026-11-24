@@ -714,7 +714,7 @@ mod tests {
     #[test]
     fn reflection_sources_and_dry_shortcut_follow_water_and_terrain_replacements() {
         let mut core = SimCore::new(crate::simulation::core::config::WorldConfig::new(
-            70.0, 70.0, 10.0, 10.0,
+            128.0, 128.0, 10.0, 10.0,
         ));
         core.heightmap =
             crate::simulation::terrain::TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);

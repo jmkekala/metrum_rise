@@ -204,7 +204,7 @@ func _run() -> void:
 	_input = _main.get_node("InputManager")
 	_tool = _main.get_node("RoadTool")
 	_ui = _main.get_node("MainUI")
-	_expect(_simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "the blank world must load")
+	_expect(_simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "the blank world must load")
 	_input._refresh_after_world_load()
 	_input.set_simulation_speed(0.0)
 	var ready_deadline := Time.get_ticks_msec() + TIMEOUT_MS

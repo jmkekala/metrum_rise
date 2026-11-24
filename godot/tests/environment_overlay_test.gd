@@ -71,13 +71,13 @@ func _run() -> void:
 	root.add_child(simulation)
 	var actual := TerrainRenderer.new()
 	actual.simulation_node = simulation
-	for world_size in [Vector2(80.0, 40.0), Vector2(40.0, 80.0), Vector2(85.0, 45.0)]:
-		_expect(simulation.create_blank_world(world_size.x, world_size.y, 10.0, 40.0, 0.0), "payload fixture must create a blank world")
+	for world_size in [Vector2(256.0, 128.0), Vector2(128.0, 256.0), Vector2(384.0, 128.0)]:
+		_expect(simulation.create_blank_world(world_size.x, world_size.y, 8.0, 0.0), "payload fixture must create a blank world")
 		for mode in [1, 2, 3]:
 			actual.overlay_mode = mode
 			_expect(actual._update_overlay_texture(), "native RGBA payload must upload for every environmental mode")
 			var image: Image = actual.overlay_image
-			_expect(image.get_width() == roundi(world_size.x / 10.0) + 1 and image.get_height() == roundi(world_size.y / 10.0) + 1, "world replacement must resize the uploaded image")
+			_expect(image.get_width() == roundi(world_size.x / 8.0) + 1 and image.get_height() == roundi(world_size.y / 8.0) + 1, "world replacement must resize the uploaded image")
 			var bytes := image.get_data()
 			_expect(bytes.size() == image.get_width() * image.get_height() * 4 and bytes.count(0) == bytes.size(), "blank world must upload transparent RGBA pixels")
 	actual.free()

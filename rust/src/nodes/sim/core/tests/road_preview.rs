@@ -1337,8 +1337,11 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
 // the arrow off again.
 #[test]
 fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
+    use super::road_crosswalks::{fully_emitted_chunks, published_chunks};
     let (mut core, node, side, west) = super::road_crosswalks::t_junction();
     core.benchmark_mode = false;
+    // The T lies on the default world's chunk corner at the origin (A2's aligned grid), where the
+    // chunks clip the paint, so the chunks are compared with a full chunked emission.
     let painted = |core: &mut SimCore| {
         core.precompute_road_mesh_data();
         let chunks: usize = core
@@ -1346,13 +1349,8 @@ fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
             .values()
             .map(|mesh| mesh.marking_vertices.len())
             .sum();
-        let full = core
-            .transit_network
-            .try_generate_mesh_data(&core.region_graph, &core.heightmap)
-            .expect("current roadbed")
-            .marking_vertices
-            .len();
-        assert_eq!(chunks, full, "the chunks hold the city's paint");
+        let published = published_chunks(core);
+        assert_eq!(published, fully_emitted_chunks(core), "the chunks hold the city's paint");
         chunks
     };
     let centre_lines = painted(&mut core);

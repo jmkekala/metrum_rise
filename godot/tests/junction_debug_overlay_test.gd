@@ -32,7 +32,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 512.0, 0.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 0.0), "fixture world must be created")
 	var camera := Camera3D.new()
 	host.add_child(camera)
 	camera.global_position = Vector3(0.0, 300.0, 1.0)

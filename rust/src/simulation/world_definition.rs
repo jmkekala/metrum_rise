@@ -175,14 +175,14 @@ fn write_world_definition(
             view.config.width_m,
             view.config.height_m,
             view.config.terrain_cell_m,
-            view.config.terrain_chunk_m,
+            WorldConfig::TERRAIN_CHUNK_M,
             view.config.terrain_base_elevation_m,
             view.config.env_cell_m,
             view.config.zone_cell_m
         ],
     )?;
 
-    let chunk_size = authored_chunk_cells(view.config);
+    let chunk_size = view.config.terrain_storage_chunk_cells();
     let source_dense = view.terrain.clone_source_dense();
     let chunk_cols = view.terrain.width.div_ceil(chunk_size);
     let chunk_rows = view.terrain.height.div_ceil(chunk_size);
@@ -342,11 +342,14 @@ pub(crate) fn load_world_definition_from_sqlite(
     };
     let config = WorldConfig::new(width_m, height_m, env_cell_m, zone_cell_m)
         .with_terrain_resolution(terrain_cell_m)
-        .with_chunking(terrain_chunk_m, terrain_base_elevation_m * height_unit_m);
-    config.validate().map_err(WorldDefinitionError::custom)?;
+        .with_base_elevation(terrain_base_elevation_m * height_unit_m);
+    // The stored chunk rows are laid out on the stored span; only the fixed 512 m loads.
+    WorldConfig::check_stored_terrain_chunk_m(terrain_chunk_m)
+        .and_then(|()| config.validate())
+        .map_err(WorldDefinitionError::custom)?;
 
     let mut terrain = TerrainSystem::from_world_config(&config);
-    let chunk_size = authored_chunk_cells(&config);
+    let chunk_size = config.terrain_storage_chunk_cells();
     let mut stmt = conn.prepare(
         "SELECT chunk_x, chunk_z, width_samples, height_samples, source_height_blob_f32_le FROM world_terrain_chunks ORDER BY chunk_z, chunk_x",
     )?;
@@ -590,10 +593,6 @@ fn validate_world_position(
     Ok(())
 }
 
-fn authored_chunk_cells(config: &WorldConfig) -> usize {
-    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
-}
-
 fn pack_f32_slice(values: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
@@ -672,9 +671,7 @@ mod tests {
     #[test]
     fn world_definition_round_trip_preserves_config_and_source_terrain() {
         let path = temp_path("round_trip");
-        let config = WorldConfig::new(120.0, 90.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(32.0, 2.0);
+        let config = WorldConfig::new(256.0, 128.0, 40.0, 10.0).with_base_elevation(2.0);
         let mut terrain = TerrainSystem::from_world_config(&config);
         terrain.set_height(0, 0, 3.0);
         terrain.set_height(1, 0, 4.0);
@@ -739,7 +736,7 @@ mod tests {
 
     #[test]
     fn world_definition_rejects_unrepresentable_grid_layouts() {
-        let config = WorldConfig::new(100.0, 100.0, 40.0, 10.0);
+        let config = WorldConfig::new(128.0, 128.0, 40.0, 10.0);
         for invalid in [
             WorldConfig {
                 width_m: f32::MAX,
@@ -755,10 +752,6 @@ mod tests {
             },
             WorldConfig {
                 zone_cell_m: f32::MIN_POSITIVE,
-                ..config
-            },
-            WorldConfig {
-                terrain_chunk_m: f32::MAX,
                 ..config
             },
             WorldConfig {
@@ -783,9 +776,7 @@ mod tests {
     #[test]
     fn format_5_world_definition_loads_heights_in_metres() {
         let path = temp_path("v5_metres");
-        let config = WorldConfig::new(120.0, 90.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(32.0, 2.0);
+        let config = WorldConfig::new(256.0, 128.0, 40.0, 10.0).with_base_elevation(2.0);
         let mut terrain = TerrainSystem::from_world_config(&config);
         terrain.set_height(0, 0, 3.0);
         terrain.set_height(4, 5, 7.5);
@@ -816,12 +807,10 @@ mod tests {
     #[test]
     fn world_definition_only_persists_touched_terrain_chunks() {
         let path = temp_path("chunk_count");
-        let config = WorldConfig::new(100.0, 100.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(20.0, 0.0);
+        let config = WorldConfig::new(1024.0, 1024.0, 40.0, 10.0);
         let mut terrain = TerrainSystem::from_world_config(&config);
         terrain.set_height(0, 0, 5.0);
-        terrain.set_height(8, 8, 6.0);
+        terrain.set_height(100, 100, 6.0);
         let resource_deposits = ResourceDepositSystem::from_world_config(&config);
 
         save_world_definition_to_sqlite(
@@ -877,7 +866,7 @@ CREATE TABLE world_terrain_chunks(
         .expect("v1 schema should create");
         conn.execute(
             "INSERT INTO world_definition_meta(format_version, name, width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![1_i64, "Legacy World", 100.0_f32, 100.0_f32, 10.0_f32, 32.0_f32, 0.0_f32, 40.0_f32, 10.0_f32],
+            params![1_i64, "Legacy World", 128.0_f32, 128.0_f32, 8.0_f32, 512.0_f32, 0.0_f32, 40.0_f32, 10.0_f32],
         )
         .expect("v1 metadata should insert");
         drop(conn);
@@ -900,6 +889,51 @@ CREATE TABLE world_terrain_chunks(
                 load_world_definition_from_sqlite(&path).is_err(),
                 "invalid terrain spacing {invalid} was silently clamped"
             );
+        }
+        drop(conn);
+        std::fs::remove_file(path).ok();
+    }
+
+    // Worlds stored before the aligned grid (10 m cells, 520 m chunks, sides off the 128 m
+    // lattice) are refused at load with the rule they break.
+    #[test]
+    fn world_definition_off_the_world_rules_is_refused_with_the_rule() {
+        let path = temp_path("off_rules");
+        let config = WorldConfig::new(256.0, 256.0, 40.0, 10.0);
+        save_world_definition_to_sqlite(
+            &path,
+            WorldDefinitionView {
+                name: "Ruled",
+                config: &config,
+                terrain: &TerrainSystem::from_world_config(&config),
+                lake_fills: &[],
+                open_water_fills: &[],
+                resource_deposits: &ResourceDepositSystem::from_world_config(&config),
+            },
+        )
+        .expect("world definition should save");
+        assert!(load_world_definition_from_sqlite(&path).is_ok());
+        let conn = Connection::open(&path).unwrap();
+        for (update, rule) in [
+            (
+                "UPDATE world_definition_meta SET terrain_chunk_m = 520.0",
+                "terrain chunk span must be 512 m",
+            ),
+            (
+                "UPDATE world_definition_meta SET terrain_chunk_m = 512.0, terrain_cell_m = 10.0",
+                "terrain_cell_m must be 2, 4 or 8 m",
+            ),
+            (
+                "UPDATE world_definition_meta SET terrain_cell_m = 8.0, width_m = 500.0",
+                "width_m must be a whole multiple of 128 m",
+            ),
+        ] {
+            conn.execute(update, []).unwrap();
+            let error = load_world_definition_from_sqlite(&path)
+                .err()
+                .expect("a world off the rules must not load")
+                .to_string();
+            assert!(error.contains(rule), "{error}");
         }
         drop(conn);
         std::fs::remove_file(path).ok();

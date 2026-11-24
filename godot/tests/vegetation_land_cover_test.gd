@@ -49,7 +49,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	root.add_child(simulation)
 	simulation.set_simulation_speed(0.0)
-	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 20.0), "create coverage fixture")
+	_expect(simulation.create_blank_world(1024.0, 1024.0, 8.0, 20.0), "create coverage fixture")
 	simulation.remove_vegetation_at(Vector2.ZERO, 1024.0, 0)
 	var queries: int = simulation.get_vegetation_main_thread_queries()
 	# Exercise the real upload helpers without starting terrain residency or the game scene.

@@ -10,7 +10,6 @@ use crate::simulation::parking::{Bay, PlaceSource};
 fn kerb_core(parking: RoadParking) -> (SimCore, usize) {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;
@@ -226,7 +225,6 @@ fn an_undone_road_commit_keeps_its_bays_and_its_kerb_cars_stand_or_come_back() {
     for with_lot in [true, false] {
         let mut c = SimCore::new(
             WorldConfig::new(1024.0, 1024.0, 16.0, 10.0)
-                .with_chunking(128.0, 0.0)
                 .with_terrain_resolution(2.0),
         );
         c.treasury.balance = 10_000_000.0;

@@ -83,7 +83,7 @@ func _run() -> void:
 
 	for side in [-1.0, 1.0]:
 		for rise in [-1.0, 1.0]:
-			_expect(simulation.create_blank_world(128.0, 128.0, 1.0, 64.0, 0.0), "support test world must load")
+			_expect(simulation.create_blank_world(128.0, 128.0, 2.0, 0.0), "support test world must load")
 			simulation.set_simulation_speed(0.0)
 			# A clamped, oblique two-metre grade has both pitch and roll, and two abrupt
 			# grade breaks. The fine source grid keeps this independent of road placement.

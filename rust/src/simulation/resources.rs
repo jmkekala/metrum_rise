@@ -292,17 +292,15 @@ mod tests {
 
     #[test]
     fn coal_paint_and_erase_touch_only_brush_cells() {
-        let config = WorldConfig::new(100.0, 100.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(40.0, 0.0);
+        let config = WorldConfig::new(128.0, 128.0, 40.0, 10.0);
         let mut deposits = ResourceDepositSystem::from_world_config(&config);
 
         assert!(deposits.paint_coal_circle_world(0.0, 0.0, 10.0, 700));
-        assert_eq!(deposits.coal_richness_at(5, 5), 700);
+        assert_eq!(deposits.coal_richness_at(8, 8), 700);
         assert_eq!(deposits.coal_richness_at(0, 0), 0);
 
         assert!(deposits.erase_coal_circle_world(0.0, 0.0, 10.0));
-        assert_eq!(deposits.coal_richness_at(5, 5), 0);
+        assert_eq!(deposits.coal_richness_at(8, 8), 0);
     }
 
     #[test]

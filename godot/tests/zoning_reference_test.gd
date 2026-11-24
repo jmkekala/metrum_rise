@@ -87,7 +87,7 @@ func _paint_reference() -> void:
 
 func _reference(fixture: Dictionary) -> void:
 	var failures_before := _failures
-	_expect(simulation.create_blank_world(2048.0, 2048.0, 8.0, 512.0, 0.0), "Reference world must load")
+	_expect(simulation.create_blank_world(2048.0, 2048.0, 8.0, 0.0), "Reference world must load")
 	simulation.set_simulation_speed(0.0)
 	for points: Array in fixture.roads:
 		if not await _commit(_path(points, fixture.get("rotation", 0.0))):

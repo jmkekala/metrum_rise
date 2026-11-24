@@ -75,7 +75,7 @@ func _load_benchmark_world() -> bool:
 	if not _uses_synthetic_world():
 		return input_manager.menu_load_world_definition(world_path)
 	# Same terrain, grid origin, and local geometry for every paired/scaling fixture.
-	if not simulation_node.create_blank_world(20400.0, 20400.0, 10.0, 510.0, 100.0):
+	if not simulation_node.create_blank_world(20480.0, 20480.0, 8.0, 100.0):
 		return false
 	input_manager._refresh_after_world_load()
 	input_manager.set_simulation_speed(0.0)
@@ -106,7 +106,7 @@ func _runtime_metadata() -> Dictionary:
 		"metrics_helper_sha256": FileAccess.get_sha256("res://scripts/benchmarks/road_benchmark_metrics.gd"),
 		"diagnostic_environment": diagnostic_environment,
 		"world_sha256": "synthetic_flat_v1" if _uses_synthetic_world() else FileAccess.get_sha256(save_path if matrix_name == "saved" else world_path),
-		"world_contract": "flat_20400m_cell10m_chunk510m_height100m" if _uses_synthetic_world() else matrix_name,
+		"world_contract": "flat_20480m_cell8m_patch512m_height100m" if _uses_synthetic_world() else matrix_name,
 		"fixture_isolation": "reset_each_fixture" if _resets_each_fixture() else "reset_each_cycle",
 		"simulation_speed": 0.0,
 		"input_contract": "scripted world-space pointer (not OS raycast/snapping); per-segment preview_mode controls readiness",

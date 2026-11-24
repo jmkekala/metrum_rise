@@ -136,7 +136,6 @@ fn tick(c: &mut SimCore) {
 fn a_car_parks_and_leaves_along_the_rows_of_a_lot_no_straight_path_reaches() {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;

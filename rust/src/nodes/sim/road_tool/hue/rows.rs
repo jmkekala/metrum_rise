@@ -103,7 +103,7 @@ impl RowWorld {
             treasury: CityTreasury::new(1.0e9),
             ..SimCore::new(WorldConfig::new(512.0, 512.0, 40.0, 10.0))
         };
-        core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+        core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
             .expect("the replay's world");
         if row.sloped {
             core.slope_terrain_internal(

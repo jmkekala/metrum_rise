@@ -46,7 +46,7 @@ func _run() -> void:
 	root.add_child(scene)
 	simulation = SimulationNode.new()
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(1024.0, 1024.0, 4.0, 128.0, 0.0), "the blank world loads")
+	_expect(simulation.create_blank_world(1024.0, 1024.0, 4.0, 0.0), "the blank world loads")
 	simulation.set_simulation_speed(0.0)
 	_expect(simulation.set_road_tool_median(2, MEDIAN_WIDTH_M).is_empty(), "the grass median is set")
 	var arterial := await _commit(PackedVector3Array([_ground(-230.0, 0.0), _ground(230.0, 0.0)]), 4)

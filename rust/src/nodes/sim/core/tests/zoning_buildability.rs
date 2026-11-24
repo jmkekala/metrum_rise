@@ -44,7 +44,6 @@ fn fixture() -> SimCore {
     core.config.width_m = (f.width - 1) as f32 * f.cell_m;
     core.config.height_m = (f.height - 1) as f32 * f.cell_m;
     core.config.terrain_cell_m = f.cell_m;
-    core.config.terrain_chunk_m = 512.0;
     core.heightmap = TerrainSystem::from_world_config(&core.config);
     core.transit_network = TransitNetwork::new_for_world(&core.config);
     core.zoning = ZoningSystem::new(&core.config);

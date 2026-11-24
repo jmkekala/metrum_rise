@@ -77,7 +77,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 			return loaded
 		scenario = _populated_scenario(bench, name)
 	else:
-		if not sim.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0):
+		if not sim.create_blank_world(512.0, 512.0, 8.0, 0.0):
 			return {"ok": false, "error": "world creation"}
 		bench.input_manager._refresh_after_world_load()
 		bench.input_manager.set_simulation_speed(0.0)

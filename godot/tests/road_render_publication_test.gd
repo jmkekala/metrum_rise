@@ -38,7 +38,7 @@ func _run():
 	sim = SimulationNode.new()
 	sim.name = "SimulationNode"
 	host.add_child(sim)
-	check(sim.create_blank_world(500.0, 500.0, 10.0, 512.0, 0.0), "blank world")
+	check(sim.create_blank_world(512.0, 512.0, 8.0, 0.0), "blank world")
 	sim.set_simulation_speed(0.0)
 	camera = Camera3D.new()
 	host.add_child(camera)

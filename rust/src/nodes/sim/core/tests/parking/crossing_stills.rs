@@ -37,7 +37,6 @@ fn write_the_crossing_still_saves() {
     std::fs::create_dir_all(out).unwrap();
     let mut c = SimCore::new(
         WorldConfig::new(1024.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;

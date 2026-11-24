@@ -212,7 +212,16 @@ impl TerrainSystem {
     }
 
     /// Creates a terrain system from the current world configuration.
+    ///
+    /// The configuration must keep the world rules (`WorldConfig::validate`): the graded
+    /// tiles and render patches rely on the aligned grid, so a test or loader that builds a
+    /// world off the rules fails here in debug builds.
     pub fn from_world_config(config: &WorldConfig) -> Self {
+        debug_assert!(
+            config.validate().is_ok(),
+            "world off the rules: {:?} ({config:?})",
+            config.validate()
+        );
         Self::with_chunking(
             config.terrain_grid_width(),
             config.terrain_grid_height(),

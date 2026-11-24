@@ -18,8 +18,8 @@ const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
 const InputManager := preload("res://scripts/core/input_manager.gd")
 const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TIMEOUT_FRAMES := 900
-const WORLD_M := 1020.0
-const CELL_M := 10.0
+const WORLD_M := 1024.0
+const CELL_M := 8.0
 
 var _failures := 0
 # The resident patch keys changed since the renderer's last frame (terrain.gd's): every key of a
@@ -59,7 +59,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, CELL_M, 510.0, 0.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, CELL_M, 0.0), "fixture world must be created")
 	await _add_road(simulation, [Vector3(-120.0, 0.0, 10.0), Vector3(120.0, 0.0, 10.0)])
 	await _add_road(simulation, [Vector3(0.0, 0.0, 10.0), Vector3(0.0, 0.0, 130.0)])
 

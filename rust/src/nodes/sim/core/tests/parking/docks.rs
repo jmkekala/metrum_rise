@@ -1298,7 +1298,6 @@ fn write_the_freight_yard_still_save() {
     let (pack, _) = id.split_once(':').expect("pack:asset");
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;

@@ -717,7 +717,7 @@ func _test_native_road_cursor_contract() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 128.0, 0.0), "cursor bridge fixture must create a flat world")
+	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 0.0), "cursor bridge fixture must create a flat world")
 	# The session's cursor (`ROAD-112`): a vertical ray onto free ground moves it continuously.
 	for index in range(5):
 		var x := 30.0 + index * 0.1

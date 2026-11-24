@@ -94,8 +94,9 @@ pub(super) fn vegetation_test_core(
     config: crate::simulation::vegetation::VegetationConfig,
 ) -> SimCore {
     let mut core = test_core_with_flat_terrain(400.0);
-    core.config = WorldConfig::new(2560.0, 2560.0, 40.0, 10.0);
-    core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 400.0);
+    // 2,560 m at 8 m with 512 m patches (A2's aligned grid; it was 10 m with 640 m patches).
+    core.config = WorldConfig::new(2560.0, 2560.0, 40.0, 10.0).with_base_elevation(400.0);
+    core.heightmap = TerrainSystem::from_world_config(&core.config);
     core.watermap = WaterSystem::from_world_config(&core.config);
     core.vegetation =
         crate::simulation::vegetation::VegetationGenerator::resolve(config, &core.config);

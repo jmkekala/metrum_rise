@@ -128,7 +128,7 @@ func _cell_chunk(x: int, z: int, version := PackedInt64Array()) -> Dictionary:
 	return {}
 
 func _test_cell_bridge() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "Cell fixture loads")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "Cell fixture loads")
 	simulation.set_simulation_speed(0.0)
 	var outside := await _cell_chunk(1, 0)
 	_expect(not outside.get("busy", true) and outside.get("outside", false), "Outside chunks need no preparation")

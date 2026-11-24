@@ -67,10 +67,10 @@ func advance_growth(graded: Tiles) -> void:
 func _run() -> void:
 	var sim := SimulationNode.new()
 	root.add_child(sim)
-	expect(sim.create_blank_world(500, 500, 10, 512, 0), "fixture world")
+	expect(sim.create_blank_world(512, 512, 8, 0), "fixture world")
 	sim.set_simulation_speed(0)
 	var graded := Tiles.new()
-	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
+	graded.setup(sim, 8, Vector2(512, 512), 512, [8, 8, 8, 8])
 	make_resident(graded)
 	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var a := Vector2i.ZERO

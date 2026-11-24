@@ -1200,22 +1200,23 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     assert_eq!(core.treasury.lifetime_build_cost, built);
 }
 
-// A residential street of six 150 m edges through degree-two nodes, across three render chunks:
+// A residential street of seven 150 m edges through degree-two nodes, across three render chunks
+// (x = -600 to 450 at z = 40 on the default world, whose 512 m chunks meet at x = -512 and 0):
 // its lights are spaced along the whole street. Published and acknowledged, so the next
-// publication is local. Returns the core and the edge holding x = 75 (the fourth).
+// publication is local. Returns the core and the edge holding x = 75 (the fifth).
 fn long_street() -> (SimCore, usize) {
     let mut core = test_core();
     core.treasury.balance = 1.0e7;
     core.benchmark_mode = false;
-    for i in 0..6 {
-        let x = -450.0 + 150.0 * i as f32;
-        let points = vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 150.0, 0.0, 0.0)];
+    for i in 0..7 {
+        let x = -600.0 + 150.0 * i as f32;
+        let points = vec![Vector3::new(x, 0.0, 40.0), Vector3::new(x + 150.0, 0.0, 40.0)];
         assert!(core.add_road_internal(points, 1, 1).committed);
     }
     core.finalize_network_render_products();
     assert_eq!(core.cached_road_mesh_chunks.len(), 3);
     acknowledge(&mut core);
-    let edge = core.get_hovered_edge_internal(75.0, 0.0);
+    let edge = core.get_hovered_edge_internal(75.0, 40.0);
     assert!(edge >= 0);
     (core, edge as usize)
 }
@@ -1265,7 +1266,7 @@ fn a_family_change_in_place_republishes_its_whole_street() {
     assert_eq!(fully_emitted_chunks(&mut core), published);
 }
 
-// The street's lights in world space along x (it runs along z = 0), sorted, from a full emission.
+// The street's lights in world space along x (it runs along z = 40), sorted, from a full emission.
 fn street_light_xs(core: &mut SimCore) -> Vec<f32> {
     let mesh = core
         .transit_network

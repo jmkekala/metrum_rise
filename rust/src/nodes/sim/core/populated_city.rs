@@ -476,7 +476,11 @@ fn street_grid_in_world(
     let rows = (side_m / ROW_SPACING_M) as usize + 1;
     let half_x = (crosses - 1) as f32 * CROSS_SPACING_M * 0.5;
     let half_z = (rows - 1) as f32 * ROW_SPACING_M * 0.5;
-    let world = world_m.unwrap_or(2.0 * half_x.max(half_z) + 2.0 * WORLD_MARGIN_M);
+    // The margin's world rounded up to the world rules' 128 m side step.
+    let world = world_m.unwrap_or_else(|| {
+        let side_m = 2.0 * half_x.max(half_z) + 2.0 * WORLD_MARGIN_M;
+        (side_m / WorldConfig::WORLD_SIDE_MULTIPLE_M).ceil() * WorldConfig::WORLD_SIDE_MULTIPLE_M
+    });
     let mut core = SimCore {
         treasury: CityTreasury::new(FUNDED_TREASURY),
         benchmark_mode: true,

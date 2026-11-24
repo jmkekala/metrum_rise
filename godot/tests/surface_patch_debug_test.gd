@@ -20,7 +20,7 @@ func _run() -> void:
 	_check_geometry_debug()
 	var simulation := SimulationNode.new()
 	root.add_child(simulation)
-	_expect(simulation.create_blank_world(80.0, 80.0, 10.0, 40.0, 0.0), "water fixture must create a blank world")
+	_expect(simulation.create_blank_world(128.0, 128.0, 8.0, 0.0), "water fixture must create a blank world")
 	simulation.begin_world_open_water_fill_preview(Vector2.ZERO, 5.0)
 	_expect(simulation.commit_world_open_water_fill_preview(), "water fixture must commit the authored fill")
 	var key := Vector2i.ZERO
@@ -73,7 +73,7 @@ func _run() -> void:
 	quit(0 if _failures == 0 else 1)
 
 func _check_terrain_payload(simulation: SimulationNode) -> void:
-	_expect(simulation.create_blank_world(80.0, 80.0, 10.0, 40.0, -50.0), "terrain fixture must create a nonzero world")
+	_expect(simulation.create_blank_world(128.0, 128.0, 8.0, -50.0), "terrain fixture must create a nonzero world")
 	# Production requests only step 0 (`_terrain_patch_payload_render_step_mm`): the graded
 	# tiles carry the detail, and Rust refuses any other step by contract.
 	var payload: Dictionary = {}

@@ -40,7 +40,7 @@ func _run() -> void:
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
 	var setup_start := Time.get_ticks_usec()
-	_expect(simulation.create_blank_world(8192.0, 8192.0, 8.0, 512.0, 0.0), "Overlay world must load")
+	_expect(simulation.create_blank_world(8192.0, 8192.0, 8.0, 0.0), "Overlay world must load")
 	simulation.set_simulation_speed(0.0)
 	_expect(simulation.get_registered_asset_ids().is_empty(), "Fixture excludes asset-driven building growth")
 	if not await _commit(_path([Vector2(-280, 0), Vector2(280, 0)])):

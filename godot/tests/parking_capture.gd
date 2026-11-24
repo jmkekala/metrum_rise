@@ -33,7 +33,7 @@ func _run() -> void:
 	input.set_process_input(false)
 	input.set_process_unhandled_input(false)
 	sim = main.get_node("SimulationNode")
-	if not sim.create_blank_world(1536.0, 1024.0, 2.0, 128.0, 0.0):
+	if not sim.create_blank_world(1536.0, 1024.0, 2.0, 0.0):
 		quit(1)
 		return
 	input._refresh_after_world_load()

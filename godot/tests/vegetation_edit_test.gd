@@ -65,11 +65,11 @@ func _run() -> void:
 	host.add_child(simulation)
 	simulation.set_simulation_speed(0.0)
 	_check_canopy_model_heights(simulation)
-	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 20.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(1024.0, 1024.0, 8.0, 20.0), "fixture world must be created")
 	var layout: Dictionary = simulation.get_terrain_patch_layout()
 	var span: float = float(layout["terrain_cell_m"]) * float(layout["patch_interval_cells"])
-	_expect(span == 510.0, "native patch layout must match the fixture")
-	var left := Vector2(-510.0, 0.0)
+	_expect(span == 512.0, "native patch layout must match the fixture")
+	var left := Vector2(-512.0, 0.0)
 	var right := Vector2(0.0, 0.0)
 	var before_left := simulation.get_decorative_tree_patch(left, span, true)
 	var before_right := simulation.get_decorative_tree_patch(right, span, true)
@@ -84,7 +84,7 @@ func _run() -> void:
 	_expect(simulation.get_decorative_tree_patch(left, span, true) == before_left, "boundary addition must not leak into the left patch")
 	var authored := simulation.get_decorative_tree_patch(right, span, true)
 	_expect(authored.size() == before_right.size() + 6, "boundary addition must appear exactly once")
-	_expect(not simulation.add_vegetation_at(Vector2(510.0, 0.0), 0), "world edge must refuse placement")
+	_expect(not simulation.add_vegetation_at(Vector2(512.0, 0.0), 0), "world edge must refuse placement")
 	_expect(not simulation.add_vegetation_at(target, 99), "unknown preset must be refused")
 	_expect(simulation.paint_vegetation(target, 32.0, -1, 0) == 0, "brush must refuse unknown preset")
 	var path := OS.get_temp_dir().path_join("metrum_vegetation_edit_%d.sqlite" % OS.get_process_id())
@@ -499,7 +499,7 @@ func _run() -> void:
 	# links the two, so a change on either side that the other does not follow fails here.
 	# Only these strokes pin a variant, so every pinned record in the patch came from one.
 	for named in [[4, true], [5, false]]:
-		var origin := Vector2(-510.0, -510.0) if named[0] == 4 else Vector2(0.0, -510.0)
+		var origin := Vector2(-512.0, -512.0) if named[0] == 4 else Vector2(0.0, -512.0)
 		var tree: String = "pine" if named[1] else "spruce"
 		# Keyed on position and diffed, because earlier sections of this test plant their own
 		# trees in these patches and only this stroke's own plants prove anything here.

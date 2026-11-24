@@ -48,7 +48,7 @@ func _run() -> void:
 	await process_frame
 	_simulation = _main.get_node("SimulationNode")
 	var input_manager: Node = _main.get_node("InputManager")
-	_expect(_simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "the blank world must load")
+	_expect(_simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "the blank world must load")
 	input_manager._refresh_after_world_load()
 	input_manager.set_simulation_speed(0.0)
 	var ready_deadline := Time.get_ticks_msec() + TIMEOUT_MS

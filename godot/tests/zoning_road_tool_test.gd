@@ -130,7 +130,7 @@ func _test_tool() -> void:
 	scene.free()
 
 func _test_native() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "Zoning fixture must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "Zoning fixture must load")
 	simulation.set_simulation_speed(0.0)
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return
@@ -163,7 +163,7 @@ func _test_native() -> void:
 	_expect(not simulation.apply_zoning_road_at(0.0, 0.0, 0, 2, 3, 5.0), "No-build flag blocks road zoning")
 
 func _test_terrain_consistency() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "Terrain zoning fixture must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "Terrain zoning fixture must load")
 	simulation.set_simulation_speed(0.0)
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return
@@ -191,7 +191,7 @@ func _test_terrain_consistency() -> void:
 	_expect(simulation.get_zoning_parcels_overlay().size() == reference.valid_count, "Terrain preview and commit accept the same number of lots")
 
 func _test_manual_group_fill() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "Manual group zoning fixture must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "Manual group zoning fixture must load")
 	simulation.set_simulation_speed(0.0)
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return

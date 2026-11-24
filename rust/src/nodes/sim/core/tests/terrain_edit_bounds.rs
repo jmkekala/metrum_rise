@@ -2,18 +2,20 @@
 
 //! `TERRAIN-28`: every terrain brush edit clamps its footprint to the world and refuses one
 //! wholly outside it. An edit whose footprint reaches the world writes exactly the samples it
-//! wrote before the clamp (the digest below was recorded on `dev` 6e312470, before it, and
-//! re-recorded when heights became metres: the samples' bits move, within 1e-6 m of the control).
+//! wrote before the clamp (the digest below was recorded on `dev` 6e312470, before it,
+//! re-recorded when heights became metres: the samples' bits move, within 1e-6 m of the control,
+//! and re-recorded on the aligned grid's world, A2).
 
 use super::*;
 use godot::prelude::Vector2;
 
-// `RENDER-32-Q`'s fixture world: 1,020 m square, 10 m samples (103 x 103), 510 m chunks.
-const WORLD_M: f32 = 1020.0;
+// `RENDER-32-Q`'s fixture world on the aligned grid (A2): 1,024 m square, 8 m samples
+// (129 x 129), 512 m patches; it was 1,020 m at 10 m with 510 m patches.
+const WORLD_M: f32 = 1024.0;
 
 fn world_core() -> SimCore {
     let mut core = test_core();
-    core.create_blank_world_internal(WORLD_M, WORLD_M, 10.0, 510.0, 0.0)
+    core.create_blank_world_internal(WORLD_M, WORLD_M, 8.0, 0.0)
         .expect("blank world");
     core
 }
@@ -95,8 +97,9 @@ fn edits_reaching_the_world_write_what_they_wrote_before_the_clamp() {
     // Nine single edits and one stroke, none rolled back.
     assert_eq!(core.undo_stack.len(), 10);
     // Recorded on `dev` 6e312470, before the clamp (round T28); re-recorded in metres (A1), the
-    // dirty patches, revisions and undo entries equal to the control's.
-    assert_eq!(edit_digest(&core), 18_364_395_597_040_659_795);
+    // dirty patches, revisions and undo entries equal to the control's; re-recorded on the
+    // 1,024 m, 8 m world of the aligned grid (A2), whose samples and patches all moved.
+    assert_eq!(edit_digest(&core), 17_787_062_385_438_715_634);
 }
 
 // Every brush entry at one point: the single edits, then a stroke of every step kind.

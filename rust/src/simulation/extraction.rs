@@ -591,7 +591,6 @@ fn point_on_segment(point: Vector2, start: Vector2, end: Vector2) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::resources::RESOURCE_RICHNESS_MAX;
 
     fn indexed_mine(building_idx: usize) -> ExtractorSite {
@@ -766,8 +765,8 @@ mod tests {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
         use crate::simulation::zoning::ZoneType;
 
-        let config = WorldConfig::new(40.0, 40.0, 10.0, 10.0);
-        let mut deposits = ResourceDepositSystem::from_world_config(&config);
+        // A bare 40 m deposit grid at 10 m: a unit fixture below the world rules.
+        let mut deposits = ResourceDepositSystem::with_chunking(5, 5, 10.0, 52);
         deposits.set_coal_richness_at(2, 2, RESOURCE_RICHNESS_MAX);
         deposits.set_coal_richness_at(3, 2, RESOURCE_RICHNESS_MAX);
         let manifest = serde_json::from_value(serde_json::json!({
@@ -860,10 +859,8 @@ mod tests {
 
     #[test]
     fn coal_reserve_uses_polygon_area_and_richness() {
-        let config = WorldConfig::new(40.0, 40.0, 10.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(20.0, 0.0);
-        let mut deposits = ResourceDepositSystem::from_world_config(&config);
+        // A bare 40 m deposit grid at 10 m: a unit fixture below the world rules.
+        let mut deposits = ResourceDepositSystem::with_chunking(5, 5, 10.0, 2);
         deposits.set_coal_richness_at(2, 2, RESOURCE_RICHNESS_MAX);
         deposits.set_coal_richness_at(3, 2, RESOURCE_RICHNESS_MAX / 2);
         let polygon = vec![

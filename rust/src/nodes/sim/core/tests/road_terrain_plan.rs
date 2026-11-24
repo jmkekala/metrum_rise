@@ -1782,8 +1782,7 @@ fn orthogonal_zoning_block_at_angle(angle: f64) {
     let mut core = test_core();
     core.benchmark_mode = false;
     core.config = WorldConfig::new(2048.0, 2048.0, 50.0, 10.0)
-        .with_terrain_resolution(8.0)
-        .with_chunking(512.0, 0.0);
+        .with_terrain_resolution(8.0);
     core.heightmap = TerrainSystem::from_world_config(&core.config);
     core.watermap = WaterSystem::from_world_config(&core.config);
     core.transit_network = TransitNetwork::new_for_world(&core.config);
@@ -1892,7 +1891,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
     // an exact half-millimetre height; f32 rounding split its bands into a false conflict.
     for slope_end_m in [0.0, 6.4] {
         let mut core = test_core();
-        core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+        core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
             .unwrap();
         core.slope_terrain_internal(
             Vector2::ZERO,

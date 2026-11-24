@@ -57,7 +57,7 @@ func _run() -> void:
 	quit(0 if _failures == 0 else 1)
 
 func _stream_fixture(fixture: Dictionary) -> Dictionary:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "stream world must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "stream world must load")
 	simulation.set_simulation_speed(0.0)
 	if fixture.get("sloped", false):
 		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 20.0)

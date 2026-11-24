@@ -36,7 +36,6 @@ fn street_with_lot() -> (SimCore, String) {
 fn core_with(parking: RoadParking) -> SimCore {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;
@@ -184,7 +183,6 @@ fn a_site_edit_rebinds_the_bay_a_driving_car_keeps() {
     // Two lots far enough apart to drive between, and a commuter on its way to the far one.
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;
@@ -296,7 +294,6 @@ fn a_save_in_the_hold_publishes_the_road_edit_first() {
 fn graded_curve_with_lots(cross_first: bool) -> SimCore {
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;

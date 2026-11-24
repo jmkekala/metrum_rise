@@ -44,7 +44,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "fixture world must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	_expect(simulation.set_road_tool_attributes(50, 3, true, true).is_empty(), "the 2-Lane Road's attributes")
 	if not await _commit(PackedVector3Array([_ground_point(-60.0, 0.0), _ground_point(60.0, 0.0)])):

@@ -39,7 +39,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "fixture world must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	# Straight down on the world: every screen point lands on the ground.
 	var camera := Camera3D.new()

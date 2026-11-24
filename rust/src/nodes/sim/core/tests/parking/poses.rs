@@ -317,7 +317,6 @@ fn a_tunnel_portal_refreshes_the_poses_beside_it_and_its_undo_restores_them() {
 fn a_load_rebuilds_every_pose_from_the_loaded_ground() {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;

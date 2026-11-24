@@ -55,7 +55,7 @@ func _scenario(speed: float) -> Array[Dictionary]:
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
 	var samples: Array[Dictionary] = []
-	_expect(simulation.create_blank_world(4096.0, 4096.0, 8.0, 512.0, 0.0), "Latency world must load")
+	_expect(simulation.create_blank_world(4096.0, 4096.0, 8.0, 0.0), "Latency world must load")
 	simulation.set_simulation_speed(speed)
 	var camera := Camera3D.new()
 	scene.add_child(camera)

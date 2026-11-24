@@ -232,7 +232,7 @@ func _overview_policy(host: Node3D, simulation: SimulationNode) -> void:
 	_expect(slide[0] == 256.0 and slide[2] > 0.0, "diagonal pan slides along boundary")
 	camera.set_view_state(PackedFloat32Array([0, 1000.25, 0, 0, -PI / 4, 60000, 0]))
 	_expect(_distance() == 40000.0, "older 60 km saves respect new gameplay limit")
-	_expect(simulation.create_blank_world(256, 256, 8, 128, 1000), "replacement world")
+	_expect(simulation.create_blank_world(256, 256, 8, 1000), "replacement world")
 	camera.focus_on(Vector3(1000, 1000, -1000), 160.0)
 	var resized := camera.get_view_state()
 	_expect(resized[0] == 128.0 and resized[2] == -128.0, "focus uses replacement world's dimensions")
@@ -247,7 +247,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(512, 512, 8, 128, 1000), "fixture world")
+	_expect(simulation.create_blank_world(512, 512, 8, 1000), "fixture world")
 	camera = CameraNode.new()
 	camera.name = "CameraNode"
 	host.add_child(camera)

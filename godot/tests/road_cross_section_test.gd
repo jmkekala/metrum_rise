@@ -59,7 +59,7 @@ func _undo(what: String) -> void:
 
 # One road's sidewalk sides through the tool, then each in-place change of them.
 func _one_sided() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "one side: the blank world loads")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "one side: the blank world loads")
 	simulation.set_simulation_speed(0.0)
 	_expect(simulation.set_road_tool_attributes(50, 4, true, true) == "sidewalks_out_of_range", "a code past both sides is refused")
 	_expect(simulation.set_road_tool_attributes(50, -1, true, true) == "sidewalks_out_of_range", "a negative code is refused")
@@ -105,7 +105,7 @@ func _run() -> void:
 	scene.add_child(simulation)
 	for style in [1, 2, 3]:
 		var width: float = [0.0, 1.0, 5.0, 2.0][style]
-		_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "style %d: the blank world loads" % style)
+		_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "style %d: the blank world loads" % style)
 		simulation.set_simulation_speed(0.0)
 		_expect(simulation.set_road_tool_median(style, 40.0) == "median_width_out_of_range", "style %d: a width out of range is refused" % style)
 		_expect(simulation.set_road_tool_median(7, width) == "unknown_median_style", "an unknown style is refused")

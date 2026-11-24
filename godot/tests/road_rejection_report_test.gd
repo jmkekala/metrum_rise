@@ -42,7 +42,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 512.0, 0.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 0.0), "fixture world must be created")
 	var first_seq: int = MetrumDebug.read_since(0, 0)["last_seq"]
 
 	# Commit refusal: the simulation explains and records the stroke.

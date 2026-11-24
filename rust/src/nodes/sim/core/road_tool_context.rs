@@ -535,9 +535,7 @@ mod tests {
     // full copy; this replacement keeps the roadbed, so only the key can tell the worlds apart.
     #[test]
     fn the_road_tool_view_follows_a_replaced_world_at_an_equal_terrain_generation() {
-        let config = WorldConfig::new(40.0, 40.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(512.0, 0.0);
+        let config = WorldConfig::new(128.0, 128.0, 40.0, 10.0);
         let mut core = SimCore {
             treasury: CityTreasury::new(0.0),
             terrain_dirty: false,

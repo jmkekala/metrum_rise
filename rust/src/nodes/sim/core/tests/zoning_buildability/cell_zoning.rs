@@ -30,7 +30,7 @@ fn queued_cell_preparation_uses_current_roads_and_discards_replaced_worlds() {
     assert!(core.prepare_requested_cell_chunk((0, 0), request_generation));
     assert_eq!(core.zoning.cells.chunk_state((0, 0)), ready);
 
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
         .unwrap();
     let cold = core.zoning.cells.chunk_state((0, 0));
     assert!(!cold.1);

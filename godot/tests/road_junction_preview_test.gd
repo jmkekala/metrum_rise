@@ -102,7 +102,7 @@ func _run() -> void:
 	quit(_failures)
 
 func _test_zoning_buildability_feedback() -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "zoning fixture world must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "zoning fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return
@@ -136,7 +136,7 @@ func _test_zoning_buildability_feedback() -> void:
 	_expect(simulation.get_zoning_site_dependencies() != before, "zoning edits invalidate retained cursor previews")
 
 func _fixture(fixture: Dictionary) -> void:
-	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "junction fixture world must load")
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 0.0), "junction fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	if fixture.get("sloped", false):
 		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 20.0)

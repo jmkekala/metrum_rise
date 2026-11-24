@@ -122,7 +122,7 @@ fn register_test_asset(
 
 #[test]
 fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
-    let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
+    let config = WorldConfig::new(256.0, 256.0, 10.0, 10.0);
     let mut graph = RegionGraph::new();
     let points = vec![Vector3::new(-40.0, 1.0, 0.0), Vector3::new(40.0, 3.0, 0.0)];
     let start = graph.add_node(points[0], NodeType::Junction);
@@ -480,7 +480,7 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
 
 #[test]
 fn sqlite_round_trip_preserves_authoritative_state() {
-    let config = WorldConfig::new(100.0, 100.0, 10.0, 10.0);
+    let config = WorldConfig::new(128.0, 128.0, 10.0, 10.0);
     let mut time = TimeSystem::new();
     time.speed_multiplier = 2.0;
     time.time_elapsed = 0.001;
@@ -1361,13 +1361,32 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             "a format-{version} save must not load"
         );
     }
+    // A save off the world rules (the aligned grid) is refused with the rule it breaks.
+    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION])
+        .unwrap();
+    for (update, rule) in [
+        (
+            "UPDATE world_config SET terrain_chunk_m = 520.0",
+            "terrain chunk span must be 512 m",
+        ),
+        (
+            "UPDATE world_config SET terrain_chunk_m = 512.0, terrain_cell_m = 10.0",
+            "terrain_cell_m must be 2, 4 or 8 m",
+        ),
+    ] {
+        conn.execute(update, []).unwrap();
+        let error = load_from_sqlite(&path, &allocator.registry)
+            .err()
+            .expect("a save off the world rules must not load")
+            .to_string();
+        assert!(error.contains(rule), "{error}");
+    }
     drop(conn);
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);
     assert_eq!(loaded.config.height_m, config.height_m);
     assert_eq!(loaded.config.terrain_cell_m, config.terrain_cell_m);
-    assert_eq!(loaded.config.terrain_chunk_m, config.terrain_chunk_m);
     assert_eq!(
         loaded.config.terrain_base_elevation_m,
         config.terrain_base_elevation_m
@@ -1628,7 +1647,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
 
 #[test]
 fn load_quarantines_invalid_legacy_saved_parcels() {
-    let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
+    let config = WorldConfig::new(256.0, 256.0, 10.0, 10.0);
     let time = TimeSystem::new();
     let terrain = TerrainSystem::from_world_config(&config);
     let water = WaterSystem::from_world_config(&config);

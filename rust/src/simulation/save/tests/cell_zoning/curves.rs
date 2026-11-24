@@ -9,7 +9,7 @@ use crate::simulation::zoning::cells::CellLotSize;
 use crate::simulation::zoning::cells::road_contact_interior;
 
 fn curved_fixture() -> (RegionGraph, ZoningSystem, CellBounds) {
-    let config = WorldConfig::new(600.0, 600.0, 10.0, 10.0);
+    let config = WorldConfig::new(640.0, 640.0, 10.0, 10.0);
     let points: Vec<_> = (0..=24)
         .map(|i| {
             let x = i as f32 * 10.0 - 120.0;

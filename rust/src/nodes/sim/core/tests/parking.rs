@@ -24,7 +24,6 @@ mod taken_trips;
 pub(in crate::nodes::sim::core::tests) fn core() -> SimCore {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;
@@ -335,7 +334,6 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
     use crate::simulation::parking::ParkingTripPhase;
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -481,7 +479,6 @@ fn a_car_entering_and_leaving_a_bay_is_drawn_once_in_every_snapshot() {
     for stride in [1, 3] {
         let mut c = SimCore::new(
             WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-                .with_chunking(128.0, 0.0)
                 .with_terrain_resolution(2.0),
         );
         c.treasury.balance = 1_000_000.0;
@@ -547,7 +544,6 @@ fn a_car_entering_and_leaving_a_bay_is_drawn_once_in_every_snapshot() {
 fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -584,7 +580,6 @@ fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
 fn has_car_follows_custody_at_the_next_tick() {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;
@@ -622,7 +617,6 @@ fn a_household_moving_in_with_its_car_gets_it_at_publication() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;
@@ -697,7 +691,6 @@ fn a_household_moving_in_with_its_car_gets_it_at_publication() {
 fn undoing_a_bulldoze_rewrites_has_car_from_the_cars_as_they_stand() {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 10_000_000.0;
@@ -735,7 +728,6 @@ fn parking_move_in_save_round_trip_mid_arrival() {
     use crate::simulation::parking::ParkingTripPhase;
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -936,7 +928,6 @@ fn a_lot_on_either_side_of_a_one_way_road_has_car_access() {
     use crate::simulation::parking::PlaceSource;
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -997,7 +988,6 @@ fn parking_lot_on_a_diagonal_road_accepts_every_bay() {
     // turning squares must follow the lot rather than the world axes.
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -1094,7 +1084,6 @@ fn a_lots_paint_reads_the_gathered_surface_as_point_queries_do() {
     use godot::prelude::Vector2;
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;
@@ -1149,7 +1138,6 @@ fn write_the_lot_paint_still_save() {
     let (assets, out) = (var("METRUM_PAINT_STILL_ASSETS"), var("METRUM_PAINT_STILL_OUT"));
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 10_000_000.0;

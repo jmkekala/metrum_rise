@@ -60,7 +60,6 @@ fn place(core: &SimCore, index: usize, anchor: u32) -> crate::simulation::core::
 fn lots(routes: &[(u32, Vec<[f32; 2]>)]) -> SimCore {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
             .with_terrain_resolution(2.0),
     );
     c.treasury.balance = 1_000_000.0;

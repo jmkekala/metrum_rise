@@ -96,7 +96,11 @@ CREATE TABLE world_resource_deposit_chunks(
 """
 DEFAULT_ENV_CELL_M = 40.0
 DEFAULT_ZONE_CELL_M = 10.0
-DEFAULT_TERRAIN_CHUNK_M = 512.0
+# The world rules (`WorldConfig::validate`): a 2, 4 or 8 m cell, sides in whole 128 m steps, and
+# the fixed 512 m storage chunk.
+TERRAIN_CHUNK_M = 512.0
+ALLOWED_TERRAIN_CELLS_M = (2.0, 4.0, 8.0)
+WORLD_SIDE_MULTIPLE_M = 128.0
 DEFAULT_BASE_ELEVATION_M = 0.0
 
 
@@ -481,8 +485,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--terrain-cell-m",
         type=float,
-        default=10.0,
-        help="Authored terrain sample spacing in metres (must be >= source pixel size)",
+        default=8.0,
+        choices=ALLOWED_TERRAIN_CELLS_M,
+        help="Authored terrain sample spacing in metres: 2, 4 or 8 (must be >= source pixel size)",
     )
     parser.add_argument(
         "--size-m",
@@ -507,12 +512,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report-dir",
         help="Directory for water_report.json and water_labels.npz (per-sample polygon and group)",
-    )
-    parser.add_argument(
-        "--terrain-chunk-m",
-        type=float,
-        default=DEFAULT_TERRAIN_CHUNK_M,
-        help="Authored terrain chunk span in metres",
     )
     parser.add_argument(
         "--env-cell-m",
@@ -540,7 +539,6 @@ def main() -> int:
     input_dir = resolve_repo_path(args.input_dir)
     output_path = resolve_repo_path(args.output)
     validate_positive(args.terrain_cell_m, "terrain_cell_m")
-    validate_positive(args.terrain_chunk_m, "terrain_chunk_m")
     validate_positive(args.env_cell_m, "env_cell_m")
     validate_positive(args.zone_cell_m, "zone_cell_m")
     if not math.isfinite(args.terrain_base_elevation_m):
@@ -568,6 +566,11 @@ def main() -> int:
 
     width_m = max_e - min_e
     height_m = max_n - min_n
+    for side_m, label in ((width_m, "width"), (height_m, "height")):
+        if side_m % WORLD_SIDE_MULTIPLE_M != 0.0:
+            raise SystemExit(
+                f"world {label} {side_m} m is not a whole multiple of 128 m; cut it with --size-m"
+            )
     elevation_m = import_dem_array(
         source_paths=source_paths,
         width_m=width_m,
@@ -632,7 +635,7 @@ def main() -> int:
         width_m=width_m,
         height_m=height_m,
         terrain_cell_m=args.terrain_cell_m,
-        terrain_chunk_m=args.terrain_chunk_m,
+        terrain_chunk_m=TERRAIN_CHUNK_M,
         terrain_base_elevation_m=args.terrain_base_elevation_m,
         env_cell_m=args.env_cell_m,
         zone_cell_m=args.zone_cell_m,

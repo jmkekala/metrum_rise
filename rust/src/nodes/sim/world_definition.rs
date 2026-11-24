@@ -42,25 +42,21 @@ struct LakeFillApplication {
 
 impl SimCore {
     /// Resets the live runtime to one fresh blank world with the given terrain settings.
+    ///
+    /// The world rules apply (`WorldConfig::validate`): a cell of 2, 4 or 8 m and sides that
+    /// are whole multiples of 128 m; the patch and storage chunk are always 512 m.
     pub(crate) fn create_blank_world_internal(
         &mut self,
         width_m: f32,
         height_m: f32,
         terrain_cell_m: f32,
-        terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
         // A commit's deferred lots belong to the world the reset replaces.
         self.pending_cell_lots = None;
         // The reset's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
-            self.create_blank_world_in_pool(
-                width_m,
-                height_m,
-                terrain_cell_m,
-                terrain_chunk_m,
-                base_elevation_m,
-            )
+            self.create_blank_world_in_pool(width_m, height_m, terrain_cell_m, base_elevation_m)
         })
     }
 
@@ -69,7 +65,6 @@ impl SimCore {
         width_m: f32,
         height_m: f32,
         terrain_cell_m: f32,
-        terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
         let config = WorldConfig::new(
@@ -79,15 +74,14 @@ impl SimCore {
             self.config.zone_cell_m,
         )
         .with_terrain_resolution(terrain_cell_m)
-        .with_chunking(terrain_chunk_m, base_elevation_m);
+        .with_base_elevation(base_elevation_m);
         config.validate()?;
         debug_log!(
             "world-editor",
-            "create_blank_world width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
+            "create_blank_world width_m={:.1} height_m={:.1} terrain_cell_m={:.1} base_elevation_m={:.1}",
             width_m,
             height_m,
             terrain_cell_m,
-            terrain_chunk_m,
             base_elevation_m
         );
         let terrain = TerrainSystem::from_world_config(&config);
@@ -105,13 +99,12 @@ impl SimCore {
     ) -> Result<(), String> {
         debug_log!(
             "world-editor",
-            "save_world_definition path={} name={} world=({:.1}m x {:.1}m) terrain_cell_m={:.1} terrain_chunk_m={:.1}",
+            "save_world_definition path={} name={} world=({:.1}m x {:.1}m) terrain_cell_m={:.1}",
             path,
             name,
             self.config.width_m,
             self.config.height_m,
-            self.config.terrain_cell_m,
-            self.config.terrain_chunk_m
+            self.config.terrain_cell_m
         );
         save_world_definition_to_sqlite(
             &PathBuf::from(path),
@@ -553,11 +546,10 @@ impl SimCore {
     ) {
         debug_log!(
             "world-editor",
-            "reset_blank_world_runtime width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
+            "reset_blank_world_runtime width_m={:.1} height_m={:.1} terrain_cell_m={:.1} base_elevation_m={:.1}",
             config.width_m,
             config.height_m,
             config.terrain_cell_m,
-            config.terrain_chunk_m,
             config.terrain_base_elevation_m
         );
 
@@ -1060,10 +1052,9 @@ mod tests {
 
     use godot::prelude::Vector2;
 
+    // The smallest legal world: 128 m at 8 m, 17 x 17 samples, the origin at sample (8, 8).
     fn test_core_with_small_world() -> SimCore {
-        let config = WorldConfig::new(40.0, 40.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(512.0, 0.0);
+        let config = WorldConfig::new(128.0, 128.0, 40.0, 10.0);
         SimCore {
             treasury: CityTreasury::new(0.0),
             terrain_dirty: false,
@@ -1081,9 +1072,10 @@ mod tests {
             [200.0, 40.0, 40.0, 40.0, 200.0],
             [200.0, 200.0, 200.0, 200.0, 200.0],
         ];
+        // Centred on the origin's sample (8, 8); the ground around the rim stays at 0.
         for (z, row) in heights.iter().enumerate() {
             for (x, height) in row.iter().copied().enumerate() {
-                core.heightmap.set_height(x, z, height);
+                core.heightmap.set_height(x + 6, z + 6, height);
             }
         }
     }
@@ -1230,11 +1222,11 @@ mod tests {
     }
 
     #[test]
-    fn blank_world_reset_uses_terrain_render_span_when_cell_exceeds_authored_chunk() {
+    fn blank_world_reset_uses_the_fixed_512_m_render_span() {
         let mut core = test_core_with_small_world();
 
-        core.create_blank_world_internal(40.0, 40.0, 8.0, 4.0, 0.0)
-            .expect("the supported coarse-cell world should reset");
+        core.create_blank_world_internal(128.0, 128.0, 8.0, 0.0)
+            .expect("the smallest legal world should reset");
 
         assert_eq!(
             core.terrain_dirty,
@@ -1245,9 +1237,15 @@ mod tests {
             !core.watermap.dirty_render_patches().is_empty()
         );
 
-        assert_eq!(core.config.terrain_render_chunk_span_m(), 8.0);
-        assert_eq!(core.heightmap.chunk_span_m(), 8.0);
-        assert_eq!(core.transit_network.roadbed.chunk_span_m(), 8.0);
+        assert_eq!(core.config.terrain_render_chunk_span_m(), 512.0);
+        assert_eq!(core.heightmap.chunk_span_m(), 512.0);
+        assert_eq!(core.transit_network.roadbed.chunk_span_m(), 512.0);
+        for (width_m, cell_m) in [(40.0, 8.0), (128.0, 10.0), (128.0, 4.5)] {
+            let error = core
+                .create_blank_world_internal(width_m, 128.0, cell_m, 0.0)
+                .unwrap_err();
+            assert!(error.contains("must be"), "{error}");
+        }
     }
 
     #[test]
@@ -1256,7 +1254,8 @@ mod tests {
         let first_generation = core.terrain_payload_generation_for_patch(0, 0);
         core.bump_terrain_payload_patch_generations(&[(1, 1)]);
         let edited_generation = core.terrain_payload_generation_for_patch(1, 1);
-        core.create_blank_world_internal(40.0, 40.0, 8.0, 16.0, 1000.0)
+        // Two by two 512 m patches, so patch (1, 1) exists in the new world.
+        core.create_blank_world_internal(1024.0, 1024.0, 8.0, 1000.0)
             .unwrap();
         for (key, stale) in [((0, 0), first_generation), ((1, 1), edited_generation)] {
             core.heightmap.mark_render_patch_dirty(key.0, key.1);
@@ -1312,9 +1311,7 @@ mod tests {
 
     #[test]
     fn lake_fill_preview_below_seed_is_invalid() {
-        let config = WorldConfig::new(40.0, 40.0, 40.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(512.0, 0.0);
+        let config = WorldConfig::new(128.0, 128.0, 40.0, 10.0);
         let terrain = TerrainSystem::from_world_config(&config);
         let water = WaterSystem::from_world_config(&config);
 

@@ -329,7 +329,7 @@ fn water_queries_wait_for_matching_surface_publication() {
 #[test]
 fn blank_world_reset_publishes_empty_road_surface_for_water_payloads() {
     let mut core = test_core_with_flat_terrain(0.0);
-    core.create_blank_world_internal(40.0, 40.0, 10.0, 512.0, 0.0)
+    core.create_blank_world_internal(128.0, 128.0, 8.0, 0.0)
         .expect("the blank-world reset should succeed");
 
     assert!(
@@ -405,17 +405,17 @@ fn water_meshes_drop_the_cells_a_road_meets_keyed_by_the_patch_generation() {
     use crate::simulation::network::types::NodeType;
 
     let mut core = test_core_with_flat_terrain(0.0);
-    core.create_blank_world_internal(40.0, 40.0, 10.0, 512.0, 0.0)
+    core.create_blank_world_internal(128.0, 128.0, 8.0, 0.0)
         .expect("the blank-world reset should succeed");
     let (width, height) = (core.watermap.width, core.watermap.height);
     core.watermap
         .replace_baseline_depth_from_dense(&vec![1.0; width * height])
         .expect("the flood fills every sample");
-    // A 7 m road along z = 0 across the 40 m world, centred on the origin: its top triangles lie
-    // within the two middle rows of 10 m cells and reach into no other row.
+    // A 7 m road along z = 0 across the 128 m world, centred on the origin: its top triangles lie
+    // within the two middle rows of 8 m cells and reach into no other row.
     let mut graph = RegionGraph::new();
-    let west = graph.add_node(point(-30.0, 0.0, false), NodeType::Junction);
-    let east = graph.add_node(point(30.0, 0.0, false), NodeType::Junction);
+    let west = graph.add_node(point(-70.0, 0.0, false), NodeType::Junction);
+    let east = graph.add_node(point(70.0, 0.0, false), NodeType::Junction);
     connect(&mut graph, west, east, 7.0, false);
     graph.rebuild_intersection_clips();
     core.region_graph = graph;
@@ -430,21 +430,18 @@ fn water_meshes_drop_the_cells_a_road_meets_keyed_by_the_patch_generation() {
         .expect("the flooded patch has a mesh key");
     assert_eq!(key.cover_generation, core.terrain_payload_generation_for_patch(0, 0));
     let input = SimulationNode::water_patch_mesh_build_input(&core, key, patch);
-    let rows: Vec<Vec<bool>> = input.dropped.chunks(4).map(<[bool]>::to_vec).collect();
-    assert_eq!(
-        rows,
-        [[false; 4], [true; 4], [true; 4], [false; 4]],
-        "the road drops the two middle rows"
-    );
+    let rows: Vec<Vec<bool>> = input.dropped.chunks(16).map(<[bool]>::to_vec).collect();
+    let expected: Vec<Vec<bool>> = (0..16).map(|row| vec![row == 7 || row == 8; 16]).collect();
+    assert_eq!(rows, expected, "the road drops the two middle rows");
     let [mesh] = SimCore::build_water_patch_mesh_cache_entries(vec![input])
         .try_into()
         .expect("one water mesh");
-    assert_eq!(mesh.stats.road_clipped_cells, 8);
-    assert_eq!(mesh.stats.emitted_triangles, 16);
+    assert_eq!(mesh.stats.road_clipped_cells, 32);
+    assert_eq!(mesh.stats.emitted_triangles, 448);
     assert!(
         mesh.vertices
             .iter()
-            .all(|vertex| vertex.z.abs() >= 10.0),
+            .all(|vertex| vertex.z.abs() >= 8.0),
         "only the outer rows are emitted"
     );
 

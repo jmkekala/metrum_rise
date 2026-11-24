@@ -14,7 +14,7 @@ use std::time::Duration;
 
 fn world() -> SimCore {
     let mut core = test_core();
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     core.time.speed_multiplier = 1.0;

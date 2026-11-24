@@ -45,7 +45,7 @@ func _run() -> void:
 	await process_frame
 	_simulation = _main.get_node("SimulationNode")
 	var input_manager: Node = _main.get_node("InputManager")
-	_expect(_simulation.create_blank_world(640.0, 640.0, 4.0, 128.0, 0.0), "the blank world must load")
+	_expect(_simulation.create_blank_world(640.0, 640.0, 4.0, 0.0), "the blank world must load")
 	for step in 80:
 		if _simulation.get_world_surface_height(Vector2.ZERO) > HILL_TOP_M:
 			break

@@ -501,7 +501,7 @@ fn new_worlds(e: &mut Entries) {
     let path = std::env::temp_dir().join(format!("metrum-code17-{}.world", std::process::id()));
     let path = path.to_str().unwrap();
     e.run("blank world", || {
-        core.create_blank_world_internal(WORLD_M, WORLD_M, 10.0, 640.0, 0.0)
+        core.create_blank_world_internal(WORLD_M, WORLD_M, 8.0, 0.0)
             .unwrap();
         core.build_snapshot();
     });

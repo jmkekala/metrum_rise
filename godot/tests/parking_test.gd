@@ -156,7 +156,7 @@ func _parked_draw_distance(parked: Node3D, stream: Node) -> void:
 func _run() -> void:
 	var sim := SimulationNode.new()
 	root.add_child(sim)
-	_expect(sim.create_blank_world(256.0, 256.0, 2.0, 128.0, 0.0), "isolated world")
+	_expect(sim.create_blank_world(256.0, 256.0, 2.0, 0.0), "isolated world")
 	sim.set_simulation_speed(0.0)
 	var generation := sim.get_network_render_generation()
 	sim.add_road_with_snap(PackedVector3Array([Vector3(-90, 0, 0), Vector3(90, 0, 0)]), 1, 1, true)

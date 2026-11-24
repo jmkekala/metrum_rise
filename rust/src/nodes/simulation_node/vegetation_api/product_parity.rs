@@ -5,15 +5,19 @@
 //! `product_golden.txt` was written once, by the control's `vegetation.gd` `_upload_patch` on a
 //! rendered Godot 4.7.2 (the near buffers and the engine's own near bounds read back only from a
 //! real renderer), for every patch of two worlds at three camera distances: a 2040 m blank world
-//! with its generated scatter, on the coarse grid and a third of the fine grid, and a 1020 m
-//! blank world with brush stands of every preset, pinned plants, three hedge rows and a cleared
-//! disc, on both grids. A `C` line holds the renderer's mesh catalogue as the bridge packs it;
+//! (2,048 m since A2) with its generated scatter, on the coarse grid and a third of the fine grid,
+//! and a 1020 m (1,024 m) blank world with brush stands of every preset, pinned plants, three
+//! hedge rows and a cleared disc, on both grids. A `C` line holds the renderer's mesh catalogue as the bridge packs it;
 //! each `P` line one upload: world, key, camera case, the bands the upload chose, the origin, the
 //! tree count, the canopy box, the SHA-256 of its placements, stand cover and hedge runs, and the
 //! SHA-256 of its instance records (per instance: species, level, variant, caster, count, colour
 //! and custom lanes, both bounds, the range, and the SHA-256 of the buffer).
-//! Canopy height calibration re-pinned the affected cover and draw digests. The placements,
-//! catalogue, hedge runs, counts and canopy origin bounds still match the GDScript capture.
+//! Canopy height calibration re-pinned the affected cover and draw digests.
+//!
+//! Grid alignment round A2 moved both worlds onto the world rules (2,048 m and 1,024 m at 8 m
+//! cells, 512 m patches), so every upload's origin and products moved: the `P` lines are now
+//! this code's own output over the same uploads (world, key, camera case, bands), written by
+//! `record_vegetation_product_golden`; the `C` catalogue line is the GDScript capture's.
 
 use super::land_cover::Coverage;
 use super::*;
@@ -56,8 +60,10 @@ fn f32_bytes(values: &[f32]) -> Vec<u8> {
 // bridge calls.
 fn world(index: u32) -> SimCore {
     let mut core = super::super::tests::vegetation_test_core(Default::default());
-    let size = if index == 0 { 2040.0 } else { 1020.0 };
-    core.create_blank_world_internal(size, size, 10.0, 510.0, 400.0)
+    // A2 (grid alignment): 2,048 m and 1,024 m at 8 m cells; the control wrote 2,040 m and
+    // 1,020 m at 10 m.
+    let size = if index == 0 { 2048.0 } else { 1024.0 };
+    core.create_blank_world_internal(size, size, 8.0, 400.0)
         .unwrap();
     if index == 1 {
         let options = (0..26).filter(|o| !(17..=19).contains(o));
@@ -139,6 +145,69 @@ const SETTINGS: ProductSettings = ProductSettings {
     rock_range_m: 420.0,
 };
 
+// The patch span of a key's grid (`div` patches across one 512 m render patch).
+fn span_of(div: i64) -> f32 {
+    512.0 / div as f32
+}
+
+// One upload's products: placements, stand cover and hedge-run digests, then the tree count,
+// canopy box and the digest of its instance records.
+struct UploadProducts {
+    placements: String,
+    cover: String,
+    runs: String,
+    count: i64,
+    canopy: String,
+    records: String,
+    batches: usize,
+}
+
+fn upload_products(
+    core: &SimCore,
+    catalogue: &ProductCatalogue,
+    origin: Vector2,
+    span: f32,
+    (understory, near_band, caster): (bool, bool, bool),
+) -> UploadProducts {
+    let placements = decorative_tree_patch(core, origin, span, understory);
+    let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
+    let (bytes, width, height, bounds) =
+        Coverage::build(core, origin - Vector2::splat(margin), span + 2.0 * margin)
+            .stand_parts(STAND_RADIUS_TEXELS);
+    let runs = hedge_runs(core, origin, span);
+    let inputs = ProductInputs {
+        placements: &placements,
+        cover: (!bytes.is_empty()).then_some(StandCover {
+            bytes: &bytes,
+            width: width as i64,
+            height: height as i64,
+            bounds,
+        }),
+        runs: if near_band { &[] } else { &runs },
+        origin: [origin.x, origin.y],
+        near_band,
+        caster,
+        settings: SETTINGS,
+    };
+    let (count, canopy, records, batches) = with_product(&inputs, catalogue, |product| {
+        (
+            product.tree_count,
+            float_hex(&product.canopy_box.lanes()),
+            record_lines(product),
+            product.batches.len(),
+        )
+    });
+    UploadProducts {
+        placements: sha(f32_bytes(&placements)),
+        cover: sha(&bytes),
+        runs: sha(f32_bytes(&runs)),
+        count,
+        canopy,
+        records,
+        batches,
+    }
+}
+
 #[test]
 fn vegetation_product_matches_draw_golden_bitwise() {
     let golden = include_str!("product_golden.txt");
@@ -155,44 +224,22 @@ fn vegetation_product_matches_draw_golden_bitwise() {
         assert_eq!(f[0], "P");
         let num = |i: usize| f[i].parse::<i64>().unwrap();
         let core = &worlds[num(1) as usize];
-        let (understory, near_band, caster) = (num(6) == 1, num(7) == 1, num(8) != 0);
+        let bands = (num(6) == 1, num(7) == 1, num(8) != 0);
         let origin = floats_of(f[9]);
         let origin = Vector2::new(origin[0], origin[1]);
-        let span = 510.0 / num(4) as f32;
-        let placements = decorative_tree_patch(core, origin, span, understory);
-        assert_eq!(sha(f32_bytes(&placements)), f[12], "placements of {line}");
-        let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
-        let (bytes, width, height, bounds) =
-            Coverage::build(core, origin - Vector2::splat(margin), span + 2.0 * margin)
-                .stand_parts(STAND_RADIUS_TEXELS);
-        assert_eq!(sha(&bytes), f[13], "stand cover of {line}");
-        let runs = hedge_runs(core, origin, span);
-        assert_eq!(sha(f32_bytes(&runs)), f[14], "hedge runs of {line}");
-        let inputs = ProductInputs {
-            placements: &placements,
-            cover: (!bytes.is_empty()).then_some(StandCover {
-                bytes: &bytes,
-                width: width as i64,
-                height: height as i64,
-                bounds,
-            }),
-            runs: if near_band { &[] } else { &runs },
-            origin: [origin.x, origin.y],
-            near_band,
-            caster,
-            settings: SETTINGS,
-        };
-        let (count, canopy, records, batches) = with_product(&inputs, &catalogue, |product| {
-            (
-                product.tree_count,
-                float_hex(&product.canopy_box.lanes()),
-                record_lines(product),
-                product.batches.len(),
-            )
-        });
-        instances += batches;
-        if count != num(10) || canopy != f[11] || sha(records.as_bytes()) != f[15] {
-            mismatches.push(format!("{line}\n  rust: {count} {canopy}\n{records}"));
+        let products = upload_products(core, &catalogue, origin, span_of(num(4)), bands);
+        assert_eq!(products.placements, f[12], "placements of {line}");
+        assert_eq!(products.cover, f[13], "stand cover of {line}");
+        assert_eq!(products.runs, f[14], "hedge runs of {line}");
+        instances += products.batches;
+        if products.count != num(10)
+            || products.canopy != f[11]
+            || sha(products.records.as_bytes()) != f[15]
+        {
+            mismatches.push(format!(
+                "{line}\n  rust: {} {}\n{}",
+                products.count, products.canopy, products.records
+            ));
         }
         checked += 1;
     }
@@ -206,6 +253,55 @@ fn vegetation_product_matches_draw_golden_bitwise() {
         checked >= 500 && instances > 5000,
         "{checked} uploads, {instances} batches"
     );
+}
+
+// Grid alignment A2: the golden's worlds moved to 2,048 m and 1,024 m at 8 m cells with 512 m
+// patches, so every upload's origin and products moved. This writes the golden again from the
+// current code over the same uploads (world, key, camera case, bands), each origin on the new
+// patch grid. Run: `METRUM_VEGETATION_GOLDEN_OUT=<file> <test binary> record_vegetation_product_golden --ignored`.
+#[test]
+#[ignore = "writes product_golden.txt; set METRUM_VEGETATION_GOLDEN_OUT"]
+fn record_vegetation_product_golden() {
+    let out = std::env::var("METRUM_VEGETATION_GOLDEN_OUT").expect("METRUM_VEGETATION_GOLDEN_OUT");
+    let golden = include_str!("product_golden.txt");
+    let catalogue_line = golden.lines().next().unwrap();
+    let catalogue =
+        ProductCatalogue::from_lanes(&floats_of(catalogue_line.strip_prefix("C ").unwrap()))
+            .expect("catalogue lanes");
+    let worlds = [world(0), world(1)];
+    let mut lines = vec![catalogue_line.to_owned()];
+    for line in golden.lines().skip(1) {
+        let f: Vec<&str> = line.split(' ').collect();
+        let num = |i: usize| f[i].parse::<i64>().unwrap();
+        let core = &worlds[num(1) as usize];
+        let span = span_of(num(4));
+        let half = core.config.width_m * 0.5;
+        let origin = Vector2::new(
+            -half + num(2) as f32 * span,
+            -half + num(3) as f32 * span,
+        );
+        let bands = (num(6) == 1, num(7) == 1, num(8) != 0);
+        let p = upload_products(core, &catalogue, origin, span, bands);
+        lines.push(format!(
+            "P {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            f[1],
+            f[2],
+            f[3],
+            f[4],
+            f[5],
+            f[6],
+            f[7],
+            f[8],
+            float_hex(&[origin.x, origin.y]),
+            p.count,
+            p.canopy,
+            p.placements,
+            p.cover,
+            p.runs,
+            sha(p.records.as_bytes()),
+        ));
+    }
+    std::fs::write(out, lines.join("\n") + "\n").unwrap();
 }
 
 // `RENDER-32-D`: the background path (a snapshot of the patch's inputs, the three queries and
@@ -231,7 +327,7 @@ fn background_patch_matches_draw_golden_bitwise() {
         let request = PatchRequest {
             key: [num(2) as i32, num(3) as i32, num(4) as i32],
             origin: Vector2::new(origin[0], origin[1]),
-            span: 510.0 / num(4) as f32,
+            span: span_of(num(4)),
             understory: num(6) == 1,
             near_band: num(7) == 1,
             caster: num(8) != 0,

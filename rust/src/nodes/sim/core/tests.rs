@@ -1296,7 +1296,7 @@ fn benchmark_blank_world_reset_with_assets() {
         for sample in 0..14 {
             let start = Instant::now();
             for _ in 0..5 {
-                core.create_blank_world_internal(256.0, 256.0, 8.0, 128.0, 1000.0)
+                core.create_blank_world_internal(256.0, 256.0, 8.0, 1000.0)
                     .unwrap();
             }
             let milliseconds = start.elapsed().as_secs_f64() * 1000.0 / 5.0;
