@@ -20419,7 +20419,8 @@ terrain patch each frame (`_terrain.patches`, hidden ones included): its pre-dra
 6-7 ms a frame at 2,300-3,100 built patches and 12 ms at 5,459 (instrumented), about 2 us a built
 patch, the largest main-thread item of every flight frame; it grows with the distance travelled
 (`RENDER-75`). The `terrain_stream` record's `terrain_wanted_changes` is a running total, not a
-frame's count (`PatchStream::frame` carries it over).
+frame's count (`PatchStream::frame` carries it over). (`RENDER-75` fixed in round R75,
+[below](#the-water-reflection-follows-the-patches-events-render-75-round-r75-2026-11-24).)
 
 **Setting changes alone** (the poll 256 a frame and `STREAM_BUDGET_US` 6.0 ms, a local build not
 committed; uninstrumented, one run a side, the parallel import running):
@@ -20438,6 +20439,62 @@ The poll's cap changes nothing (it never binds). Three times the ledger keeps th
 within 62 missing but costs about 6-7 ms of frame time at the median while the backlog lasts: the
 installs a second rise by 1.3-1.9 times, not three, because the frames they lengthen are the
 frames they are counted in.
+
+### The water reflection follows the patches' events (`RENDER-75`, round R75, 2026-11-24)
+
+**What the hook walked.** The reflection's pre-draw hook (`water_reflection.gd`) kept its terrain
+proxies in step by a round robin over every built terrain patch (`_terrain.patches`, hidden ones
+included) and over every proxy, a tenth of each a frame plus every patch `patch_render_will_change`
+had marked, and it bounded the water's screen rectangle by walking every built water patch.
+Patches that leave view are only hidden, so both walks grew with the distance travelled. What a
+proxy compares (mesh, transform, material copy, culling box, margin) changes only in
+`terrain.gd`'s restage, level change and removal, which already sent `patch_render_will_change`,
+or while the patch is hidden; what the round robin alone caught was a patch shown or hidden.
+
+**What drives it now.** `terrain.gd` sends `patch_visibility_changed(key)` where a built patch's
+node is shown or hidden (`stream_activate` and a restage through
+`_apply_patch_visibility_for_residency`, `stream_deactivate`, `stream_build`). The reflection marks
+the key (with whether its material copy must be refreshed, as before only on
+`patch_render_will_change`) and its sync visits exactly the marked keys: a drawn patch gets its
+proxy made or updated, any other loses it. The proxies are keyed by patch key, the terrain node's
+own visibility and the reset mark every patch once (an event, never a frame), and the patches
+shown before the reflection's setup are marked at setup. While the world has water the sync runs
+every frame, a mirror drawing or not: synced only while a mirror drew (as before), a 1 s turn's
+1,015 marks came due in the frame the mirror came back (131 ms). Bound: O(patches shown, hidden,
+restaged, re-levelled or removed since the last sync) a frame, independent of the built and the
+drawn patches; a dry world keeps its marks (one a patch) and pays nothing. The water rectangle
+walks the resident water patches only (a water patch is drawn only while resident), O(resident
+water patches) a mirror a frame. A later round that releases hidden patches stays correct: a
+removal already marks its key. Its perf record gains `rect_ms`, `proxy_ms`, `scaffold_ms` and
+`proxy_visits`; the stream benchmark's `METRUM_STREAM_PROXY_CHECK=1` (untimed) records per row
+the proxy book against the patches the frame drew.
+
+**Measured** (`flight_high` on the 60 km Kuopio, as [above](#base-terrain-streaming-on-a-60-km-map-terrain-41-step-1-round-t41a-2026-11-24):
+the T41a library with its counters, `--detail --drawn --cpus` the eight P-cores, one run a side,
+load average 1.6-6.3; diagnostic, not acceptance timing; before = the scripts of `dev`
+`d4f938ae6`):
+
+| Leg | built | hook ms a mirrored frame, before / after | main thread on-CPU ms a frame | frame p50 ms | builds a frame, missing max |
+|---|---|---|---|---|---|
+| start's settle | 1,521 to 3,472 | 6.99 / 5.37 | 19.50 / 17.28 | 19.5 / 17.7 | 2.75 / 2.80, 1,951 / 1,951 |
+| flight, 2,400 m/s | 3,472 to 4,269-4,440 | 10.54 / 7.99 | 18.13 / 15.76 | 21.7 / 18.8 | 1.81 / 1.91, 643 / 486 |
+| turn, 1 s | 4,272-4,637 | 18.3 / 9.2 (max frame 41.5 / 30.4) | 14.99 / 15.27 | 13.3 / 14.0 | 2.33 / 2.97, 1,056 / 852 |
+| settle after it | to 5,459 | 11.98 / 7.89 | 27.26 / 22.31 | 27.7 / 22.6 | 1.91 / 1.67, 1,028 / 820 |
+
+After, the hook is the water rectangle (4.3-6.8 ms a frame, about 2.3 us a resident water patch,
+2,809-3,170 resident) and the proxy sync (0.9-1.5 ms for 4-7 patches a frame, at most 71; most of
+it the material copy and its refresh); at the settle's end, 5,459 built and nothing changing, the
+sync is 0.0 ms and the hook 6.5 ms against 10.9 before, flat in the built count. The installs a
+frame are unchanged (1.7-3.0); missing falls with the faster frames. The intermediate build that
+synced only while a mirror drew had the same means but a 131 ms frame in the turn.
+
+**Proxy book.** With `METRUM_STREAM_PROXY_CHECK=1` (one untimed run a side): before, the book was
+out of step with the drawn patches in 661 of 700 frames of the start's settle, 476 of 567 of the
+settle after the turn and every frame of the turn (up to 311 drawn patches missing a proxy, 365
+proxies for hidden ones); after, in step in all 1,707 frames of the four legs. At both settled
+points both sides hold one proxy per drawn patch with its mesh, transform, material copy, box and
+margin (2,809 of 2,809), over the same drawn set (equal key hashes), so the reflection draws the
+same proxies.
 
 ## Implemented Runtime Contract
 

@@ -88,6 +88,8 @@
 ## terrain patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
 ## frame back) saves the view at a quarter, half and three quarters of each motion and after its
 ## turn. Every sample records the process's memory at its end (`memory`).
+## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
+## terrain proxies against the patches the frame drew (`proxies`).
 ## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
 ## timestamps) every sample records
 ## `gpu_passes`: per pass, named by its starting mark and that mark's occurrence in the frame, the
