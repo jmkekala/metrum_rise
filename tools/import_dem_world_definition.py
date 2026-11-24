@@ -8,9 +8,9 @@ such as the National Land Survey of Finland `Korkeusmalli 2 m` tiles placed unde
     maps/raw/Kuopio/324km2/
 
 The output matches the live `WorldDefinition` schema used by the Rust runtime.
-The importer resamples the DEM into the authored terrain grid, converts it into
-the current runtime's pre-`HEIGHT_SCALE` sample space, chunks the source terrain,
-and writes a ready-to-open `.sqlite` world asset.
+The importer resamples the DEM into the authored terrain grid, keeps the heights in
+metres (the runtime's unit since world format 6), chunks the source terrain, and
+writes a ready-to-open `.sqlite` world asset.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ except ImportError as exc:  # pragma: no cover - environment-dependent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WORLD_DEFINITION_FORMAT_VERSION = 3
+WORLD_DEFINITION_FORMAT_VERSION = 6
 WORLD_DEFINITION_SCHEMA = """
 CREATE TABLE world_definition_meta(
     format_version INTEGER NOT NULL,
@@ -69,8 +69,16 @@ CREATE TABLE world_open_water_fills(
     world_z REAL NOT NULL,
     surface_elevation_m REAL NOT NULL
 );
+CREATE TABLE world_resource_deposit_chunks(
+    resource_id TEXT NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_z INTEGER NOT NULL,
+    width_samples INTEGER NOT NULL,
+    height_samples INTEGER NOT NULL,
+    richness_blob_u16_le BLOB NOT NULL,
+    PRIMARY KEY(resource_id, chunk_x, chunk_z)
+);
 """
-HEIGHT_SCALE = 20.0
 DEFAULT_ENV_CELL_M = 40.0
 DEFAULT_ZONE_CELL_M = 10.0
 DEFAULT_TERRAIN_CHUNK_M = 512.0
@@ -405,7 +413,6 @@ def main() -> int:
         terrain_cell_m=args.terrain_cell_m,
         nodata=nodata,
     )
-    runtime_samples = elevation_m / HEIGHT_SCALE
 
     write_world_definition(
         output_path=output_path,
@@ -417,7 +424,7 @@ def main() -> int:
         terrain_base_elevation_m=args.terrain_base_elevation_m,
         env_cell_m=args.env_cell_m,
         zone_cell_m=args.zone_cell_m,
-        source_heights_runtime=runtime_samples,
+        source_heights_runtime=elevation_m,
     )
 
     width_samples = int(round(width_m / args.terrain_cell_m)) + 1
