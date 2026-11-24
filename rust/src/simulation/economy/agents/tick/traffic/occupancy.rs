@@ -10,7 +10,7 @@ use super::super::super::{
 use super::super::access::CROSSING_GIVE_UP_S;
 use super::super::claims::LaneClaimContext;
 use crate::config::{
-    CAR_BODY_LENGTH_M, IDM_B, IDM_S_MIN, IDM_T_HEAD, TRUCK_BODY_LENGTH_M, WALKER_BODY_LENGTH_M,
+    CAR_BODY_LENGTH_M, IDM_S_MIN, IDM_T_HEAD, TRUCK_BODY_LENGTH_M, WALKER_BODY_LENGTH_M,
 };
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::determinism::stable_index;
@@ -187,8 +187,9 @@ fn join_line(attach_d: f32, half: f32) -> f32 {
 
 /// A join hold (`TRAFFIC-45`) of agent `me`, a body of half length `half`, at `attach_d` in
 /// `bucket`: its stop line, and whether it may enter now. Its line is its rear in its slot less
-/// [`IDM_S_MIN`]; the nearest body behind the line that can still stop short of it (its front,
-/// one tick at its speed `speed(agent)` and its braking distance at [`IDM_B`]), stops there, and one that cannot is let through: the line then stands at that body's rear,
+/// [`IDM_S_MIN`]; the nearest body behind the line that does not reach it in this tick (its
+/// front and one tick at its speed `speed(agent)`, the tick before its car following sees the
+/// line) stops there, and one that cannot is let through: the line then stands at that body's rear,
 /// moving up with it; a body standing across the line keeps it at that body's rear. It enters
 /// once the line holds (nobody let through), so every body behind stops short of its slot, and
 /// no body lies within its slot. Its own entry and other holds' zero-length stop lines are not
@@ -213,7 +214,7 @@ pub(in crate::simulation::economy::agents::tick) fn join_hold(
         .map_or(line, |&(d, _, h)| line.min(d - h));
     let let_through = bucket[..behind].iter().rev().find(body).filter(|&&(d, agent, h)| {
         let v = speed(agent).max(0.0);
-        d + h + v * delta + v * v / (2.0 * IDM_B) > stop
+        d + h + v * delta > stop
     });
     if let Some(&(d, _, h)) = let_through {
         return ((d - h).max(0.0), false);

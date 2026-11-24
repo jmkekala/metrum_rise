@@ -118,9 +118,10 @@ mod tests {
             join_hold(&[(over, 1, HALF)], 100.0, HALF, me, standing, 0.25),
             (over - HALF, false)
         );
-        // One that cannot stop in time at its speed is let through too.
+        // One that reaches it in this tick at its speed is let through too.
         let fast = |_| 10.0;
-        assert!(!join_hold(&[(short - 5.0, 1, HALF)], 100.0, HALF, me, fast, 0.25).1);
+        assert!(!join_hold(&[(short - 2.0, 1, HALF)], 100.0, HALF, me, fast, 0.25).1);
+        assert!(join_hold(&[(short - 3.0, 1, HALF)], 100.0, HALF, me, fast, 0.25).1);
         // A body in the slot ahead, or across its centre, keeps it out.
         assert!(!join_hold(&[(103.0, 1, HALF)], 100.0, HALF, me, standing, 0.25).1);
         assert!(!join_hold(&[(99.0, 1, HALF)], 100.0, HALF, me, standing, 0.25).1);
