@@ -51,6 +51,9 @@ const VOTE_ROWS := 12
 const VOTE_MAX_DISTANCE_M := 3000.0
 # Screen share added around the water's rectangle for rays the ripples bend out of it.
 const CROP_MARGIN := 0.03
+# Screen points (in shares) whose rays' ground the screen rectangle looks about when the hull leaves
+# a side open: the middles of the bottom, left, right and top edges (`RENDER-76`).
+const RECT_EDGE_RAYS: Array[Vector2] = [Vector2(0.5, 1.0), Vector2(0.0, 0.5), Vector2(1.0, 0.5), Vector2(0.5, 0.0)]
 # Frames over which the scaffold batches' proxies are checked round robin
 # (water_reflection_sources.gd); a batch a few frames late only shows late in the reflection.
 const PROXY_SYNC_FRAMES := 10
@@ -391,8 +394,9 @@ func _place_camera(
 # Cost (`RENDER-76`): O(1) when no water patch event came, and the plane, the screen and the camera
 # are as at this mirror's last rectangle. Otherwise O(h) projections, h the hull's boundary corners (the resident
 # set's outline: it does not grow with the patches inside it), plus, where the near plane cuts the
-# hull, at most 27 patches around the cut's ends and the camera's foot; the walk, O(resident
-# patches), only when those cannot settle a side (counted as `rect_walks`; none on the flights).
+# hull, at most 63 patches: 3 x 3 about the cut's two ends, the camera's foot and the ground of the
+# screen edges' middles. The walk, O(resident patches), only when those cannot settle a side
+# (counted as `rect_walks`).
 func _water_screen_rect(camera: Camera3D, plane_y: float, index: int) -> Rect2:
 	if _water == null:
 		return Rect2(0.0, 0.0, 1.0, 1.0)
@@ -469,10 +473,21 @@ func _water_screen_rect_kept(camera: Camera3D, plane_y: float, index: int) -> Re
 		previous = a
 		previous_d = da
 	if not cuts.is_empty() and not _rect_settled(cut_lo, cut_hi):
-		# The patches about the cut's ends and the camera's foot add the walk's own points there.
+		# The patches about the cut's ends and the camera's foot, then about where the rays through
+		# the middles of the screen's edges meet the plane, add the walk's own points there: those
+		# reach past a screen edge wherever water lies beyond it.
 		cuts.append(eye)
 		for cut in cuts:
 			_add_patches_near(cut, camera, plane_y, eye, forward, near_m, screen)
+		for edge: Vector2 in RECT_EDGE_RAYS:
+			if _rect_settled(cut_lo, cut_hi):
+				break
+			var pixel := edge * screen
+			var origin := camera.project_ray_origin(pixel)
+			var direction := camera.project_ray_normal(pixel)
+			if direction.y < -1.0e-6 and (plane_y - origin.y) / direction.y > 0.0:
+				_add_patches_near(origin + direction * ((plane_y - origin.y) / direction.y), camera,
+					plane_y, eye, forward, near_m, screen)
 		if not _rect_settled(cut_lo, cut_hi):
 			_rect_walks += 1
 			_rect_walks_total += 1
