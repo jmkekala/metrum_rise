@@ -99,6 +99,38 @@ class LakeRuleTest(unittest.TestCase):
         row = result.heights[(2320 - 2096) // 8]
         self.assertLess(row[(1096 - 1000) // 8], row[(1064 - 1000) // 8])
 
+    def test_river_narrower_than_two_cells_is_not_imported(self):
+        # 41 x 41 samples at 8 m. Three 280 m strips across the map, 15.9, 16.1 and 6 m wide:
+        # the 15.9 m river is not imported, the 16.1 m river is, and the 6 m lake is (the rule
+        # is for rivers only; it keeps one row of samples).
+        grid = SampleGrid(west_e=1000.0, north_n=2320.0, cell_m=8.0, width=41, height=41)
+        dem = np.full((41, 41), 60.0, dtype=np.float32)
+        narrow = shapely.box(1020.0, 2040.0, 1300.0, 2055.9)
+        wide = shapely.box(1020.0, 2120.0, 1300.0, 2136.1)
+        lake = shapely.box(1020.0, 2203.0, 1300.0, 2209.0)
+        bodies = [
+            WaterBody(key=1, kind="river", level_mm=50_000, geometry=narrow),
+            WaterBody(key=2, kind="river", level_mm=50_000, geometry=wide),
+            WaterBody(key=3, kind="lake", level_mm=50_000, geometry=lake),
+        ]
+        result = apply_hydrography(dem, grid, bodies, [], WaterRule())
+
+        dropped = result.report["rivers_dropped_narrow"]
+        self.assertEqual([river["key"] for river in dropped], [1])
+        self.assertAlmostEqual(dropped[0]["inscribed_width_m"], 15.9, delta=0.002)
+        self.assertEqual(sorted(b.key for b in result.bodies), [2, 3])
+        narrow_rows = slice((2320 - 2055) // 8, (2320 - 2040) // 8 + 1)
+        self.assertTrue(np.all(result.heights[narrow_rows] == 60.0), "dry, the elevation model")
+        self.assertEqual(len(result.fills), 2)
+
+        # A width within the tolerance of the limit is not decided either way.
+        edge = shapely.box(1020.0, 2040.0, 1300.0, 2055.9995)
+        with self.assertRaises(ValueError):
+            apply_hydrography(
+                dem, grid, [WaterBody(key=4, kind="river", level_mm=50_000, geometry=edge)], [],
+                WaterRule(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

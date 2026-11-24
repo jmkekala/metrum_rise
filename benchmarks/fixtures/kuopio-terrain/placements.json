@@ -2,9 +2,9 @@
   "schema_version": 1,
   "input_contract": "recovered post-snap XZ endpoints of logged two-point strokes; source/visible Y resampled; not exact mouse replay",
   "log_sha256": "3975f21e178588338837ed3628734b225fe34a73b25138d04b076b3ff406983b",
-  "reference_save_sha256": "5f97a0668d9953c87ff04ac89c8004f6507cf22533cc65229924317e706bcbb1",
-  "source_world_sha256": "f13cd1350fee43009550ecf0a6f4a81c8715597996e5145d1f6314d91c9e3160",
-  "source_terrain_sha256": "d7e45fbf0ccebaa7569ebb957ef0c402480a8ad8820190e5f18971d9c3300396",
+  "reference_save_sha256": "07975006c4fccf0dce3539d30bb64acf347cf6eb86ec890110b16f8debad330d",
+  "source_world_sha256": "594e11ce4eb5b44fe2a55dbad4b6e751a251113ed5df195aab1eefa7e7045e23",
+  "source_terrain_sha256": "eaf225f4423e615f6f207323fe03b00defb85fcb1ecd4b70e840266a0dc5f631",
   "reference_save": "benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
   "source_world": "godot/bootstrap/worlds/kuopio_18432m_8m.sqlite",
   "world_config": [

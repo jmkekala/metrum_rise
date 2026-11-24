@@ -3,7 +3,7 @@
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;
-use super::tick::lane_attach_slot_clear;
+use super::tick::{CROSSING_GIVE_UP_S, lane_attach_slot_clear};
 use super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
     MODE_WALK, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
@@ -227,16 +227,25 @@ impl AgentSystem {
             }
         }
         // A crossing over a rebuilt lane loses its entry there; its next access step finds the
-        // lane it crosses now (`PARK-32`).
+        // lane it crosses now (`PARK-32`). A hold on a rebuilt lane to join it is released with
+        // its wait (`TRAFFIC-45`): it waits again for its slot, where it now is.
         let agents = &self.agents;
+        let affected = |lane: u32| lane != u32::MAX && affected_lane_ids.contains(&(lane as usize));
         let crossers: Vec<usize> = crate::thread_pools::install(|| {
             scan_agents(agents.len(), |i| {
-                let lane = agents.crossing_lane[i];
-                (lane != u32::MAX && affected_lane_ids.contains(&(lane as usize))).then_some(i)
+                (affected(agents.crossing_lane[i])
+                    || (agents.crossing_wait_s[i] >= CROSSING_GIVE_UP_S
+                        && affected(agents.planned_attach_lane_id[i])))
+                .then_some(i)
             })
         });
         for i in crossers {
-            self.agents.crossing_lane[i] = u32::MAX;
+            if affected(self.agents.crossing_lane[i]) {
+                self.agents.crossing_lane[i] = u32::MAX;
+            }
+            if self.agents.crossing_wait_s[i] >= CROSSING_GIVE_UP_S {
+                self.agents.crossing_wait_s[i] = 0.0;
+            }
         }
         self.invalidate_lane_bucket_snapshot();
     }

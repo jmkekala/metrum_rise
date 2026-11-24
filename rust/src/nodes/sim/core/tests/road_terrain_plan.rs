@@ -642,9 +642,10 @@ fn kuopio_source_world_loads_its_stored_metres() {
     assert!(saved.heightmap.clone_source_dense() == metres, "the save's heights");
 }
 
-// The shipped Kuopio's lakes in the runtime (grid alignment A4): its fills flood exactly the
-// importer's water samples (2,541,524, `water_report.json`), each wet sample's surface at the level
-// of one of the world's fills: a fill leaking onto land would add wet samples.
+// The shipped Kuopio's lakes in the runtime (grid alignment A4, narrow rivers dropped in A9): its
+// fills flood exactly the importer's water samples (2,541,500, `water_report.json`), each wet
+// sample's surface at the level of one of the world's fills: a fill leaking onto land would add
+// wet samples.
 #[test]
 fn kuopio_source_world_floods_exactly_its_water() {
     let core = kuopio_source_core();
@@ -656,7 +657,7 @@ fn kuopio_source_world_floods_exactly_its_water() {
         .collect();
     assert_eq!(
         (core.world_lake_fills.len(), core.world_open_water_fills.len()),
-        (98, 12)
+        (95, 12)
     );
     let heights = core.heightmap.clone_source_dense();
     let depth = core.watermap.clone_baseline_depth_dense();
@@ -671,7 +672,7 @@ fn kuopio_source_world_floods_exactly_its_water() {
             );
         }
     }
-    assert_eq!(wet, 2_541_524, "wet samples");
+    assert_eq!(wet, 2_541_500, "wet samples");
 }
 
 // Open questions 8 and 37: the reference save is re-recorded with today's code (question 38) and

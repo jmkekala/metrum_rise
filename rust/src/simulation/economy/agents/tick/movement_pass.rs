@@ -9,6 +9,7 @@ use super::slices::MovementSlices;
 use super::trip_failures::FailureSink;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::economy::agents::ACCESS_LANE_ATTACH_PENDING;
 use crate::simulation::economy::agents::data::{AgentSystem, MovementClaimMode};
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -85,6 +86,12 @@ impl AgentSystem {
             |i| unsafe {
                 if movement_claim_modes[i] == MovementClaimMode::HeldEntry {
                     *slices.speed.get_mut(i) = 0.0;
+                    // A car held at its attach point counts its wait to join, below
+                    // `CROSSING_GIVE_UP_S` here (`TRAFFIC-45`, `try_pending_lane_attach`).
+                    if *slices.access_flags.get(i) & ACCESS_LANE_ATTACH_PENDING != 0 {
+                        *slices.crossing_wait.get_mut(i) =
+                            slices.crossing_wait.get(i).max(0.0) + delta;
+                    }
                     slices.note_frozen_parking_agent(i);
                     return;
                 }

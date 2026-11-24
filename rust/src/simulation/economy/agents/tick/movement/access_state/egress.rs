@@ -18,7 +18,9 @@ use super::super::super::lane_nav::{
 use super::super::super::planning::plan_network_replan;
 use super::super::network::apply_network_replan;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
-use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear, lane_half_length};
+use super::super::super::traffic::{
+    claim_lane_entry, join_hold, lane_attach_slot_clear, lane_half_length,
+};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::{
@@ -252,22 +254,43 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 let clear = |lane, d| {
                     crossing_clear(lane, d, half, transit_network, graph, lane_buckets, speed)
                 };
+                // Holding its place in its target lane (`TRAFFIC-45`), its stop line standing
+                // there since the last tick, it needs the slot free with the bodies behind held.
+                let waited = *slices.crossing_wait.get(i);
+                let placed = waited >= CROSSING_GIVE_UP_S && *slices.lane_d.get(i) >= 0.0;
+                let hold = |lag: f32| {
+                    lane_buckets.get(attach_lane_id).map(|bucket| {
+                        join_hold(bucket, attach_lane_d, half, i, |agent| *s_speed.get(agent), lag)
+                    })
+                };
+                let target_open = || {
+                    if placed {
+                        hold(0.0).is_some_and(|(_, ready)| ready)
+                    } else {
+                        clear(attach_lane_id, attach_lane_d)
+                    }
+                };
                 if !defer
                     && clear(crossed, crossed_d)
-                    && clear(attach_lane_id, attach_lane_d)
+                    && target_open()
                     && claim_lane_entry(i, crossed, lane_claims)
                     && claim_lane_entry(i, attach_lane_id, lane_claims)
                 {
-                    // Crossing: it holds the crossed lane at the crossing's distance.
+                    // Crossing: it holds the crossed lane at the crossing's distance, and a
+                    // holder keeps its stop line in its target lane (its wait stays).
                     *slices.crossing_lane.get_mut(i) = crossed as u32;
-                    *slices.crossing_wait.get_mut(i) = 0.0;
+                    if !placed {
+                        *slices.crossing_wait.get_mut(i) = 0.0;
+                    }
                     *slices.lane_d.get_mut(i) = crossed_d;
                 } else {
                     // Waiting at the mouth, off the road, for a gap, counted. A resident's car
                     // gives up after `CROSSING_GIVE_UP_S`: it leaves on the near lane, the one it
                     // would cross, and plans on from that lane's end; tried once, as the wait
-                    // reaches it (no plan: it waits on).
-                    let waited = *slices.crossing_wait.get(i);
+                    // reaches it (no plan: it waits on). Any other then holds its place in its
+                    // target lane, its stop line in `lane_distance` (`TRAFFIC-45`), while the
+                    // lane it crosses is clear: a far lane held for a busy near one would only
+                    // stand; meanwhile `lane_distance` is below zero, no hold.
                     *slices.crossing_wait.get_mut(i) += delta;
                     if waited < CROSSING_GIVE_UP_S
                         && *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S
@@ -277,6 +300,12 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         )
                     {
                         *slices.crossing_wait.get_mut(i) = 0.0;
+                    } else if *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S {
+                        let lag = if placed { 0.0 } else { delta };
+                        *slices.lane_d.get_mut(i) = match hold(lag) {
+                            Some((stop, _)) if clear(crossed, crossed_d) => stop,
+                            _ => -1.0,
+                        };
                     }
                     let mouth = path[path.len() - 2];
                     *s_pos_x.get_mut(i) = mouth.x;
@@ -317,18 +346,39 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 );
             }
             if reached_handoff {
+                // A car or truck that waited `CROSSING_GIVE_UP_S` to join holds its place in its
+                // lane (`TRAFFIC-45`): it enters once its slot is free ahead with the bodies
+                // behind held, and meanwhile its stop line stays in `lane_distance` (at the line
+                // itself while it holds a crossed lane there).
+                let half = lane_half_length(*s_tmode.get(i), *slices.vehicle_type.get(i));
+                let holding = *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S;
+                let hold = |lag: f32| {
+                    lane_buckets.get(attach_lane_id).map(|bucket| {
+                        join_hold(bucket, attach_lane_d, half, i, |agent| *s_speed.get(agent), lag)
+                    })
+                };
                 let attach_allowed = if *s_tmode.get(i) == MODE_CAR {
-                    lane_buckets
-                        .get(attach_lane_id)
-                        .map(|bucket| {
-                            let half =
-                                lane_half_length(*s_tmode.get(i), *slices.vehicle_type.get(i));
-                            lane_attach_slot_clear(bucket, attach_lane_d, half)
-                        })
-                        .unwrap_or(false)
-                        && claim_lane_entry(i, attach_lane_id, lane_claims)
+                    let open = if holding {
+                        hold(0.0).is_some_and(|(_, ready)| ready)
+                    } else {
+                        lane_buckets
+                            .get(attach_lane_id)
+                            .is_some_and(|bucket| lane_attach_slot_clear(bucket, attach_lane_d, half))
+                    };
+                    open && claim_lane_entry(i, attach_lane_id, lane_claims)
                 } else {
                     true
+                };
+                // Counts the wait to join, and takes or moves up the hold once it is due.
+                let wait_to_join = || {
+                    let lag = if holding { 0.0 } else { delta };
+                    *slices.crossing_wait.get_mut(i) += delta;
+                    if *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S
+                        && *slices.crossing_lane.get(i) == u32::MAX
+                        && let Some((stop, _)) = hold(lag)
+                    {
+                        *slices.lane_d.get_mut(i) = stop;
+                    }
                 };
                 if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
                     if trip.freight_gate {
@@ -351,6 +401,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                         *s_cur_b.get_mut(i) = usize::MAX;
                         hold_for_lane_attach!(slices, i, transit_network, attach_lane_id, attach_lane_d, origin_node);
+                        // Held off the lane, it counts on (`try_pending_lane_attach`); a holder
+                        // keeps its stop line.
+                        wait_to_join();
                         return false;
                     }
                 }
@@ -370,6 +423,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *s_pos_x.get_mut(i) = path[path.len() - 1].x;
                     *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                     *s_speed.get_mut(i) = 0.0;
+                    wait_to_join();
                     return false;
                 }
                 let parent_edge = transit_network.lane_system.lanes[attach_lane_id].edge_id;
@@ -384,6 +438,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     attach_lane_d,
                     origin_node
                 );
+                *slices.crossing_wait.get_mut(i) = 0.0;
                 *s_speed.get_mut(i) = if *s_tmode.get(i) == MODE_CAR {
                     graph
                         .edge(parent_edge)
@@ -457,12 +512,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 }
 
 /// Whether a car's egress step, ending at the mouth or past it (`crossing`, the lane it would
-/// cross there) or at its lane point (`reached_handoff`), may test or claim a lane, or give up a
-/// crossing, this tick: the steps the serial part runs (`PERF-33`). `half` is the car's half
-/// length, `waited` its crossing wait before the step. A crossing whose test fails on the buckets
-/// alone fails whatever the speeds the serial test reads: the margin behind is a body's speed,
-/// never below zero, times a positive time, so the margin at zero speed is the least it can be
-/// ([`crossing_clear`]). O(log bucket) for a car at a crossing, O(1) otherwise.
+/// cross there) or at its lane point (`reached_handoff`), may test or claim a lane, give up a
+/// crossing, or take or move a join hold (`TRAFFIC-45`), this tick: the steps the serial part
+/// runs (`PERF-33`). `half` is the car's half length, `waited` its crossing wait before the
+/// step: every step that ends with the wait at `CROSSING_GIVE_UP_S` or more is serial. A
+/// crossing whose test fails on the buckets alone fails whatever the speeds the serial test
+/// reads: the margin behind is a body's speed, never below zero, times a positive time, so the
+/// margin at zero speed is the least it can be ([`crossing_clear`]). O(log bucket) for a car at
+/// a crossing, O(1) otherwise.
 #[allow(clippy::too_many_arguments)]
 fn lane_step(
     crossing: Option<(usize, f32)>,
@@ -480,8 +537,8 @@ fn lane_step(
         return reached_handoff;
     };
     let open = |lane, d| crossing_clear(lane, d, half, network, graph, lane_buckets, |_| Some(0.0));
-    (open(crossed, crossed_d) && open(attach_lane, attach_d))
-        || (waited < CROSSING_GIVE_UP_S && waited + delta >= CROSSING_GIVE_UP_S)
+    waited + delta >= CROSSING_GIVE_UP_S
+        || (open(crossed, crossed_d) && open(attach_lane, attach_d))
 }
 
 /// A resident's car that waited [`CROSSING_GIVE_UP_S`] at its access mouth to cross the road
