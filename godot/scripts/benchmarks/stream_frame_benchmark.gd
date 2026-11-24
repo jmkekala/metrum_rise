@@ -84,8 +84,8 @@
 ## (`<phase>_start`), the motion, a 1 s 180-degree turn right after it (`<phase>_turn`) and the
 ## settle after it (`<phase>_settle`, at most FLIGHT_SETTLE_MAX_FRAMES). With the drawn probe each
 ## row carries the terrain's and water's backlog (`backlog`: waiting, oldest wait in frames, waiting
-## with the payload ready, in-view holes); every flight settle point records what a built terrain
-## patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
+## with the payload ready, in-view holes); the end of every leg but the turn records what a built
+## terrain patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
 ## frame back) saves the view at a quarter, half and three quarters of each motion and after its
 ## turn. Every sample records the process's memory at its end (`memory`).
 ## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
@@ -623,7 +623,7 @@ func _save_shot(name: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 	_viewport.get_texture().get_image().save_png(dir.path_join(name + ".png"))
 
-# What a built terrain patch holds, measured at a flight settle point (`TERRAIN-41`): over up to
+# What a built terrain patch holds, measured at the end of a flight leg (`TERRAIN-41`): over up to
 # PATCH_BYTES_SAMPLE built patches, the bytes of the textures only they name (read back) and of the
 # images and arrays they keep in system memory, a patch's mean; textures shared between patches and
 # one layer of the shared mask pages apart. Untimed: it reads textures back.

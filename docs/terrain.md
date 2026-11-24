@@ -12261,7 +12261,7 @@ tools/stream_benchmark.py census "$ARTIFACTS/c30-census.census"
   settle from the load's pose (`<phase>_start`), the motion, a 1 s 180-degree turn right after it
   (`_turn`) and the settle after it (`_settle`). With `--drawn` every row carries the terrain's and
   water's backlog (`backlog`: waiting, oldest wait in frames, waiting with the payload ready,
-  in-view holes, `StreamDrawnProbe.backlog`); every flight settle point records what a built
+  in-view holes, `StreamDrawnProbe.backlog`); the end of every leg but the turn records what a built
   terrain patch holds (`patch_bytes`: over 16 built patches, the textures only they name, read
   back, the images and arrays they keep, one layer of the shared mask pages); every sample its
   end's memory (`memory`: resident set, Godot's static memory, texture, buffer and video memory);
