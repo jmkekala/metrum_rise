@@ -145,7 +145,7 @@ func _fixtures() -> Array[Dictionary]:
 		"edge_views": [{"view": "fill_corner", "from": Vector2(-11.0, 11.0), "eye_m": 0.8, "at": Vector2(-6.1, 6.1), "at_m": -0.1}]})
 	# A 3 m mound across the side arm and a 2 m hollow under the west arm, sculpted before the
 	# roads, so the roads' profiles cut and fill and the mound's flanks fall across them.
-	result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
+	result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 3.0], [Vector2(-45, 0), 25.0, -2.0]],
 		"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
 	result[0]["distance"] = true
 	# TERRAIN-07-C's structure walls at a road mouth (TERRAIN-07-D round 3): the side road of
@@ -153,21 +153,21 @@ func _fixtures() -> Array[Dictionary]:
 	# mound, each seen at its mouth.
 	for fixture in result:
 		if fixture.name == "bridge_t":
-			fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -0.25]]
+			fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -5.0]]
 			fixture["mouth_views"] = [
 				{"view": "under_bridge", "from": Vector2(7.0, 24.0), "eye_m": 1.0, "at": Vector2(0.0, 7.0), "at_m": -0.6},
 				{"view": "mouth_side", "from": Vector2(18.0, 14.0), "eye_m": 2.0, "at": Vector2(0.0, 9.0), "at_m": -1.0}]
 		elif fixture.name == "tunnel_t":
-			fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 0.3]]
+			fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 6.0]]
 			fixture["mouth_views"] = [
 				{"view": "portal", "from": Vector2(6.0, -12.0), "eye_m": 2.5, "at": Vector2(0.0, 14.0), "at_m": 2.0}]
 		# The continuations (TERRAIN-07-G round 4 restored them on the graded path, with the
 		# bridge's side view of TERRAIN-07-B's fascias): the same hollow and mound across the
 		# east arm. Tunnels are not a focus (the user, 2026-10-26): theirs is a no-crash run.
 		elif fixture.name == "bridge_continuation":
-			fixture["sculpt_after"] = [[Vector2(32, 0), 26.0, -0.25]]
+			fixture["sculpt_after"] = [[Vector2(32, 0), 26.0, -5.0]]
 		elif fixture.name == "tunnel_continuation":
-			fixture["sculpt_after"] = [[Vector2(46, 0), 30.0, 0.3]]
+			fixture["sculpt_after"] = [[Vector2(46, 0), 30.0, 6.0]]
 	# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
 	result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
 		"focus": Vector2(-16.3, 1182.8), "roads": []})
@@ -226,13 +226,13 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 		simulation.sculpt_terrain(brush[0], brush[1], brush[2])
 	var after: bool = fixture.get("terrain_after", false)
 	if rise_m > 0.0 and not after:
-		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), rise_m, 1.0)
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), rise_m, 20.0)
 	for road: Dictionary in fixture.roads:
 		if not await _commit(road):
 			return
 	if rise_m > 0.0 and after:
 		# Centred on the junction: the ground rises beside the east arm's end and falls at the west's.
-		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), -rise_m * 0.5, Vector2(128, 0), rise_m * 0.5, 1.0)
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), -rise_m * 0.5, Vector2(128, 0), rise_m * 0.5, 20.0)
 		for frame in range(10):
 			await process_frame
 	if fixture.has("class_at"):

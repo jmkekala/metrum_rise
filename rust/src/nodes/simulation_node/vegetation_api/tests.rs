@@ -19,7 +19,7 @@ pub(super) fn core() -> SimCore {
 pub(super) fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u8) {
     use crate::simulation::network::graph::Edge;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
-    let y = core.heightmap.sample_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
+    let y = core.heightmap.sample_height_world(0.0, 0.0);
     let points = [Vector3::new(from.x, y, from.y), Vector3::new(to.x, y, to.y)];
     let start = core.region_graph.add_node(points[0], NodeType::Junction);
     let end = core.region_graph.add_node(points[1], NodeType::Junction);
@@ -122,7 +122,7 @@ fn vegetation_gather_after_a_road_edit_and_undo_reads_only_live_pieces() {
     );
     let _ = clear_site(&core, -10.0, 70.0, CANOPY_CLEAR_RADIUS_M, 3.0, false);
     assert_terrain_query_index_fresh(&core, "road class edit");
-    core.sculpt_terrain_internal(Vector2::new(0.0, 42.0), 26.0, -0.25);
+    core.sculpt_terrain_internal(Vector2::new(0.0, 42.0), 26.0, -5.0);
     assert_terrain_query_index_fresh(&core, "road regrade after base edit");
     assert!(core.undo_action_internal());
     assert_terrain_query_index_fresh(&core, "base edit undo");
@@ -610,7 +610,7 @@ fn vegetation_point_plan_reports_each_refusal_without_planting() {
         AddRefusal::TreeSetback,
     );
 
-    core.heightmap.set_height(138, 138, 40.0);
+    core.heightmap.set_height(138, 138, 800.0);
     check(
         &mut core,
         Vector2::new(100.0, 100.0),
@@ -884,7 +884,7 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
 fn vegetation_save_round_trip_reproduces_scatter() {
     let mut core = core();
     // Full world setup belongs here because this test exercises the actual save bridge.
-    core.create_blank_world_internal(2560.0, 2560.0, 10.0, 640.0, 20.0)
+    core.create_blank_world_internal(2560.0, 2560.0, 10.0, 640.0, 400.0)
         .unwrap();
     let p = first_candidate(&core, true);
     assert_eq!(remove_at(&mut core, Vector2::new(p.x, p.z), 0.01, 0), 1);

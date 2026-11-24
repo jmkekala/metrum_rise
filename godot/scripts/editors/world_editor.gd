@@ -13,7 +13,6 @@ const DEFAULT_HEIGHT_KM := 20.0
 const DEFAULT_TERRAIN_CELL_M := 10.0
 const DEFAULT_TERRAIN_CHUNK_M := 512.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
-const TERRAIN_RENDER_HEIGHT_SCALE := 20.0
 const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
 const MIN_SCULPT_DIAMETER_CELLS := 6.0
 const DEFAULT_SCULPT_DIAMETER_CELLS := 8.0
@@ -748,21 +747,20 @@ func _apply_sculpt(delta: float) -> void:
 	var radius := _brush_radius_m()
 	var world_pos := Vector2(intersection.x, intersection.z)
 	var strength := _brush_strength_per_sec() * delta
-	var heightmap_strength := strength / TERRAIN_RENDER_HEIGHT_SCALE
 	match _active_tool:
 		Tool.RAISE:
-			sim.sculpt_terrain_stroke_step(world_pos, radius, heightmap_strength)
+			sim.sculpt_terrain_stroke_step(world_pos, radius, strength)
 		Tool.LOWER:
-			sim.sculpt_terrain_stroke_step(world_pos, radius, -heightmap_strength)
+			sim.sculpt_terrain_stroke_step(world_pos, radius, -strength)
 		Tool.LEVEL:
 			sim.level_terrain_stroke_step(
 				world_pos,
 				radius,
 				_level_target_height_m,
-				heightmap_strength
+				strength
 			)
 		Tool.SMOOTH:
-			sim.smooth_terrain_stroke_step(world_pos, radius, heightmap_strength)
+			sim.smooth_terrain_stroke_step(world_pos, radius, strength)
 		Tool.SLOPE:
 			sim.slope_terrain_stroke_step(
 				world_pos,
@@ -771,7 +769,7 @@ func _apply_sculpt(delta: float) -> void:
 				_slope_start_world_pos.y,
 				Vector2(_slope_end_world_pos.x, _slope_end_world_pos.z),
 				_slope_end_world_pos.y,
-				heightmap_strength
+				strength
 			)
 	_live_sculpt_visual_pending = true
 

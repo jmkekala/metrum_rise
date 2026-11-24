@@ -16,7 +16,6 @@
 //! thresholds (mirrored from terrain.gd's CLIFF_* constants, which must change together).
 
 use super::TerrainPatchSnapshot;
-use crate::config::HEIGHT_SCALE;
 
 // Local relief is the height range over a ring of eight taps this many texels out.
 const RELIEF_SAMPLE_RADIUS_TEXELS: f32 = 3.0;
@@ -171,7 +170,7 @@ impl HeightSampler<'_> {
         let top = self.texel_value(x0, z0) * (1.0 - fx) + self.texel_value(x0 + 1, z0) * fx;
         let bottom =
             self.texel_value(x0, z0 + 1) * (1.0 - fx) + self.texel_value(x0 + 1, z0 + 1) * fx;
-        (top * (1.0 - fz) + bottom * fz) * HEIGHT_SCALE
+        top * (1.0 - fz) + bottom * fz
     }
 
     fn gradient(&self, uv: [f32; 2]) -> [f32; 2] {
@@ -289,11 +288,11 @@ impl HeightSampler<'_> {
             height,
             [0, 1],
         );
-        let per_cell = HEIGHT_SCALE / self.cell_m.max(0.001);
+        let cell_m = self.cell_m.max(0.001);
         steps
             .into_iter()
             .map(|step| {
-                let gradient = std::f32::consts::SQRT_2 * step * per_cell;
+                let gradient = std::f32::consts::SQRT_2 * step / cell_m;
                 1.0 - 1.0 / (1.0 + gradient * gradient).sqrt() > CLIFF_SLOPE_START
             })
             .collect()
@@ -337,7 +336,7 @@ mod tests {
 
     #[test]
     fn flat_ground_bakes_no_relief_or_cliff() {
-        let patch = snapshot(24, |_, _| 0.5);
+        let patch = snapshot(24, |_, _| 10.0);
         let bytes = patch.shading_mask_bytes();
         assert_eq!(bytes.len(), 24 * 24 * PATCH_MASK_CHANNELS);
         assert!(bytes.iter().all(|&b| b == 0));
@@ -345,11 +344,11 @@ mod tests {
 
     #[test]
     fn cliff_reach_covers_the_face_and_its_neighbours_only() {
-        // A 30 m rise over two 10 m cells across x = 11..13 (heights are normalized by 20 m).
+        // A 30 m rise over two 10 m cells across x = 11..13.
         let patch = snapshot(24, |x, _| match x {
             0..=11 => 0.0,
-            12 => 0.75,
-            _ => 1.5,
+            12 => 15.0,
+            _ => 30.0,
         });
         let sampler = HeightSampler {
             data: &patch.height_data,
@@ -376,7 +375,7 @@ mod tests {
     fn slope_bound_skips_only_points_without_a_face() {
         // Rolling ground with steep scarps of several heights: every skipped point must be one
         // the full face test also leaves at zero.
-        for amplitude in [0.05_f32, 0.2, 0.5, 1.0] {
+        for amplitude in [1.0_f32, 4.0, 10.0, 20.0] {
             let patch = snapshot(40, |x, z| {
                 let (x, z) = (x as f32, z as f32);
                 amplitude * ((x * 0.45).sin() + (z * 0.3 + x * 0.1).cos())
@@ -406,7 +405,7 @@ mod tests {
                     faces += usize::from(full > 0.0);
                 }
             }
-            if amplitude >= 1.0 {
+            if amplitude >= 20.0 {
                 assert!(
                     faces > 0,
                     "amplitude {amplitude} made no cliff to test against"
@@ -418,7 +417,7 @@ mod tests {
     #[test]
     fn gentle_slope_has_relief_but_no_cliff() {
         // 1 m rise per 10 m cell: slope 0.005, far below the cliff threshold.
-        let patch = snapshot(24, |x, _| x as f32 * 0.05);
+        let patch = snapshot(24, |x, _| x as f32);
         let bytes = patch.shading_mask_bytes();
         let middle = texel(&bytes, 24, 12, 12);
         assert_eq!(middle[1], 0);

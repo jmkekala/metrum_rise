@@ -54,7 +54,7 @@ func _check_camera_modes(host: Node3D, simulation: SimulationNode, path: String)
 	var debug := _camera(host, false, true)
 	_expect(debug.global_transform.is_equal_approx(normal.global_transform), "fresh normal and debug cameras must share their initial view")
 	# A raised centre checks terrain following while panning and clearance into a hill.
-	simulation.sculpt_terrain(Vector2.ZERO, 32.0, 0.5)
+	simulation.sculpt_terrain(Vector2.ZERO, 32.0, 10.0)
 	_expect(simulation.get_height_at(Vector2.ZERO) > simulation.get_height_at(Vector2(60.0, 0.0)), "camera fixture must include a hill")
 	for camera: CameraNode in [normal, debug]:
 		camera.focus_on(Vector3(20.0, 0.0, -20.0), 12.0)

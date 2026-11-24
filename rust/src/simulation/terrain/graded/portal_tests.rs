@@ -276,7 +276,7 @@ fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
     let (graph, mut terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
     // Base lattice x index 19 is x = -70 (10 m cells from x = -260).
     for z in 0..53 {
-        terrain.set_height(19, z, 2.0 / crate::config::HEIGHT_SCALE);
+        terrain.set_height(19, z, 2.0);
     }
     let roadbed = compiled(&graph);
     let retained = retained_seams(&roadbed);

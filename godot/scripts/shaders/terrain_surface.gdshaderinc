@@ -3,7 +3,9 @@
 // and terrain_graded.gdshader (TERRAIN_GRADED: graded cells with height, normal, exact seam mask
 // and material class). Both share the grass and paving includes, the baked world noise, the
 // patch masks, the overlays, the shoreline sampling and the cloud shadow in light().
-uniform sampler2D heightmap;
+uniform sampler2D heightmap; // Heights in metres.
+// Debug view 3 shades terrain height in grey over a ramp of this many metres.
+const float DEBUG_HEIGHT_RAMP_M = 20.0;
 // Rust-baked per patch on the heightmap's texel grid (patch_masks.rs), one layer per patch slot:
 // R is local relief encoded as sqrt(relief / TERRAIN_MASK_RELIEF_MAX_M); G is nonzero wherever a
 // cliff face can be. A negative layer means no masks: flat ground, no cliff.
@@ -38,7 +40,6 @@ uniform float site_concrete_brightness = 1.0;
 uniform vec3 site_concrete_albedo_floor = vec3(0.0);
 uniform float site_concrete_floor_influence = 0.0;
 uniform int overlay_mode = 0;
-uniform float height_scale = 10.0;
 uniform vec2 world_size = vec2(256.0, 256.0);
 uniform vec4 coal_pit_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
 uniform vec4 field_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
@@ -186,7 +187,7 @@ vec2 watermap_centered_uv(vec2 patch_uv) {
 
 float sample_world_height(vec2 uv) {
 	vec2 clamped_uv = clamp(uv, vec2(0.0), vec2(1.0));
-	return texture(heightmap, clamped_uv).r * height_scale;
+	return texture(heightmap, clamped_uv).r;
 }
 
 vec2 sample_height_gradient(vec2 uv) {
@@ -407,7 +408,7 @@ vec3 terrain_visual_debug_color(
 		debug_color = terrain_debug_lod_color(terrain_debug_lod_step);
 	} else if (terrain_visual_debug_mode == 3) {
 		float elevation_band = fract(world_elevation / 25.0);
-		debug_color = mix(vec3(height_sample), vec3(elevation_band), 0.20);
+		debug_color = mix(vec3(height_sample / DEBUG_HEIGHT_RAMP_M), vec3(elevation_band), 0.20);
 	} else if (terrain_visual_debug_mode == 4) {
 		debug_color = vec3(smoothstep(0.0, 20.0, local_relief));
 	} else if (terrain_visual_debug_mode == 5) {
@@ -574,9 +575,9 @@ void vertex() {
 #endif
 		// base + delta in f32, the same expression on both sides of a shared vertex.
 		VERTEX.y = base_m + var_cell_delta;
-		h = VERTEX.y / max(height_scale, 0.001);
+		h = VERTEX.y;
 	} else {
-		VERTEX.y += h * height_scale;
+		VERTEX.y += h;
 	}
 	// Today's base gradient plus the central difference of delta over the apron.
 	vec2 base_gradient = sample_height_gradient(centered_uv);
@@ -783,7 +784,7 @@ void fragment() {
 		// canopy still passes its transmission share.
 		float sky_gap = (1.0 - land_cover) * (1.0 - land_cover);
 		float floor_sky = mix(canopy_floor_sky_transmission, 1.0, sky_gap);
-		float world_elevation = h * height_scale;
+		float world_elevation = h;
 		float macro_mask = macro_variation(var_world_pos.xz);
 		vec4 terrain_mask = terrain_mask_layer >= 0.0
 			? texture(terrain_masks, vec3(var_centered_uv * terrain_mask_uv_scale, terrain_mask_layer))

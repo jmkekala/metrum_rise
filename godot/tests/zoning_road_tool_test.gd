@@ -175,7 +175,7 @@ func _test_terrain_consistency() -> void:
 	# (the graded terrain's 64 m cap, terrain.md T12 (a)): their support footprints' rear rays meet
 	# no ground within the 1:2 slope of the road-level pad, at any ring. One step of strength 25
 	# (500 m) reaches the target wherever the brush's falloff exceeds 0.2.
-	simulation.level_terrain(Vector2(0, 60), 40.0, 100.0, 25.0)
+	simulation.level_terrain(Vector2(0, 60), 40.0, 100.0, 500.0)
 	var reference := simulation.get_zoning_road_preview_packed(edge, 1, 2, 2, 0.0)
 	_expect(reference.valid_count > 0 and reference.valid_count < reference.parcel_count, "Steep ground rejects only the affected lots without assets")
 	var colors: PackedColorArray = reference.colors

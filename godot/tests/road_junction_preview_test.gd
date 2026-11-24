@@ -139,7 +139,7 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "junction fixture world must load")
 	simulation.set_simulation_speed(0.0)
 	if fixture.get("sloped", false):
-		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 1.0)
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 20.0)
 	var endpoint_join: bool = fixture.get("endpoint_join", false)
 	var isolated: bool = fixture.get("isolated", false)
 	if not isolated:

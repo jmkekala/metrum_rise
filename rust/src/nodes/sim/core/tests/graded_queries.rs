@@ -43,7 +43,7 @@ fn surface_queries_answer_from_the_graded_surface() {
                 }
                 None => {
                     let base =
-                        core.heightmap.sample_height_world(x, z) * crate::config::HEIGHT_SCALE;
+                        core.heightmap.sample_height_world(x, z);
                     graded += usize::from((height - base).abs() > 1e-3);
                 }
             }
@@ -81,7 +81,7 @@ fn reset_and_commit(core: &mut SimCore, fixture: usize, rise_m: f32) {
             0.0,
             Vector2::new(128.0, 0.0),
             rise_m,
-            1.0,
+            20.0,
         );
     }
     let (_, strokes, order) = reference_fixtures().swap_remove(fixture);
@@ -160,7 +160,7 @@ fn a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base() {
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     // A curved base over the tile [0, 64]^2, where the GL0 triangles leave the bilinear base.
-    core.sculpt_terrain_internal(Vector2::new(32.0, 32.0), 40.0, 4.0);
+    core.sculpt_terrain_internal(Vector2::new(32.0, 32.0), 40.0, 80.0);
     let points = [Vector2::new(126.0, 126.0), Vector2::new(220.0, 220.0)]
         .map(|p| Vector3::new(p.x, core.get_world_surface_height_internal(p), p.y))
         .to_vec();

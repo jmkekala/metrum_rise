@@ -74,10 +74,10 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
     graph
 }
 
-fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
+fn test_core_with_flat_terrain(height_m: f32) -> SimCore {
     let config = WorldConfig::default();
     let mut core = SimCore {
-        heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
+        heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, height_m),
         treasury: CityTreasury::new(0.0),
         terrain_dirty: false,
         water_dirty: false,
@@ -93,9 +93,9 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
 pub(super) fn vegetation_test_core(
     config: crate::simulation::vegetation::VegetationConfig,
 ) -> SimCore {
-    let mut core = test_core_with_flat_terrain(20.0);
+    let mut core = test_core_with_flat_terrain(400.0);
     core.config = WorldConfig::new(2560.0, 2560.0, 40.0, 10.0);
-    core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 20.0);
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 400.0);
     core.watermap = WaterSystem::from_world_config(&core.config);
     core.vegetation =
         crate::simulation::vegetation::VegetationGenerator::resolve(config, &core.config);

@@ -92,7 +92,7 @@ func _run() -> void:
 	for key in keys:
 		_expect(not _nonzero(terrain.patches[key]["land_cover"]["image"].get_data()), "removal must clear both textures")
 	# Terrain revisions are independent of plant revisions and must also invalidate coverage.
-	simulation.sculpt_terrain(target, 16.0, 1.0)
+	simulation.sculpt_terrain(target, 16.0, 20.0)
 	for key in keys:
 		_expect(not simulation.is_vegetation_land_cover_current(key, terrain.patches[key]["land_cover"]["generations"]), "terrain edit must invalidate both textures")
 	_expect(await _settle(terrain, simulation), "terrain edit must refresh both textures")

@@ -9,12 +9,14 @@
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::save::sqlite::write_sqlite_snapshot;
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::{LEGACY_HEIGHT_UNIT_M, TerrainSystem};
 use rusqlite::{Connection, params};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 
-const WORLD_DEFINITION_FORMAT_VERSION: i64 = 5;
+// Format 6 stores terrain heights and the base elevation in metres; formats 1-5 stored them in
+// units of 20 m (`LEGACY_HEIGHT_UNIT_M`) and load converted.
+const WORLD_DEFINITION_FORMAT_VERSION: i64 = 6;
 
 const WORLD_DEFINITION_SCHEMA: &str = r#"
 CREATE TABLE world_definition_meta(
@@ -332,9 +334,15 @@ pub(crate) fn load_world_definition_from_sqlite(
         ));
     }
     validate_world_name(&name)?;
+    // One multiply per stored sample of an older format, at load: `O(samples)`, off the frame.
+    let height_unit_m = if format_version < 6 {
+        LEGACY_HEIGHT_UNIT_M
+    } else {
+        1.0
+    };
     let config = WorldConfig::new(width_m, height_m, env_cell_m, zone_cell_m)
         .with_terrain_resolution(terrain_cell_m)
-        .with_chunking(terrain_chunk_m, terrain_base_elevation_m);
+        .with_chunking(terrain_chunk_m, terrain_base_elevation_m * height_unit_m);
     config.validate().map_err(WorldDefinitionError::custom)?;
 
     let mut terrain = TerrainSystem::from_world_config(&config);
@@ -379,10 +387,15 @@ pub(crate) fn load_world_definition_from_sqlite(
             let row_end = row_start + width_samples;
             let payload_row = &payload[row_start..row_end];
             for (local_x, value) in payload_row.iter().enumerate() {
-                if *value == config.terrain_base_elevation_m {
+                // The stored base, in the file's unit.
+                if *value == terrain_base_elevation_m {
                     continue;
                 }
-                terrain.set_height(origin_x + local_x, origin_z + local_z, *value);
+                terrain.set_height(
+                    origin_x + local_x,
+                    origin_z + local_z,
+                    *value * height_unit_m,
+                );
             }
         }
     }
@@ -763,6 +776,41 @@ mod tests {
                 "unusable grid config accepted: {invalid:?}"
             );
         }
+    }
+
+    // A format-5 world holds heights and base elevation in units of 20 m: they load in metres,
+    // as the code before format 6 reported them.
+    #[test]
+    fn format_5_world_definition_loads_heights_in_metres() {
+        let path = temp_path("v5_metres");
+        let config = WorldConfig::new(120.0, 90.0, 40.0, 10.0)
+            .with_terrain_resolution(10.0)
+            .with_chunking(32.0, 2.0);
+        let mut terrain = TerrainSystem::from_world_config(&config);
+        terrain.set_height(0, 0, 3.0);
+        terrain.set_height(4, 5, 7.5);
+        save_world_definition_to_sqlite(
+            &path,
+            WorldDefinitionView {
+                name: "Legacy Units",
+                config: &config,
+                terrain: &terrain,
+                lake_fills: &[],
+                open_water_fills: &[],
+                resource_deposits: &ResourceDepositSystem::from_world_config(&config),
+            },
+        )
+        .expect("world definition should save");
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE world_definition_meta SET format_version = 5", [])
+            .unwrap();
+
+        let loaded = load_world_definition_from_sqlite(&path).expect("format 5 loads");
+        assert_eq!(loaded.config.terrain_base_elevation_m, 40.0);
+        let metres: Vec<f32> = terrain.clone_source_dense().iter().map(|h| h * 20.0).collect();
+        assert_eq!(loaded.terrain.clone_source_dense(), metres);
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

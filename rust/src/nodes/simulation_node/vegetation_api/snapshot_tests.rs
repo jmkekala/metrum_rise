@@ -494,7 +494,7 @@ fn vegetation_snapshot_on_a_saved_city() {
         }
         Err(_) => {
             let mut core = super::super::tests::vegetation_test_core(Default::default());
-            core.create_blank_world_internal(2040.0, 2040.0, 10.0, 510.0, 20.0)
+            core.create_blank_world_internal(2040.0, 2040.0, 10.0, 510.0, 400.0)
                 .unwrap();
             core
         }

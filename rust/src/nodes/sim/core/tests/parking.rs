@@ -1107,7 +1107,7 @@ fn a_lots_paint_reads_the_gathered_surface_as_point_queries_do() {
             0.0,
             Vector2::new(-60.0, 65.0),
             9.0,
-            1.0,
+            20.0,
         );
     }
     commit(&mut c, (-120.0, 0.0), (120.0, 0.0));
@@ -1158,7 +1158,7 @@ fn write_the_lot_paint_still_save() {
     for _ in 0..12 {
         core.slope_terrain_internal(
             Vector2::new(-160.0, 30.0), 70.0, Vector2::new(-160.0, -5.0), 0.0,
-            Vector2::new(-160.0, 65.0), 9.0, 1.0,
+            Vector2::new(-160.0, 65.0), 9.0, 20.0,
         );
     }
     let ground = |core: &SimCore, z: f32| core.get_world_surface_height_internal(Vector2::new(-160.0, z));

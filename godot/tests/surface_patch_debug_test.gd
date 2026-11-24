@@ -73,7 +73,7 @@ func _run() -> void:
 	quit(0 if _failures == 0 else 1)
 
 func _check_terrain_payload(simulation: SimulationNode) -> void:
-	_expect(simulation.create_blank_world(80.0, 80.0, 10.0, 40.0, -2.5), "terrain fixture must create a nonzero world")
+	_expect(simulation.create_blank_world(80.0, 80.0, 10.0, 40.0, -50.0), "terrain fixture must create a nonzero world")
 	# Production requests only step 0 (`_terrain_patch_payload_render_step_mm`): the graded
 	# tiles carry the detail, and Rust refuses any other step by contract.
 	var payload: Dictionary = {}
@@ -95,12 +95,12 @@ func _check_terrain_payload(simulation: SimulationNode) -> void:
 		var count := int(payload["texture_width"]) * int(payload["texture_height"])
 		var stats: Dictionary = renderer._terrain_patch_height_stats(payload)
 		_expect(int(stats["nonzero"]) == count, "terrain statistics must count the native byte payload")
-		_expect(is_equal_approx(float(stats["min"]), -2.5) and is_equal_approx(float(stats["max"]), -2.5), "terrain diagnostics must preserve signed height")
-		_expect(is_equal_approx(float(stats["sum"]), count * -2.5), "terrain diagnostics must sum the uploaded samples")
+		_expect(is_equal_approx(float(stats["min"]), -50.0) and is_equal_approx(float(stats["max"]), -50.0), "terrain diagnostics must preserve signed height")
+		_expect(is_equal_approx(float(stats["sum"]), count * -50.0), "terrain diagnostics must sum the uploaded samples")
 		_expect(not payload.has("height_data"), "terrain exports must have one authoritative height buffer")
 		renderer.patches[Vector2i.ZERO] = {"last_patch_data": payload}
 		var lines: Array[String] = renderer.road_geometry_debug_patch_lines(PackedInt32Array([0, 0]))
-		_expect("\n".join(lines).contains("height_min=-2.500"), "formatted terrain diagnostics must report native heights")
+		_expect("\n".join(lines).contains("height_min=-50.000"), "formatted terrain diagnostics must report native heights")
 		renderer.free()
 	await _check_nonzero_step_refused(simulation)
 

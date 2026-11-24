@@ -650,7 +650,7 @@ fn bridge_profile_is_ground_transition(
 }
 
 fn terrain_height_m(terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
-    terrain.sample_height_world(x, z) * config::HEIGHT_SCALE
+    terrain.sample_height_world(x, z)
 }
 
 fn record_endpoint_height_debug(

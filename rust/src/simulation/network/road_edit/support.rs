@@ -150,7 +150,7 @@ impl<'a> DraftGround<'a> {
                 }
             });
         best.unwrap_or_else(|| {
-            self.terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
+            self.terrain.sample_height_world(x, z)
         })
     }
 }

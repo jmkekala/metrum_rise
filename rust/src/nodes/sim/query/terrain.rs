@@ -2,7 +2,6 @@
 
 //! Terrain-specific spatial queries (raycasting, height sampling).
 
-use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use godot::prelude::*;
@@ -22,7 +21,7 @@ impl SimCore {
 
     /// Returns the terrain height at the given world position.
     pub fn get_height_at_internal(&self, pos: Vector2) -> f32 {
-        self.heightmap.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
+        self.heightmap.sample_height_world(pos.x, pos.y)
     }
 
     /// Readies the building site queries for a reader outside the simulation's order: a Godot

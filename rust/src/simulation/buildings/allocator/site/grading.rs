@@ -321,7 +321,7 @@ pub(super) fn building_site_raw_tie_in_target_height(
     if let Some(road_height_m) = building_site_visible_road_height(roads, pos, nearest_radius_m) {
         return road_height_m;
     }
-    terrain.sample_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE
+    terrain.sample_height_world(pos.x, pos.y)
 }
 
 fn building_site_visible_road_height(

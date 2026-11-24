@@ -37,7 +37,7 @@ func _run() -> void:
 	for step in 80:
 		if simulation.get_world_surface_height(Vector2.ZERO) < -VALLEY_DEPTH_M:
 			break
-		simulation.sculpt_terrain(Vector2.ZERO, 70.0, -1.0)
+		simulation.sculpt_terrain(Vector2.ZERO, 70.0, -20.0)
 	_expect(simulation.get_world_surface_height(Vector2.ZERO) < -VALLEY_DEPTH_M, "the sculpt tool must lower a valley")
 	input_manager._refresh_after_world_load()
 	input_manager.set_simulation_speed(0.0)

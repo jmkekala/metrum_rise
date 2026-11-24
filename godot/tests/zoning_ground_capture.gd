@@ -23,8 +23,8 @@ func _run() -> void:
 	simulation = _main.get_node("SimulationNode")
 	_expect(simulation.create_blank_world(2048.0, 2048.0, 2.0, 512.0, 0.0), "Capture world loads")
 	simulation.set_simulation_speed(0.0)
-	simulation.sculpt_terrain(Vector2(-80, 35), 50.0, 0.2)
-	simulation.slope_terrain(Vector2(150, 0), 100.0, Vector2(70, 0), 0.0, Vector2(230, 0), 8.0, 1.0)
+	simulation.sculpt_terrain(Vector2(-80, 35), 50.0, 4.0)
+	simulation.slope_terrain(Vector2(150, 0), 100.0, Vector2(70, 0), 0.0, Vector2(230, 0), 8.0, 20.0)
 	if not await _commit(_path([Vector2(-280, 0), Vector2(280, 0)])):
 		quit(1)
 		return

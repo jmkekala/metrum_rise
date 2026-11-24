@@ -1340,6 +1340,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         current.households.households[0].replenishment_offset_hours,
         23
     );
+    // A format-130 save holds terrain heights and base elevation in units of 20 m: they load in
+    // metres, as the code before format 131 reported them.
+    conn.execute("UPDATE save_meta SET version = ?1", [PRE_METRES_SAVE_VERSION])
+        .unwrap();
+    let legacy = load_from_sqlite(&path, &allocator.registry).expect("a format-130 save loads");
+    let metres: Vec<f32> = terrain.clone_source_dense().iter().map(|h| h * 20.0).collect();
+    assert_eq!(legacy.terrain.clone_source_dense(), metres);
+    assert_eq!(
+        legacy.config.terrain_base_elevation_m,
+        config.terrain_base_elevation_m * 20.0
+    );
     // `SIM-02` cut over the format: a save of any other version must not load, but for format
     // 118 before the congestion state (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
     for version in [PRE_CONGESTION_SAVE_VERSION - 1, SAVE_VERSION + 1] {

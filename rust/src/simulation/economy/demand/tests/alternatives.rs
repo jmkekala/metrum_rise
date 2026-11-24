@@ -1119,7 +1119,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         let mut blocked = terrain.clone();
         for z in 0..blocked.height {
             for x in 0..blocked.width {
-                blocked.set_height(x, z, 20.0);
+                blocked.set_height(x, z, 400.0);
             }
         }
         let budgets: Vec<_> = allocator
@@ -1568,7 +1568,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             let mut blocked = terrain.clone();
             for z in 0..blocked.height {
                 for x in 0..blocked.width {
-                    blocked.set_height(x, z, 20.0);
+                    blocked.set_height(x, z, 400.0);
                 }
             }
             let cash: Vec<_> = allocator

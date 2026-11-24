@@ -744,8 +744,7 @@ impl RoadToolSession {
         let buried = |handle: &HeightHandle| {
             let ground = view
                 .terrain
-                .sample_height_world(handle.support.x, handle.support.z)
-                * crate::config::HEIGHT_SCALE;
+                .sample_height_world(handle.support.x, handle.support.z);
             handle.locked && handle.height_m < ground - PREVIEW_CLEARANCE_M
         };
         if !self.heights.graded(handles) && !handles.iter().any(buried) {
@@ -763,7 +762,7 @@ impl RoadToolSession {
     fn measure_heights(&mut self, view: &RoadToolQuerySnapshot, handles: &[HeightHandle; 2]) {
         let terrain = |at: DVec2| {
             let height = view.terrain.sample_height_world(at.x as f32, at.y as f32);
-            f64::from(height * crate::config::HEIGHT_SCALE)
+            f64::from(height)
         };
         let above = |handle: &HeightHandle| {
             if handle.locked {

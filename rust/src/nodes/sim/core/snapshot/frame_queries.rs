@@ -30,7 +30,6 @@ use godot::prelude::{Vector2, Vector2i};
 use super::super::graded_stage::PreviewSites;
 use super::super::road_terrain_inputs::RoadTerrainInputs;
 use super::super::state::SimCore;
-use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::render::building_sites::SiteRows;
 use crate::simulation::economy::demand::{GrowthDisplay, GrowthDisplayKey};
 use crate::simulation::network::roadbed::RoadbedSystem;
@@ -53,7 +52,7 @@ impl SurfaceView {
     /// The heightmap elevation at a world X/Z position, as `SimCore::get_height_at_internal`.
     /// O(1).
     pub(crate) fn height_at(&self, pos: Vector2) -> f32 {
-        self.terrain.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
+        self.terrain.sample_height_world(pos.x, pos.y)
     }
 
     /// The visible world-surface height, as `SimCore::get_world_surface_height_internal`: the

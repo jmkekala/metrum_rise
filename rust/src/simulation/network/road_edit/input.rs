@@ -566,7 +566,7 @@ fn is_terminal_bridge_transition(
 }
 
 fn source_terrain_clearance_m(point: Vector3, terrain: &TerrainSystem) -> f32 {
-    point.y - terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+    point.y - terrain.sample_height_world(point.x, point.z)
 }
 
 fn solve_structural_transition_profile(points: &mut [Vector3]) {
@@ -695,7 +695,7 @@ fn road_profile_support_height(
         return (support_h, true);
     }
     (
-        terrain.sample_height_world(x, z) * config::HEIGHT_SCALE,
+        terrain.sample_height_world(x, z),
         false,
     )
 }

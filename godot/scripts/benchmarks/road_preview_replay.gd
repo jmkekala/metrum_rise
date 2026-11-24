@@ -82,7 +82,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		bench.input_manager._refresh_after_world_load()
 		bench.input_manager.set_simulation_speed(0.0)
 		if name.begins_with("sloped"):
-			sim.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), 6.4, 1.0)
+			sim.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), 6.4, 20.0)
 		scenario = _scenario(name)
 	bench.camera.set("orthogonal", true)
 	bench.camera.projection = Camera3D.PROJECTION_ORTHOGONAL

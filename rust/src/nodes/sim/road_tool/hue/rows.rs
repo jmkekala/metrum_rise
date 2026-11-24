@@ -113,7 +113,7 @@ impl RowWorld {
                 0.0,
                 Vector2::new(128.0, 0.0),
                 6.4,
-                1.0,
+                20.0,
             );
         }
         for &road in &row.roads {
@@ -164,7 +164,7 @@ fn request(world: &RowWorld, points: Vec<Vector3>, profile: RoadProfile) -> Road
 }
 
 fn surface_point(core: &SimCore, p: Vector2) -> Vector3 {
-    let y = core.heightmap.sample_height_world(p.x, p.y) * crate::config::HEIGHT_SCALE;
+    let y = core.heightmap.sample_height_world(p.x, p.y);
     Vector3::new(p.x, y, p.y)
 }
 

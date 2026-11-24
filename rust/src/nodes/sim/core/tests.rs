@@ -398,13 +398,13 @@ fn terrain_stroke_steps_advance_touched_patch_revisions() {
     }
 
     core.start_terrain_stroke_internal();
-    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 0.1);
+    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 2.0);
     let first_states = core.terrain_dirty_patch_states();
     let &(patch_x, patch_z, stale_generation) = first_states
         .first()
         .expect("terrain stroke should dirty at least one render patch");
 
-    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 0.1);
+    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 2.0);
     let current_generation = core.terrain_payload_generation_for_patch(patch_x, patch_z);
 
     assert!(current_generation > stale_generation);
@@ -1132,7 +1132,7 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
         "load_registry_residential",
         ZoneType::Residential,
     );
-    loaded.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 16.0, 0.5);
+    loaded.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 16.0, 10.0);
     assert!(loaded.terrain_stroke_active && loaded.terrain_stroke_has_changes);
     loaded.last_tick_duration = 123.0;
     loaded.last_agent_tick_us = 456;
@@ -1296,7 +1296,7 @@ fn benchmark_blank_world_reset_with_assets() {
         for sample in 0..14 {
             let start = Instant::now();
             for _ in 0..5 {
-                core.create_blank_world_internal(256.0, 256.0, 8.0, 128.0, 50.0)
+                core.create_blank_world_internal(256.0, 256.0, 8.0, 128.0, 1000.0)
                     .unwrap();
             }
             let milliseconds = start.elapsed().as_secs_f64() * 1000.0 / 5.0;
@@ -1321,7 +1321,7 @@ fn benchmark_blank_world_reset_with_assets() {
                 .household_capacity("test:reset_asset_0"),
             6
         );
-        assert_eq!(core.heightmap.sample_height_world(0.0, 0.0), 50.0);
+        assert_eq!(core.heightmap.sample_height_world(0.0, 0.0), 1000.0);
         assert!(core.allocator.buildings.is_empty() && core.region_graph.edges().is_empty());
         samples.sort_by(f64::total_cmp);
         eprintln!(

@@ -26,7 +26,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::resources::ResourceDepositSystem;
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::{LEGACY_HEIGHT_UNIT_M, TerrainSystem};
 use crate::simulation::vegetation::{VegetationConfig, edits::VegetationEdits};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
@@ -580,6 +580,7 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
         row.get(0)
     })?;
     let retired_holes = version == SAVE_VERSION
+        || version == PRE_METRES_SAVE_VERSION
         || version == PRE_CROSSING_SAVE_VERSION
         || version == PRE_KERB_FREIGHT_SAVE_VERSION
         || version == PRE_DROP_OFF_SAVE_VERSION
@@ -612,8 +613,10 @@ pub(crate) fn load_from_sqlite(
     // format 123 dock rows (`PARK-19`), format 124 their drives (`PARK-21`), format 125 their
     // stands (`PARK-23`), format 126 car places' long ways (`PARK-25`), format 127 the
     // fixed-look flag in an authored plant's variant byte (`VEG-29`), format 128 drop-offs
-    // (`PARK-34`), format 130 vehicles crossing their road (`PARK-32`).
-    let crossings_saved = version == SAVE_VERSION;
+    // (`PARK-34`), format 130 vehicles crossing their road (`PARK-32`), format 131 terrain
+    // heights in metres (older formats hold units of 20 m, converted once below).
+    let heights_in_metres = version == SAVE_VERSION;
+    let crossings_saved = heights_in_metres || version == PRE_METRES_SAVE_VERSION;
     let docks_saved = crossings_saved
         || version == PRE_CROSSING_SAVE_VERSION
         || version == PRE_KERB_FREIGHT_SAVE_VERSION
@@ -630,7 +633,7 @@ pub(crate) fn load_from_sqlite(
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let camera = camera::load_camera_state(&conn)?;
-    let config = conn.query_row(
+    let mut config = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
         |r| {
@@ -641,6 +644,9 @@ pub(crate) fn load_from_sqlite(
             )
         },
     )?;
+    if !heights_in_metres {
+        config.terrain_base_elevation_m *= LEGACY_HEIGHT_UNIT_M;
+    }
     config.validate()?;
     let vegetation = {
         let row: (i64, i64, f32, f32) = conn.query_row(
@@ -667,7 +673,7 @@ pub(crate) fn load_from_sqlite(
     validate_time_state(&time, time_r.5)?;
     let weather = weather::load_weather_state(&conn)?;
 
-    let terrain = world::load_terrain(&conn, &config)?;
+    let terrain = world::load_terrain(&conn, &config, heights_in_metres)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let resource_deposits = world::load_resource_deposits(&conn, &config)?;
     let demand_row = conn.query_row(

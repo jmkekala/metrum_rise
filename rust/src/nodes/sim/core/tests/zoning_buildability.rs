@@ -445,7 +445,7 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
     assert!(check(&core).is_ok());
     let solves = core.allocator.site_feasibility_solve_count();
     // The road is at the world center; the corner sample is outside its local dependency chunks.
-    core.heightmap.set_height(0, 0, 30.0);
+    core.heightmap.set_height(0, 0, 600.0);
     assert!(check(&core).is_ok());
     assert_eq!(
         core.allocator.site_feasibility_solve_count(),
@@ -465,7 +465,7 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
         .unwrap();
     for z in grid.2..=grid.3 {
         for x in grid.0..=grid.1 {
-            core.heightmap.set_height(x, z, 200.0);
+            core.heightmap.set_height(x, z, 4000.0);
         }
     }
     assert!(

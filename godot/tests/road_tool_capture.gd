@@ -576,7 +576,7 @@ func _capture_batch_ghost() -> void:
 	for step in 80:
 		if _simulation.get_world_surface_height(centre) < -12.0:
 			break
-		_simulation.sculpt_terrain(centre, 70.0, -1.0)
+		_simulation.sculpt_terrain(centre, 70.0, -20.0)
 	_expect(_simulation.get_world_surface_height(centre) < -12.0, "the sculpt tool lowers a valley")
 	_camera.position = Vector3(-150.0, 70.0, 120.0)
 	_camera.look_at(Vector3(-20.0, -6.0, 10.0))

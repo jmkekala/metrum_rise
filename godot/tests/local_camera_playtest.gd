@@ -49,15 +49,13 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	if not simulation.create_blank_world(1024.0, 1024.0, 4.0, 128.0, 50.0):
+	if not simulation.create_blank_world(1024.0, 1024.0, 4.0, 128.0, 1000.0):
 		push_error("Camera fixture world creation failed")
 		quit(1)
 		return
 	simulation.set_simulation_speed(0.0)
 	base_y = simulation.get_height_at(Vector2.ZERO)
-	# Authoring heights are source units; query heights include the runtime height scale.
-	var height_scale := base_y / 50.0
-	simulation.sculpt_terrain(Vector2(0, 160), 64.0, 30.0 / height_scale)
+	simulation.sculpt_terrain(Vector2(0, 160), 64.0, 30.0)
 	camera = CameraNode.new()
 	camera.name = "CameraNode"
 	camera.process_priority = -200

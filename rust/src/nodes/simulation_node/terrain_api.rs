@@ -6,7 +6,7 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Applies one immediate terrain sculpt edit.
+    /// Applies one immediate terrain sculpt edit: `strength` metres at the brush centre.
     #[func]
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.lock_core()
@@ -33,7 +33,8 @@ impl SimulationNode {
         ended
     }
 
-    /// Applies one batched terrain sculpt step during an active editor stroke.
+    /// Applies one batched terrain sculpt step during an active editor stroke: `strength` metres
+    /// at the brush centre.
     #[func]
     pub fn sculpt_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
         let core = {

@@ -133,7 +133,7 @@ pub(super) fn dig(core: &mut SimCore, x0: f32, x1: f32, height_m: f32) {
                 core.heightmap.set_height(
                     x,
                     z,
-                    natural.min(height_m) / crate::config::HEIGHT_SCALE,
+                    natural.min(height_m),
                 );
             }
         }

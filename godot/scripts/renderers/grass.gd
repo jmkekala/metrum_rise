@@ -30,7 +30,7 @@ const MASK_SIZE := 1024
 const PATCH_SLOTS := 4
 # Copy bindings, never images. Changes include water uploads, crown edits and pooled materials.
 const TERRAIN_PARAMETERS := [
-	&"heightmap", &"height_scale", &"heightmap_texture_size", &"inner_sample_offset_texels",
+	&"heightmap", &"heightmap_texture_size", &"inner_sample_offset_texels",
 	&"inner_sample_size_texels", &"patch_world_size_m", &"terrain_cell_m",
 	&"watermap", &"watermap_texture_size", &"watermap_inner_sample_offset_texels",
 	&"watermap_inner_sample_size_texels", &"land_cover_texture", &"land_cover_world_bounds",
@@ -160,7 +160,7 @@ func _process(_delta: float) -> void:
 			mask_mesh.position = source.position
 			var mask_material := mask_mesh.material_override as ShaderMaterial
 			mask_material.set_shader_parameter("patch_origin", patch_min)
-			for parameter in [&"heightmap", &"height_scale", &"heightmap_texture_size",
+			for parameter in [&"heightmap", &"heightmap_texture_size",
 					&"inner_sample_offset_texels", &"inner_sample_size_texels", &"patch_world_size_m"]:
 				mask_material.set_shader_parameter(parameter, terrain_material.get_shader_parameter(parameter))
 			var mask_camera := _masks[slot].get_node("Camera") as Camera3D

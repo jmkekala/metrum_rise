@@ -470,7 +470,7 @@ fn undo_of_a_split_returns_its_houses_to_the_restored_street() {
             }
             SplitUndo::TerrainStrokeUndone => {
                 let depth = core.undo_stack.len();
-                core.sculpt_terrain_internal(Vector2::new(0.0, -300.0), 20.0, 0.2);
+                core.sculpt_terrain_internal(Vector2::new(0.0, -300.0), 20.0, 4.0);
                 assert_eq!(core.undo_stack.len(), depth + 1, "the stroke was recorded");
                 assert!(core.undo_action_internal(), "the stroke's undo");
                 core.finalize_network_render_products();

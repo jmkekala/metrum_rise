@@ -41,7 +41,7 @@ impl RegionGraph {
                 continue;
             }
             node.pos.y =
-                terrain.sample_height_world(node.pos.x, node.pos.z) * crate::config::HEIGHT_SCALE;
+                terrain.sample_height_world(node.pos.x, node.pos.z);
         }
 
         // 2. Re-interpolate edge geometry and smooth grades.
@@ -74,7 +74,7 @@ impl RegionGraph {
 
             for point in &mut edge.geometry[1..count - 1] {
                 point.y =
-                    terrain.sample_height_world(point.x, point.z) * crate::config::HEIGHT_SCALE;
+                    terrain.sample_height_world(point.x, point.z);
             }
 
             if count > 2 {

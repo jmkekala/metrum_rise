@@ -183,7 +183,7 @@ float cell_base_height_m(ivec2 world_hm, int cell_hm) {
 	float h10 = texelFetch(heightmap, ivec2(t1.x, t0.y), 0).r;
 	float h01 = texelFetch(heightmap, ivec2(t0.x, t1.y), 0).r;
 	float h11 = texelFetch(heightmap, t1, 0).r;
-	return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y) * height_scale;
+	return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
 }
 
 struct CellFrame {

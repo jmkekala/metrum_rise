@@ -346,14 +346,14 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
     });
     e.run("terrain tools", || {
         core.start_terrain_stroke_internal();
-        core.sculpt_terrain_internal(Vector2::new(700.0, 700.0), 30.0, 2.0);
+        core.sculpt_terrain_internal(Vector2::new(700.0, 700.0), 30.0, 40.0);
         core.end_terrain_stroke_internal();
         core.build_snapshot();
         let at = Vector2::new(-100.0, 120.0);
-        core.level_terrain_internal(at, 20.0, 2.0, 1.0);
-        core.smooth_terrain_internal(at, 20.0, 1.0);
+        core.level_terrain_internal(at, 20.0, 2.0, 20.0);
+        core.smooth_terrain_internal(at, 20.0, 20.0);
         let (from, to) = (at - Vector2::new(10.0, 0.0), at + Vector2::new(10.0, 0.0));
-        core.slope_terrain_internal(at, 20.0, from, 0.0, to, 2.0, 1.0);
+        core.slope_terrain_internal(at, 20.0, from, 0.0, to, 2.0, 20.0);
         core.build_snapshot();
     });
     e.run("world tools", || {

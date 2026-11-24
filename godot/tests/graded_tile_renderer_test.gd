@@ -641,7 +641,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	var edit_mask_renders_before := grass.mask_renders
 	var edit_mask_syncs_before := grass.mask_mirror_syncs
 	simulation.set_edge_class(edge, 1)
-	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -0.25)
+	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -5.0)
 	# The graded journal records both edits as they are made (the renderer's polls started it).
 	var bridge_serial: int = simulation.get_graded_edit_serial()
 	_expect(bridge_serial > 0, "the bridge's edits are recorded")
@@ -694,7 +694,7 @@ func _check_staged_commit(host: Node3D, simulation: SimulationNode, terrain) -> 
 	var point: Vector2 = simulation.get_terrain_world_size() * -0.3
 	var spend := func() -> void: stream.charge_install(0, 1000000.0)
 	process_frame.connect(spend)
-	simulation.sculpt_terrain(point, 24.0, 0.05)
+	simulation.sculpt_terrain(point, 24.0, 1.0)
 	var dirty := 0
 	var staged := 0
 	var largest_step := 0

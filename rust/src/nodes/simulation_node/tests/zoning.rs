@@ -6,8 +6,8 @@ use super::*;
 
 #[test]
 fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
-    let raw_height = 3.25;
-    let core = test_core_with_flat_terrain(raw_height);
+    let height_m = 65.0;
+    let core = test_core_with_flat_terrain(height_m);
     let geometry = crate::simulation::zoning::ParcelGeometry {
         edge_idx: 0,
         side: 1,
@@ -29,7 +29,7 @@ fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
     };
 
     let corners = zoning_parcel_surface_corners(&core, &geometry);
-    let expected_y = raw_height * config::HEIGHT_SCALE;
+    let expected_y = height_m;
 
     assert!(corners.iter().all(|corner| {
         (corner.y - expected_y).abs() <= 1e-4 && corner.x.abs() == 5.0 && corner.z.abs() == 5.0

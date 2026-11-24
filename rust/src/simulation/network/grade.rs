@@ -6,7 +6,6 @@
 //! solve and the junction profile solve share.
 
 use super::validate::visit_grades;
-use crate::config;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -28,7 +27,7 @@ pub(crate) const ROAD_SOURCE_DELTA_MAX_M: f32 = 5.0;
 
 /// The source terrain height under a world XZ point, which the source-delta limit measures from.
 pub(crate) fn source_ground_m(terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
-    terrain.sample_height_world(x, z) * config::HEIGHT_SCALE
+    terrain.sample_height_world(x, z)
 }
 
 /// Whether `point` lies within the source-delta limit of the ground under it, as `f32` reads

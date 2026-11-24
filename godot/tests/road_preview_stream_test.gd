@@ -60,7 +60,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "stream world must load")
 	simulation.set_simulation_speed(0.0)
 	if fixture.get("sloped", false):
-		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 1.0)
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 20.0)
 	var endpoint_join: bool = fixture.get("endpoint_join", false)
 	if not await _commit(PackedVector3Array([_stream_point(fixture, -60.0, 0.0), _stream_point(fixture, 0.0 if endpoint_join else 60.0, 0.0)])):
 		return {"case": fixture.name, "success": false}

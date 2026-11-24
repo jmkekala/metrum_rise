@@ -57,7 +57,7 @@ fn f32_bytes(values: &[f32]) -> Vec<u8> {
 fn world(index: u32) -> SimCore {
     let mut core = super::super::tests::vegetation_test_core(Default::default());
     let size = if index == 0 { 2040.0 } else { 1020.0 };
-    core.create_blank_world_internal(size, size, 10.0, 510.0, 20.0)
+    core.create_blank_world_internal(size, size, 10.0, 510.0, 400.0)
         .unwrap();
     if index == 1 {
         let options = (0..26).filter(|o| !(17..=19).contains(o));

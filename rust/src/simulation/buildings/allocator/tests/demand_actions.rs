@@ -539,7 +539,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     let mut blocked_terrain = terrain.clone();
     for z in 0..blocked_terrain.height {
         for x in 0..blocked_terrain.width {
-            blocked_terrain.set_height(x, z, 20.0);
+            blocked_terrain.set_height(x, z, 400.0);
         }
     }
     let building = allocator

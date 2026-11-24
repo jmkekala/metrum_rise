@@ -9,7 +9,6 @@
 //! a metre above the surface drawn there, and its rays could not see land, so a lake behind a
 //! hill polled like the lake in view.
 
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use godot::prelude::Vector3;
@@ -44,7 +43,7 @@ pub(crate) fn first_water_surface(
     while t < max_distance_m {
         t += step;
         let p = origin + direction * t;
-        let ground = terrain.sample_height_world(p.x, p.z) * HEIGHT_SCALE;
+        let ground = terrain.sample_height_world(p.x, p.z);
         let depth = water.visible_depth_world(p.x, p.z);
         let wet = depth > MIN_WATER_DEPTH_M;
         let surface = if wet { ground + depth } else { ground };
@@ -98,7 +97,7 @@ pub(crate) fn display_water_surface(
 
 fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
     let cell = terrain.cell_size_m();
-    let ground = terrain.sample_height_world(x, z) * HEIGHT_SCALE;
+    let ground = terrain.sample_height_world(x, z);
     let depth = water.visible_depth_world(x, z);
     let mut sum = 0.0;
     let mut weight = 0.0;
@@ -111,7 +110,7 @@ fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z
     ] {
         let d = water.visible_depth_world(x + dx, z + dz);
         if d > 0.001 {
-            sum += (terrain.sample_height_world(x + dx, z + dz) * HEIGHT_SCALE + d) * w;
+            sum += (terrain.sample_height_world(x + dx, z + dz) + d) * w;
             weight += w;
         }
     }
@@ -119,7 +118,7 @@ fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z
         for (dx, dz) in [(-cell, -cell), (cell, -cell), (-cell, cell), (cell, cell)] {
             let d = water.visible_depth_world(x + dx, z + dz);
             if d > 0.001 {
-                sum += terrain.sample_height_world(x + dx, z + dz) * HEIGHT_SCALE + d;
+                sum += terrain.sample_height_world(x + dx, z + dz) + d;
                 weight += 1.0;
             }
         }
@@ -280,7 +279,7 @@ mod tests {
         let mut depths = water.clone_baseline_depth_dense();
         for z in 0..terrain.height {
             for x in 0..terrain.width {
-                ground[z * terrain.width + x] = if x < 8 { 0.0 } else { 4.0 / HEIGHT_SCALE };
+                ground[z * terrain.width + x] = if x < 8 { 0.0 } else { 4.0 };
                 depths[z * terrain.width + x] = if x < 8 { 2.0 } else { 0.0 };
             }
         }
@@ -303,7 +302,7 @@ mod tests {
     #[test]
     fn a_ray_onto_the_lake_reads_its_surface_and_one_onto_land_reads_none() {
         let (terrain, water) = lake_world();
-        let ground = terrain.sample_height_world(-500.0, 0.0) * HEIGHT_SCALE;
+        let ground = terrain.sample_height_world(-500.0, 0.0);
         let origin = Vector3::new(0.0, ground + 100.0, 0.0);
         let west = Vector3::new(-1.0, -0.2, 0.0).normalized();
         let level = first_water_surface(&water, &terrain, origin, west, 3000.0);

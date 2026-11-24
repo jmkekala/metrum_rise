@@ -194,7 +194,7 @@ fn terrain_query_index_stays_fresh_across_road_load_site_and_base_mutations() {
 
     core.slope_terrain_internal(
         Vector2::new(48.0, 48.0), 24.0, Vector2::new(24.0, 48.0), 1.0,
-        Vector2::new(72.0, 48.0), 8.0, 1.0,
+        Vector2::new(72.0, 48.0), 8.0, 20.0,
     );
     let base_us = core.terrain_query_index_update_us;
     assert_query_index_fresh(&core, "base", true);
@@ -339,12 +339,12 @@ fn published_frame_queries_follow_every_kind_of_edit() {
 
     core.slope_terrain_internal(
         Vector2::new(48.0, 48.0), 24.0, Vector2::new(24.0, 48.0), 1.0,
-        Vector2::new(72.0, 48.0), 8.0, 1.0,
+        Vector2::new(72.0, 48.0), 8.0, 20.0,
     );
     assert_frame_queries_current(&mut core, "slope");
     let centre = Vector2::new(-40.0, 30.0);
     let published = core.frame_queries().surface.clone().expect("published surface");
-    core.sculpt_terrain_internal(centre, 18.0, 2.0);
+    core.sculpt_terrain_internal(centre, 18.0, 40.0);
     // The check is not vacuous: the publication before the sculpt no longer matches the core.
     assert_ne!(published.height_at(centre), core.get_height_at_internal(centre));
     assert_frame_queries_current(&mut core, "sculpt");
@@ -361,7 +361,7 @@ fn published_frame_queries_follow_every_kind_of_edit() {
     assert_frame_queries_current(&mut core, "growth cheat");
     // A pond: the camera's water level follows a water edit.
     let pond = Vector2::new(150.0, 150.0);
-    core.level_terrain_internal(pond, 30.0, -3.0, 1.0);
+    core.level_terrain_internal(pond, 30.0, -3.0, 20.0);
     core.begin_world_lake_fill_preview_internal(pond, -1.0)
         .expect("lake fill preview");
     core.commit_world_lake_fill_preview_internal()
@@ -519,7 +519,7 @@ fn large_paved_yards_remain_flat_over_hills_and_depressions() {
                     .min(max_relief)
                     * grade.signum();
                 core.heightmap
-                    .set_height(x, z, (20.0 + hill) / crate::config::HEIGHT_SCALE);
+                    .set_height(x, z, 20.0 + hill);
             }
         }
         road_terrain_plan::commit_ready(
@@ -1164,7 +1164,7 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
         0.0,
         at + Vector2::new(15.0, 0.0),
         2.0,
-        1.0,
+        20.0,
     );
     assert!(core.vehicle_ground_generation > generation + 2);
     core.prepare_site_queries();
@@ -1229,7 +1229,7 @@ fn a_standing_car_keeps_its_snapshot_ground_solve_until_the_ground_under_it_chan
         0.0,
         at + Vector2::new(15.0, 0.0),
         2.0,
-        1.0,
+        20.0,
     );
     assert!(core.vehicle_ground_generation > generation);
     let (solves, row) = frame(&mut core);

@@ -226,7 +226,7 @@ pub(super) fn cone_hill_core(foot_m: f32, slope: f32) -> SimCore {
             let r = (x as f32 - 128.0).hypot(z as f32 - 128.0);
             let height = (slope * (foot_m - r)).max(0.0);
             core.heightmap
-                .set_height(x, z, height / crate::config::HEIGHT_SCALE);
+                .set_height(x, z, height);
         }
     }
     core.precompute_road_mesh_data();
@@ -263,7 +263,7 @@ fn a_straight_tunnel_keeps_the_chord_through_a_hill() {
             assert!(point.y.abs() < 1.0e-3, "{case}: {point:?} off the chord");
         }
         let cover = |point: &Vector3| {
-            core.heightmap.sample_height_world(point.x, point.z) * crate::config::HEIGHT_SCALE
+            core.heightmap.sample_height_world(point.x, point.z)
                 - point.y
         };
         if edge.class == EdgeClass::Tunnel {
@@ -299,7 +299,6 @@ fn a_tunnel_keeps_its_cover_across_the_whole_bore() {
     assert_eq!(result.committed, "committed", "{result:?}");
     let ground = |x: f64, z: f64| {
         f64::from(core.heightmap.sample_height_world(x as f32, z as f32))
-            * f64::from(crate::config::HEIGHT_SCALE)
     };
     let roadbed = &core.transit_network.roadbed;
     let mut corners = 0;
@@ -328,7 +327,7 @@ fn a_tunnel_keeps_its_cover_across_the_whole_bore() {
     let mut gully = hill_core(80.0);
     for z in 131..257 {
         for x in 125..=131 {
-            gully.heightmap.set_height(x, z, 2.0 / crate::config::HEIGHT_SCALE);
+            gully.heightmap.set_height(x, z, 2.0);
         }
     }
     gully.precompute_road_mesh_data();

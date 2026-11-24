@@ -377,7 +377,7 @@ fn measure_populated_road_plan_scaling(
                     continue;
                 }
                 let height = (0.25 * (100.0 - x.hypot(z + 200.0))).max(0.0);
-                terrain.set_height(gx, gz, height / crate::config::HEIGHT_SCALE);
+                terrain.set_height(gx, gz, height);
             }
         }
         core.refresh_road_terrain_inputs();

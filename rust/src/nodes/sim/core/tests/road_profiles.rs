@@ -225,9 +225,12 @@ fn todays_strokes_keep_the_branch_points_products() {
 // Recorded on `dev` cd49a275 (see the test above). The follow-ground digest re-recorded by
 // `ROAD-118` round JS4a: the arc's end stands 8.5 m beside the through-hill road, its cap on that
 // road's side, and now runs on to it as a T. Re-recorded by round JS5a: the drawn end stays and
-// the lead-in runs on from it to the road (JS4a moved the end there).
+// the lead-in runs on from it to the road (JS4a moved the end there). Re-recorded when heights
+// became metres (grid alignment A1): the hill's samples and the brush arithmetic are metres, so
+// the bits move; against the control the plans, commits and counts are equal and every height is
+// within 1.4e-5 m.
 const BRANCH_POINT_DIGESTS: [u64; 3] = [
-    0x3bf5_4df0_ca41_190b,
+    0x2046_970f_ef06_75d2,
     0x6d30_1655_d3ee_62e0,
     0x32c0_e185_fa25_f9d8,
 ];
@@ -266,7 +269,7 @@ fn valley_and_hill_core() -> SimCore {
             if (-100.0..=-60.0).contains(&wx) && (z as f32 - 128.0).abs() < 40.0 {
                 let depth = 6.0 * ((wx + 100.0) * std::f32::consts::PI / 40.0).sin();
                 core.heightmap
-                    .set_height(x, z, -depth / crate::config::HEIGHT_SCALE);
+                    .set_height(x, z, -depth);
             }
         }
     }
@@ -352,7 +355,7 @@ fn a_deep_cut_without_bore_cover_is_refused() {
             let (wx, wz) = (x as f32 - 128.0, z as f32 - 128.0);
             if wx.abs() <= 10.0 && wz.abs() <= 1.0 {
                 core.heightmap
-                    .set_height(x, z, 6.0 / crate::config::HEIGHT_SCALE);
+                    .set_height(x, z, 6.0);
             }
         }
     }

@@ -685,7 +685,7 @@ fn hu3_hue_lies_above_a_neighbours_cut_and_fill() {
                 20.0..=60.0 => 3.0 * bump(40.0),
                 _ => 0.0,
             };
-            core.heightmap.set_height(x, z, height / crate::config::HEIGHT_SCALE);
+            core.heightmap.set_height(x, z, height);
         }
     }
     core.precompute_road_mesh_data();
@@ -710,7 +710,7 @@ fn hu3_hue_lies_above_a_neighbours_cut_and_fill() {
     let view = core.publish_road_tool_view().expect("a current roadbed").view;
     // The draft beside it, following the source ground.
     let path = [-90.0f32, 90.0].map(|x| {
-        let y = core.heightmap.sample_height_world(x, 14.0) * crate::config::HEIGHT_SCALE;
+        let y = core.heightmap.sample_height_world(x, 14.0);
         Vector3::new(x, y, 14.0)
     });
     let mut context = RoadPreviewContext::capture(view.clone());
@@ -744,7 +744,7 @@ fn hu3_hue_lies_above_a_neighbours_cut_and_fill() {
             let ground = surface.ground_height_at(x, z, scratch);
             assert!(h >= ground + lift - 2.0e-3, "hue {h} under the graded {ground} at ({x}, {z})");
             let source = f64::from(
-                core.heightmap.sample_height_world(x as f32, z as f32) * crate::config::HEIGHT_SCALE,
+                core.heightmap.sample_height_world(x as f32, z as f32),
             );
             raised = raised.max(ground - source);
             checked += 1;

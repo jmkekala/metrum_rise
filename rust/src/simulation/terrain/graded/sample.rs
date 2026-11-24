@@ -12,7 +12,6 @@ use super::grade::{
 };
 use super::portal::PortalWindow;
 use super::seams::{Seam, SeamKind};
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
 use wide::{CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, f64x4};
 
@@ -512,11 +511,10 @@ impl BaseWindow {
         self.first = [x0, z0];
         self.count = [x1 - x0 + 1, z1 - z0 + 1];
         self.metres.clear();
-        let scale = f64::from(HEIGHT_SCALE);
         for gz in z0..=z1 {
             for gx in x0..=x1 {
                 self.metres
-                    .push(f64::from(terrain.get_height(gx, gz)) * scale);
+                    .push(f64::from(terrain.get_height(gx, gz)));
             }
         }
     }

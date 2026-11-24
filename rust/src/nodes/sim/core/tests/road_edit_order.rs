@@ -133,7 +133,7 @@ fn slope(core: &mut SimCore) {
         0.0,
         Vector2::new(128.0, 0.0),
         6.4,
-        1.0,
+        20.0,
     );
 }
 
@@ -244,7 +244,7 @@ fn a_terrain_edit_beside_a_sloped_junction_leaves_no_failed_node() {
     let at = Vector2::new(10.0, 10.0);
     let height = core.get_world_surface_height_internal(at);
     let terrain_before = core.heightmap.clone_source_dense();
-    core.level_terrain_internal(at, 12.0, height + 2.0, 1.0);
+    core.level_terrain_internal(at, 12.0, height + 2.0, 20.0);
     let roadbed = &core.transit_network.roadbed;
     let failed: Vec<_> = roadbed.failed_nodes().to_vec();
     assert!(failed.is_empty(), "failed nodes after the edit: {failed:?}");
@@ -275,7 +275,7 @@ fn an_8_percent_slope_under_a_flat_t_leaves_every_node_built() {
         -10.24,
         Vector2::new(128.0, 0.0),
         10.24,
-        1.0,
+        20.0,
     );
     let roadbed = &core.transit_network.roadbed;
     assert!(
@@ -315,7 +315,7 @@ fn a_street_grid_t_split_on_an_8_percent_slope_commits() {
                 0.0,
                 Vector2::new(128.0, 0.0),
                 rise_m,
-                1.0,
+                20.0,
             );
         });
         assert!(core.transit_network.roadbed.failed_nodes().is_empty());
@@ -657,11 +657,11 @@ fn a_crossing_of_a_raised_road_meets_it_on_top() {
     ];
     let pit = |core: &mut SimCore| {
         slope(core);
-        core.level_terrain_internal(centre, 14.0, -3.0, 1.0);
+        core.level_terrain_internal(centre, 14.0, -3.0, 20.0);
     };
     let through = committed_with(512.0, &strokes, &[0], pit);
     let terrain_m =
-        through.heightmap.sample_height_world(centre.x, centre.y) * crate::config::HEIGHT_SCALE;
+        through.heightmap.sample_height_world(centre.x, centre.y);
     let graph = &through.region_graph;
     let edge = (0..graph.edge_count())
         .find(|&edge| !graph.edge(edge).deleted)

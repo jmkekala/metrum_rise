@@ -15,7 +15,6 @@ pub use chunks::{
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use crate::simulation::network::graph::RegionGraph;
@@ -23,6 +22,10 @@ use crate::simulation::network::graph::RegionGraph;
 const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 /// Texels of neighbouring terrain each render patch texture carries beyond its own samples.
 pub(crate) const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
+/// Metres per stored height unit in files written before heights were metres: saves before
+/// format 131 and world definitions before format 6. Their loaders multiply by it once, at load;
+/// nothing else uses it.
+pub(crate) const LEGACY_HEIGHT_UNIT_M: f32 = 20.0;
 const TERRAIN_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
 const TERRAIN_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
@@ -242,7 +245,7 @@ impl TerrainSystem {
         }
     }
 
-    /// Gets the raw source height at a grid coordinate.
+    /// Gets the source height in metres at a grid coordinate.
     pub fn get_height(&self, x: usize, y: usize) -> f32 {
         self.source_data.get(x, y)
     }
@@ -352,12 +355,12 @@ impl TerrainSystem {
         };
         let prev_point = ray_origin + ray_dir * prev_t;
         let mut prev_diff = prev_point.y
-            - self.sample_height_world(prev_point.x, prev_point.z) * HEIGHT_SCALE;
+            - self.sample_height_world(prev_point.x, prev_point.z);
 
         while prev_t < max_t {
             let t = (prev_t + step).min(max_t);
             let p = ray_origin + ray_dir * t;
-            let h = self.sample_height_world(p.x, p.z) * HEIGHT_SCALE;
+            let h = self.sample_height_world(p.x, p.z);
             let diff = p.y - h;
 
             if diff == 0.0 || diff.signum() != prev_diff.signum() {
@@ -367,7 +370,7 @@ impl TerrainSystem {
                 for _ in 0..8 {
                     let t_mid = (t_low + t_high) * 0.5;
                     let pm = ray_origin + ray_dir * t_mid;
-                    let hm = self.sample_height_world(pm.x, pm.z) * HEIGHT_SCALE;
+                    let hm = self.sample_height_world(pm.x, pm.z);
                     if (pm.y - hm).signum() == prev_diff.signum() {
                         t_low = t_mid;
                     } else {
@@ -593,18 +596,9 @@ impl TerrainSystem {
         }
     }
 
-    /// Returns a dense row-major snapshot of the authoritative source terrain buffer.
+    /// Returns a dense row-major snapshot of the authoritative source terrain buffer (metres).
     pub(crate) fn clone_source_dense(&self) -> Vec<f32> {
         self.source_data.clone_dense()
-    }
-
-    /// Returns source terrain as rendered world-space metres for water and preview solves.
-    pub(crate) fn clone_source_dense_world_heights(&self) -> Vec<f32> {
-        self.source_data
-            .clone_dense()
-            .into_iter()
-            .map(|sample| sample * HEIGHT_SCALE)
-            .collect()
     }
 
     /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
@@ -1059,7 +1053,7 @@ impl TerrainSystem {
         let (world_x, world_z) = self.grid_to_world_coords(grid_x, grid_z);
         Vector3::new(
             world_x,
-            self.source_data.get(grid_x, grid_z) * HEIGHT_SCALE,
+            self.source_data.get(grid_x, grid_z),
             world_z,
         )
     }
@@ -1104,7 +1098,6 @@ fn raycast_axis_interval(origin: f32, dir: f32, min: f32, max: f32) -> Option<(f
 #[cfg(test)]
 mod tests {
     use super::TerrainSystem;
-    use crate::config::HEIGHT_SCALE;
     use godot::prelude::Vector3;
     use std::collections::HashSet;
 
@@ -1147,8 +1140,8 @@ mod tests {
 
     #[test]
     fn raycast_reaches_large_world_from_high_altitude_camera() {
-        let terrain = TerrainSystem::with_chunking(1801, 1801, 10.0, 64, 5.0);
-        let target = Vector3::new(0.0, 5.0 * HEIGHT_SCALE, 0.0);
+        let terrain = TerrainSystem::with_chunking(1801, 1801, 10.0, 64, 100.0);
+        let target = Vector3::new(0.0, 100.0, 0.0);
         let origin = Vector3::new(0.0, 20_800.0, 20_800.0);
         let ray_dir = (target - origin).normalized();
 

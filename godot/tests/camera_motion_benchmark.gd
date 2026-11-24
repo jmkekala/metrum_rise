@@ -18,7 +18,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	if not simulation.create_blank_world(2048, 2048, 8, 128, 50):
+	if not simulation.create_blank_world(2048, 2048, 8, 128, 1000):
 		quit(1)
 		return
 	simulation.set_simulation_speed(0.0)

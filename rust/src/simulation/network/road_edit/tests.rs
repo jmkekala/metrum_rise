@@ -3,7 +3,6 @@
 //! Exact topology/profile adoption, cold-commit parity and bounded-index regressions.
 
 use super::*;
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::road_edit::{NoFrontages, PreparedRoadInput};
 use crate::simulation::network::roadbed::{NodeArms, PieceId, RoadbedSystem};
@@ -27,7 +26,7 @@ impl Fixture {
         if sloped {
             for z in 0..256 {
                 for x in 0..256 {
-                    terrain.set_height(x, z, (x as f32 * 0.025 + z as f32 * 0.012) / HEIGHT_SCALE);
+                    terrain.set_height(x, z, x as f32 * 0.025 + z as f32 * 0.012);
                 }
             }
         }
@@ -44,7 +43,7 @@ impl Fixture {
     }
 
     fn point(&self, x: f32, z: f32) -> Vector3 {
-        Vector3::new(x, self.terrain.sample_height_world(x, z) * HEIGHT_SCALE, z)
+        Vector3::new(x, self.terrain.sample_height_world(x, z), z)
     }
 
     fn plan(&self, raw: &[Vector3]) -> (PreparedRoadInput, RoadTopologyPlan) {
@@ -225,7 +224,7 @@ fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
                 fixture
                     .terrain
                     // 30%: within the 1:3 maximum grade (`ROAD-68` open question 37).
-                    .set_height(x, z, x as f32 * 0.3 / HEIGHT_SCALE);
+                    .set_height(x, z, x as f32 * 0.3);
             }
         }
     }

@@ -8,7 +8,6 @@ render_mode unshaded, cull_disabled, fog_disabled;
 // road/portal SDF and outside authored paving classes.
 uniform float terrain_cell_m = 5.0;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
-uniform float height_scale;
 uniform vec2 heightmap_texture_size;
 uniform vec2 inner_sample_offset_texels;
 

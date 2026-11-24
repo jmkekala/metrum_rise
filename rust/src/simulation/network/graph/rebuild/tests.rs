@@ -200,7 +200,7 @@ fn profile_test_terrain(height: impl Fn(f32) -> f32) -> crate::simulation::terra
     for grid_z in 0..256 {
         for grid_x in 0..256 {
             let (x, _) = terrain.grid_to_world_coords(grid_x, grid_z);
-            terrain.set_height(grid_x, grid_z, height(x) / crate::config::HEIGHT_SCALE);
+            terrain.set_height(grid_x, grid_z, height(x));
         }
     }
     terrain

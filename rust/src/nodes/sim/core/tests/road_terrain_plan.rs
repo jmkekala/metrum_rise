@@ -193,7 +193,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
         .replace_baseline_depth_from_dense(&vec![0.0; 257 * 257])
         .unwrap();
     assert_eq!(plan.status(&core), "ready");
-    core.heightmap.set_height(0, 0, 0.25);
+    core.heightmap.set_height(0, 0, 5.0);
     assert_eq!(plan.status(&core), "stale");
     core.precompute_road_mesh_data();
     let rebuilt = RoadEditPlan::compile(
@@ -347,7 +347,7 @@ fn fall_line_stroke_at(grade: f32) -> (SimCore, Vec<Vector3>) {
             core.heightmap.set_height(
                 x,
                 z,
-                height(x as f32 - 128.0) / crate::config::HEIGHT_SCALE,
+                height(x as f32 - 128.0),
             );
         }
     }
@@ -406,7 +406,7 @@ fn a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused() {
     core.sculpt_terrain_stroke_step_internal(
         Vector2::ZERO,
         12.0,
-        20.0 / crate::config::HEIGHT_SCALE,
+        20.0,
     );
     core.end_terrain_stroke_internal();
     assert_eq!(
@@ -441,7 +441,7 @@ fn a_large_terrain_stroke_undoes_to_the_terrain_before_it() {
     core.sculpt_terrain_stroke_step_internal(
         Vector2::new(0.0, 40.0),
         120.0,
-        10.0 / crate::config::HEIGHT_SCALE,
+        10.0,
     );
     assert!(core.end_terrain_stroke_internal());
     assert_eq!(
@@ -598,6 +598,49 @@ const KUOPIO_REFERENCE_SAVE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
 );
+
+// The Kuopio source world is format 3, its heights and base elevation in units of 20 m: every
+// sample loads as the product the code before metres reported (`raw * 20` in `f32`), bitwise.
+// The reference save (format 131, re-recorded in metres) holds that terrain unedited.
+#[test]
+fn kuopio_source_world_in_legacy_height_units_loads_in_metres() {
+    let world = rusqlite::Connection::open_with_flags(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
+        ),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let (format, base, cell_m, chunk_m): (i64, f32, f32, f32) = world
+        .query_row(
+            "SELECT format_version, terrain_base_elevation_m, terrain_cell_m, terrain_chunk_m FROM world_definition_meta",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(format, 3, "the shipped world is the legacy format");
+    let core = kuopio_source_core();
+    let (width, chunk) = (core.heightmap.width, (chunk_m / cell_m).ceil() as usize);
+    let mut metres = vec![base * 20.0; width * core.heightmap.height];
+    let mut chunks = world
+        .prepare("SELECT chunk_x, chunk_z, width_samples, height_samples, source_height_blob_f32_le FROM world_terrain_chunks")
+        .unwrap();
+    let mut rows = chunks.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        let [cx, cz, w, h] = [0, 1, 2, 3].map(|i| row.get::<_, i64>(i).unwrap() as usize);
+        let blob: Vec<u8> = row.get(4).unwrap();
+        for (i, bytes) in blob.as_chunks::<4>().0.iter().enumerate() {
+            let (x, z) = (cx * chunk + i % w, cz * chunk + i / w);
+            assert!(i / w < h);
+            metres[z * width + x] = f32::from_le_bytes(*bytes) * 20.0;
+        }
+    }
+    assert!(core.heightmap.clone_source_dense() == metres, "the world's heights");
+    let mut saved = test_core();
+    saved.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    assert!(saved.heightmap.clone_source_dense() == metres, "the save's heights");
+}
 
 // Open questions 8 and 37: the reference save is re-recorded with today's code (question 38) and
 // loads as saved: a load repairs nothing (save compatibility is not required, `ROAD-68-K21`),
@@ -1633,7 +1676,7 @@ fn profile_quality_failures(core: &SimCore) -> Vec<String> {
         let mut last_pitch: Option<f32> = None;
         for point in &edge.physical_geometry {
             let source =
-                core.heightmap.sample_height_world(point.x, point.z) * crate::config::HEIGHT_SCALE;
+                core.heightmap.sample_height_world(point.x, point.z);
             offset = offset.max((point.y - source).abs());
         }
         for span in edge.physical_geometry.windows(2) {
@@ -1828,7 +1871,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
             0.0,
             Vector2::new(128.0, 0.0),
             slope_end_m,
-            1.0,
+            20.0,
         );
         let surface = |core: &SimCore, x: f32, z: f32| {
             Vector3::new(

@@ -131,7 +131,7 @@ impl SimCore {
         const MAX_TRAFFIC_LABELS: usize = 96;
 
         let get_h = |pos: Vector3| -> Vector3 {
-            let y = self.heightmap.sample_height_world(pos.x, pos.z) * 20.0 + 1.2;
+            let y = self.heightmap.sample_height_world(pos.x, pos.z) + 1.2;
             Vector3::new(pos.x, y, pos.z)
         };
 

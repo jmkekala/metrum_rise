@@ -49,7 +49,7 @@ func _run() -> void:
 	for step in 80:
 		if _simulation.get_world_surface_height(Vector2.ZERO) > HILL_TOP_M:
 			break
-		_simulation.sculpt_terrain(Vector2.ZERO, 100.0, 1.0)
+		_simulation.sculpt_terrain(Vector2.ZERO, 100.0, 20.0)
 	_expect(_simulation.get_world_surface_height(Vector2.ZERO) > HILL_TOP_M, "the sculpt tool must raise a hill")
 	input_manager._refresh_after_world_load()
 	input_manager.set_simulation_speed(0.0)

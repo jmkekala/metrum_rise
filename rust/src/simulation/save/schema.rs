@@ -6,7 +6,12 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 130;
+pub const SAVE_VERSION: i64 = 131;
+
+/// Format 130, saved before terrain heights were metres: its terrain heights and base elevation
+/// are in units of 20 m (`LEGACY_HEIGHT_UNIT_M`), as are those of every older format below. It
+/// loads as format 131 does, with the heights multiplied by 20 at load.
+pub const PRE_METRES_SAVE_VERSION: i64 = 130;
 
 /// Format 129, saved before a car or truck could cross its road to a far-side access
 /// (`PARK-32`): it has no `agent_crossings` table. It loads as format 130 does with no vehicle

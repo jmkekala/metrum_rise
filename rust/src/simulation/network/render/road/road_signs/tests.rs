@@ -573,7 +573,7 @@ fn without_a_sidewalk_the_sign_uses_the_verge_and_the_drawn_ground_height() {
     for z in 0..256 {
         for x in 0..256 {
             let (_, wz) = f.3.grid_to_world_coords(x, z);
-            f.3.set_height(x, z, (20.0 + 0.05 * wz.abs()) / crate::config::HEIGHT_SCALE);
+            f.3.set_height(x, z, 20.0 + 0.05 * wz.abs());
         }
     }
     let mut sections = f.2.sections(0).unwrap().to_vec();

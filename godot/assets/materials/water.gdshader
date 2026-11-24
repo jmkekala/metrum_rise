@@ -6,11 +6,12 @@ render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 #include "res://scripts/shaders/night_sky.gdshaderinc"
 #include "res://scripts/shaders/water_reflection.gdshaderinc"
 
-uniform sampler2D heightmap : repeat_disable, filter_linear;
+uniform sampler2D heightmap : repeat_disable, filter_linear; // Heights in metres.
+// Debug view 3 shades terrain height in grey over a ramp of this many metres.
+const float DEBUG_HEIGHT_RAMP_M = 20.0;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
 uniform sampler2D depth_texture : hint_depth_texture, repeat_disable, filter_nearest;
-uniform float height_scale = 10.0;
 uniform vec4 shallow_water_color : source_color = vec4(0.10, 0.28, 0.40, 0.62);
 uniform vec4 deep_water_color : source_color = vec4(0.018, 0.09, 0.18, 0.90);
 uniform vec4 foam_color : source_color = vec4(0.76, 0.91, 0.96, 0.82);
@@ -78,7 +79,7 @@ vec2 terrain_height_uv(vec2 water_uv) {
 }
 
 float sample_terrain_world_height(vec2 uv) {
-	return texture(heightmap, terrain_height_uv(uv)).r * height_scale;
+	return texture(heightmap, terrain_height_uv(uv)).r;
 }
 
 float sample_raw_water_depth(vec2 uv) {
@@ -604,7 +605,7 @@ vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 		debug_color = water_debug_lod_color(water_debug_lod_step);
 	} else if (terrain_visual_debug_mode == 3) {
 		float terrain_height = sample_terrain_world_height(var_centered_uv);
-		debug_color = vec3(clamp(terrain_height / max(height_scale, 0.001), 0.0, 1.0));
+		debug_color = vec3(clamp(terrain_height / DEBUG_HEIGHT_RAMP_M, 0.0, 1.0));
 	} else if (terrain_visual_debug_mode == 5) {
 		debug_color = vec3(shore_mask, depth_m > 0.001 ? 0.45 : 0.0, 1.0 - shore_mask);
 	} else {

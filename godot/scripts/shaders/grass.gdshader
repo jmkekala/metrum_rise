@@ -16,7 +16,6 @@ uniform vec2 patch_world_size_m;
 // PlaneMesh intervals.
 uniform vec2 terrain_mesh_cells;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
-uniform float height_scale = 20.0;
 uniform vec2 heightmap_texture_size;
 uniform vec2 inner_sample_offset_texels;
 uniform vec2 inner_sample_size_texels;
@@ -78,7 +77,7 @@ float overlay_at(sampler2D map, vec4 bounds, vec2 world_xz) {
 }
 
 float height_at(vec2 uv) {
-	return textureLod(heightmap, uv, 0.0).r * height_scale;
+	return textureLod(heightmap, uv, 0.0).r;
 }
 
 vec3 surface_at(vec2 patch_uv, vec2 height_uv) {

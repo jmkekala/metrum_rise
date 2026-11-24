@@ -26,7 +26,6 @@ use super::input::{
     PreparedRoadInput, is_surface_edge, simplify_road_alignment_points, snap_road_endpoints_to_existing_nodes,
     xz_distance,
 };
-use crate::config;
 use crate::simulation::network::graph::{RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
@@ -138,7 +137,7 @@ pub(crate) fn tunnel_run_reaches_cover(
 
 /// The source terrain's height above `point`, metres.
 pub(super) fn cover_m(terrain: &TerrainSystem, point: Vector3) -> f32 {
-    terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE - point.y
+    terrain.sample_height_world(point.x, point.z) - point.y
 }
 
 /// The half width of a tunnel stroke's section at the outer faces of the lining's shell: the

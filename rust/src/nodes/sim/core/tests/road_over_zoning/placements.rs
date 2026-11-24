@@ -1014,7 +1014,7 @@ fn a_placement_on_a_slope_does_not_read_the_demolished_pads() {
             0.0,
             Vector2::new(0.0, 128.0),
             6.4,
-            1.0,
+            20.0,
         )
     };
     let (mut built, _) = street_with_houses_on(slope);
@@ -1028,7 +1028,7 @@ fn a_placement_on_a_slope_does_not_read_the_demolished_pads() {
         "the lot stands over houses"
     );
     let ground = |core: &SimCore, x: f32, z: f32| {
-        core.heightmap.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
+        core.heightmap.sample_height_world(x, z)
     };
     for &house in &hover.take.buildings {
         let building = &built.allocator.buildings[house];

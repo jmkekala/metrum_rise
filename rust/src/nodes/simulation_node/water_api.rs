@@ -753,7 +753,7 @@ mod tests {
                 expected
             );
         }
-        core.heightmap.set_height(3, 3, 1.0);
+        core.heightmap.set_height(3, 3, 20.0);
         assert_ne!(reflection_sources(&core)[0], dry[0]);
         assert_eq!(reflection_sources(&core)[2], 0);
     }

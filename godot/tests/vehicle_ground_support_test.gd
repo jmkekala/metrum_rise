@@ -87,7 +87,7 @@ func _run() -> void:
 			simulation.set_simulation_speed(0.0)
 			# A clamped, oblique two-metre grade has both pitch and roll, and two abrupt
 			# grade breaks. The fine source grid keeps this independent of road placement.
-			simulation.slope_terrain(Vector2.ZERO, 48.0, Vector2.ZERO, 0.0, Vector2(0.4, side * 2.0), rise, 1000.0)
+			simulation.slope_terrain(Vector2.ZERO, 48.0, Vector2.ZERO, 0.0, Vector2(0.4, side * 2.0), rise, 20000.0)
 			for kind in range(models.size()):
 				for direction in [-1.0, 1.0]:
 					# A frame without cars forgets every drawn pose.

@@ -38,7 +38,7 @@ fn terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility() {
         let away = DVec2::new(angle.cos(), angle.sin()).perp() * 110.0;
         let center = lot.center() + Vector2::new(away.x as f32, away.y as f32);
         core.start_terrain_stroke_internal();
-        core.sculpt_terrain_stroke_step_internal(Vector2::new(center.x, center.y), 120.0, 40.0);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(center.x, center.y), 120.0, 800.0);
         assert!(core.end_terrain_stroke_internal());
         assert_eq!(core.undo_stack.len(), undo_count + 1);
         assert!(core.heightmap.source_generation() > terrain_generation);

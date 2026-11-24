@@ -2,7 +2,6 @@
 
 //! Blank-world creation and reusable world-definition bridge methods.
 
-use crate::config::HEIGHT_SCALE;
 use crate::debug_log;
 use crate::nodes::sim::core::{
     AuthoredWaterPatchFillDebug, CityTreasury, SimCore, WorldLakeFillPreview,
@@ -403,7 +402,7 @@ impl SimCore {
             return Ok(());
         }
 
-        let terrain_world = authored_water_terrain_world_heights(&self.heightmap);
+        let terrain_world = self.heightmap.clone_source_dense();
         let mut baseline_depth = vec![0.0; terrain_world.len()];
         let mut fill_debug_cache: HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>> =
             HashMap::new();
@@ -688,10 +687,6 @@ fn richness_percent_to_storage(richness_percent: f32) -> u16 {
     ((richness_percent.clamp(0.0, 100.0) / 100.0) * f32::from(RESOURCE_RICHNESS_MAX)).round() as u16
 }
 
-fn authored_water_terrain_world_heights(terrain: &TerrainSystem) -> Vec<f32> {
-    terrain.clone_source_dense_world_heights()
-}
-
 fn evaluate_world_water_fill_preview(
     terrain: &TerrainSystem,
     water: &WaterSystem,
@@ -700,7 +695,7 @@ fn evaluate_world_water_fill_preview(
     world_z: f32,
     surface_elevation_m: f32,
 ) -> WorldLakeFillPreview {
-    let seed_height_m = terrain.sample_height_world(world_x, world_z) * HEIGHT_SCALE;
+    let seed_height_m = terrain.sample_height_world(world_x, world_z);
     if surface_elevation_m <= seed_height_m {
         return WorldLakeFillPreview {
             kind,
@@ -713,7 +708,7 @@ fn evaluate_world_water_fill_preview(
         };
     }
 
-    let terrain_world = authored_water_terrain_world_heights(terrain);
+    let terrain_world = terrain.clone_source_dense();
     let (seed_x, seed_z) = water.world_to_grid_cell_clamped(world_x, world_z);
     let mut preview_depth = vec![0.0; terrain_world.len()];
     let application = apply_lake_fill_to_depth(
@@ -1080,11 +1075,11 @@ mod tests {
 
     fn carve_closed_basin(core: &mut SimCore) {
         let heights = [
-            [10.0, 10.0, 10.0, 10.0, 10.0],
-            [10.0, 2.0, 2.0, 2.0, 10.0],
-            [10.0, 2.0, 1.0, 2.0, 10.0],
-            [10.0, 2.0, 2.0, 2.0, 10.0],
-            [10.0, 10.0, 10.0, 10.0, 10.0],
+            [200.0, 200.0, 200.0, 200.0, 200.0],
+            [200.0, 40.0, 40.0, 40.0, 200.0],
+            [200.0, 40.0, 20.0, 40.0, 200.0],
+            [200.0, 40.0, 40.0, 40.0, 200.0],
+            [200.0, 200.0, 200.0, 200.0, 200.0],
         ];
         for (z, row) in heights.iter().enumerate() {
             for (x, height) in row.iter().copied().enumerate() {
@@ -1261,7 +1256,7 @@ mod tests {
         let first_generation = core.terrain_payload_generation_for_patch(0, 0);
         core.bump_terrain_payload_patch_generations(&[(1, 1)]);
         let edited_generation = core.terrain_payload_generation_for_patch(1, 1);
-        core.create_blank_world_internal(40.0, 40.0, 8.0, 16.0, 50.0)
+        core.create_blank_world_internal(40.0, 40.0, 8.0, 16.0, 1000.0)
             .unwrap();
         for (key, stale) in [((0, 0), first_generation), ((1, 1), edited_generation)] {
             core.heightmap.mark_render_patch_dirty(key.0, key.1);

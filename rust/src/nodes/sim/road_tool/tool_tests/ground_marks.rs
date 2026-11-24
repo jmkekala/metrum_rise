@@ -127,7 +127,7 @@ fn a_raised_end_marks_its_ground_and_reads_bridge() {
     let handle = frame.height_handles[1].unwrap();
     assert_eq!(mark.end, DraftEnd::End);
     assert!((mark.point.y - handle.height_m).abs() < MM);
-    let terrain = view().terrain.sample_height_world(END.0, END.1) * crate::config::HEIGHT_SCALE;
+    let terrain = view().terrain.sample_height_world(END.0, END.1);
     assert!((mark.ground_m - terrain).abs() < MM, "no road: the terrain");
     assert!((mark.height_above_m() - 6.5).abs() < MM);
     assert_marker(&tool, &mark);

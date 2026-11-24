@@ -2,7 +2,8 @@
 
 //! `TERRAIN-28`: every terrain brush edit clamps its footprint to the world and refuses one
 //! wholly outside it. An edit whose footprint reaches the world writes exactly the samples it
-//! wrote before the clamp (the digest below was recorded on `dev` 6e312470, before it).
+//! wrote before the clamp (the digest below was recorded on `dev` 6e312470, before it, and
+//! re-recorded when heights became metres: the samples' bits move, within 1e-6 m of the control).
 
 use super::*;
 use godot::prelude::Vector2;
@@ -53,13 +54,13 @@ fn edit_digest(core: &SimCore) -> u64 {
 fn run_reaching_edits(core: &mut SimCore) {
     let half = WORLD_M * 0.5;
     let at = |x: f32, z: f32| Vector2::new(x, z);
-    core.sculpt_terrain_internal(at(0.0, 42.0), 26.0, 0.4);
-    core.sculpt_terrain_internal(at(-half, -half), 24.0, 0.3);
-    core.sculpt_terrain_internal(at(half + 10.0, 0.0), 24.0, -0.2);
-    core.level_terrain_internal(at(half, half), 40.0, 3.0, 0.5);
-    core.level_terrain_internal(at(-120.0, 75.0), 33.0, -2.0, 0.25);
-    core.smooth_terrain_internal(at(0.0, 42.0), 30.0, 0.6);
-    core.smooth_terrain_internal(at(-half - 5.0, half), 28.0, 0.6);
+    core.sculpt_terrain_internal(at(0.0, 42.0), 26.0, 8.0);
+    core.sculpt_terrain_internal(at(-half, -half), 24.0, 6.0);
+    core.sculpt_terrain_internal(at(half + 10.0, 0.0), 24.0, -4.0);
+    core.level_terrain_internal(at(half, half), 40.0, 3.0, 10.0);
+    core.level_terrain_internal(at(-120.0, 75.0), 33.0, -2.0, 5.0);
+    core.smooth_terrain_internal(at(0.0, 42.0), 30.0, 12.0);
+    core.smooth_terrain_internal(at(-half - 5.0, half), 28.0, 12.0);
     core.slope_terrain_internal(
         at(200.0, -half),
         45.0,
@@ -67,14 +68,14 @@ fn run_reaching_edits(core: &mut SimCore) {
         1.0,
         at(260.0, -half + 20.0),
         6.0,
-        0.4,
+        8.0,
     );
-    core.sculpt_terrain_internal(at(30.0, -40.0), 2.0 * WORLD_M, 0.05);
+    core.sculpt_terrain_internal(at(30.0, -40.0), 2.0 * WORLD_M, 1.0);
 
     core.start_terrain_stroke_internal();
-    core.sculpt_terrain_stroke_step_internal(at(half - 3.0, -half + 3.0), 22.0, 0.3);
-    core.level_terrain_stroke_step_internal(at(-half, 0.0), 30.0, 2.5, 0.4);
-    core.smooth_terrain_stroke_step_internal(at(100.0, 100.0), 26.0, 0.5);
+    core.sculpt_terrain_stroke_step_internal(at(half - 3.0, -half + 3.0), 22.0, 6.0);
+    core.level_terrain_stroke_step_internal(at(-half, 0.0), 30.0, 2.5, 8.0);
+    core.smooth_terrain_stroke_step_internal(at(100.0, 100.0), 26.0, 10.0);
     core.slope_terrain_stroke_step_internal(
         at(-300.0, half),
         35.0,
@@ -82,7 +83,7 @@ fn run_reaching_edits(core: &mut SimCore) {
         0.0,
         at(-260.0, half - 30.0),
         4.0,
-        0.5,
+        10.0,
     );
     assert!(core.end_terrain_stroke_internal());
 }
@@ -93,22 +94,23 @@ fn edits_reaching_the_world_write_what_they_wrote_before_the_clamp() {
     run_reaching_edits(&mut core);
     // Nine single edits and one stroke, none rolled back.
     assert_eq!(core.undo_stack.len(), 10);
-    // Recorded on `dev` 6e312470, before the clamp (round T28).
-    assert_eq!(edit_digest(&core), 2_240_631_579_743_229_371);
+    // Recorded on `dev` 6e312470, before the clamp (round T28); re-recorded in metres (A1), the
+    // dirty patches, revisions and undo entries equal to the control's.
+    assert_eq!(edit_digest(&core), 18_364_395_597_040_659_795);
 }
 
 // Every brush entry at one point: the single edits, then a stroke of every step kind.
 fn run_every_entry(core: &mut SimCore, pos: Vector2, radius: f32) {
-    core.sculpt_terrain_internal(pos, radius, 0.3);
-    core.level_terrain_internal(pos, radius, 2.0, 0.5);
-    core.smooth_terrain_internal(pos, radius, 0.5);
+    core.sculpt_terrain_internal(pos, radius, 6.0);
+    core.level_terrain_internal(pos, radius, 2.0, 10.0);
+    core.smooth_terrain_internal(pos, radius, 10.0);
     let (start, end) = (pos - Vector2::new(5.0, 0.0), pos + Vector2::new(5.0, 0.0));
-    core.slope_terrain_internal(pos, radius, start, 0.0, end, 3.0, 0.5);
+    core.slope_terrain_internal(pos, radius, start, 0.0, end, 3.0, 10.0);
     core.start_terrain_stroke_internal();
-    core.sculpt_terrain_stroke_step_internal(pos, radius, 0.3);
-    core.level_terrain_stroke_step_internal(pos, radius, 2.0, 0.5);
-    core.smooth_terrain_stroke_step_internal(pos, radius, 0.5);
-    core.slope_terrain_stroke_step_internal(pos, radius, start, 0.0, end, 3.0, 0.5);
+    core.sculpt_terrain_stroke_step_internal(pos, radius, 6.0);
+    core.level_terrain_stroke_step_internal(pos, radius, 2.0, 10.0);
+    core.smooth_terrain_stroke_step_internal(pos, radius, 10.0);
+    core.slope_terrain_stroke_step_internal(pos, radius, start, 0.0, end, 3.0, 10.0);
     core.end_terrain_stroke_internal();
 }
 
@@ -193,7 +195,7 @@ fn edits_partly_outside_or_larger_than_the_world_are_clamped_to_it() {
         let mut core = world_core();
         core.take_graded_edits();
         let before = edit_digest(&core);
-        core.sculpt_terrain_internal(pos, radius, 0.3);
+        core.sculpt_terrain_internal(pos, radius, 6.0);
         assert_ne!(
             edit_digest(&core),
             before,

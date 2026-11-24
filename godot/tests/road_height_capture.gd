@@ -308,7 +308,7 @@ func _raise(centre: Vector2, radius: float, height_m: float) -> void:
 		var now: float = _simulation.get_world_surface_height(centre)
 		if (height_m > 0.0 and now > height_m) or (height_m < 0.0 and now < height_m):
 			break
-		_simulation.sculpt_terrain(centre, radius, signf(height_m))
+		_simulation.sculpt_terrain(centre, radius, signf(height_m) * 20.0)
 	_expect(absf(_simulation.get_world_surface_height(centre)) >= absf(height_m), "the sculpt reaches %.1f m" % height_m)
 
 func _log_hue(label: String) -> void:

@@ -7,7 +7,6 @@
 //! is a coarse derived grid over the whole world, rebuilt only when the visible water or the
 //! terrain changes; it never feeds the simulation.
 
-use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
@@ -95,7 +94,7 @@ pub(crate) fn build_mist_map(water: &WaterSystem, terrain: &TerrainSystem) -> Mi
                     if depth > MIN_WATER_DEPTH_M {
                         // Water depth is on the base (`TERRAIN-07` T13 (a)), so its surface is the
                         // base plus the depth, whatever the graded ground does there.
-                        *cell = terrain.sample_height_world(wx, wz) * HEIGHT_SCALE + depth;
+                        *cell = terrain.sample_height_world(wx, wz) + depth;
                     }
                 }
             });
@@ -196,7 +195,7 @@ mod tests {
             let i = (map.height / 2 * map.width + x) * 2;
             (map.data[i], map.data[i + 1])
         };
-        let ground = terrain.sample_height_world(-500.0, 0.0) * HEIGHT_SCALE;
+        let ground = terrain.sample_height_world(-500.0, 0.0);
         let (presence, level) = cell(-500.0);
         assert_eq!(presence, 1.0);
         assert!((level - (ground + 2.0)).abs() < 1e-3);

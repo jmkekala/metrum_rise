@@ -11,7 +11,6 @@ use super::tests::{assert_exact_pruning, bake_with};
 use super::tile::{Evaluation, lattice};
 use super::*;
 use crate::assets::SiteSurfaceMaterial;
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::buildings::allocator::{
     BuildingSiteSurfaceClient, SiteChange, site_footprint_contains,
 };
@@ -96,7 +95,7 @@ fn sloped_terrain() -> TerrainSystem {
     for z in 0..53 {
         for x in 0..53 {
             let wx = x as f32 * 10.0 - 260.0;
-            terrain.set_height(x, z, SLOPE * wx / HEIGHT_SCALE);
+            terrain.set_height(x, z, SLOPE * wx);
         }
     }
     terrain
@@ -603,7 +602,7 @@ fn walls_close_the_step_at_the_lower_road() {
     let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
     for z in 0..53 {
         for x in 0..53 {
-            terrain.set_height(x, z, 3.0 / HEIGHT_SCALE);
+            terrain.set_height(x, z, 3.0);
         }
     }
     let tiles = window_tiles();
@@ -663,7 +662,7 @@ pub(crate) fn structure_mouth(
     for z in 0..53 {
         for x in 0..53 {
             let wx = x as f32 * 10.0 - 260.0;
-            terrain.set_height(x, z, slope * (wx + 20.0).max(0.0) / HEIGHT_SCALE);
+            terrain.set_height(x, z, slope * (wx + 20.0).max(0.0));
         }
     }
     (graph, terrain)

@@ -32,8 +32,7 @@ impl SimulationNode {
                                     point.x,
                                     point.y,
                                     point.z,
-                                    core.heightmap.sample_height_world(point.x, point.z)
-                                        * crate::config::HEIGHT_SCALE,
+                                    core.heightmap.sample_height_world(point.x, point.z),
                                 ]
                             })
                             .collect();

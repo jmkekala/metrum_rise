@@ -38,7 +38,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::resources::{
     COAL_RESOURCE_ID, RESOURCE_RICHNESS_MAX, ResourceDepositSystem,
 };
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::{LEGACY_HEIGHT_UNIT_M, TerrainSystem};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::work_area::initial_work_area_scale;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -1129,9 +1129,12 @@ fn save_agriculture(
     Ok(())
 }
 
+// A save before format 131 (`heights_in_metres` false) holds heights in units of 20 m: one pass
+// over the samples at load converts them, `O(samples)`, off the frame.
 pub(super) fn load_terrain(
     conn: &Connection,
     config: &WorldConfig,
+    heights_in_metres: bool,
 ) -> SaveLoadResult<TerrainSystem> {
     let (w_raw, h_raw, blob): (i64, i64, Vec<u8>) = conn.query_row(
         "SELECT width, height, height_blob_f32_le FROM terrain_state LIMIT 1",
@@ -1143,7 +1146,12 @@ pub(super) fn load_terrain(
         return Err(SaveLoadError::custom("terrain size mismatch"));
     }
     let mut t = TerrainSystem::from_world_config(config);
-    let source_dense = unpack_f32_blob(&blob, w * h)?;
+    let mut source_dense = unpack_f32_blob(&blob, w * h)?;
+    if !heights_in_metres {
+        for height in &mut source_dense {
+            *height *= LEGACY_HEIGHT_UNIT_M;
+        }
+    }
     t.replace_source_from_dense(&source_dense)
         .map_err(SaveLoadError::custom)?;
     Ok(t)

@@ -32,7 +32,6 @@ const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd"
 const BORDER_SKIRT_SHADER := preload("res://scripts/renderers/terrain_border.gdshader")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
-const HEIGHT_SCALE := 20.0
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_START_M := 2.0
@@ -1413,7 +1412,6 @@ static func patch_cull_aabb(size_xz: Vector2) -> AABB:
 # per build, as before. (A template duplicated per material cost 0.31 ms a material.)
 func _apply_constant_patch_parameters(material: ShaderMaterial) -> void:
 	WorldMaterials.apply_terrain_paving_parameters(material)
-	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	SceneLightingConfig.apply_ground_shadow_parameters(material)
 	TreeSpecies.apply_far_canopy(material)
 	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
@@ -2699,7 +2697,7 @@ func _sculpt_at_mouse(delta: float) -> void:
 	simulation_node.sculpt_terrain(
 		Vector2(intersection.x, intersection.z),
 		15.0,
-		strength / HEIGHT_SCALE
+		strength
 	)
 
 	var road_tool = get_node_or_null("../RoadTool")

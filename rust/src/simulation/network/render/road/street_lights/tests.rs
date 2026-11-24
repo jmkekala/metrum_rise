@@ -423,7 +423,7 @@ fn verge_poles_stand_on_the_drawn_ground_of_a_graded_slope() {
     for z in 0..256 {
         for x in 0..256 {
             let (_, wz) = f.2.grid_to_world_coords(x, z);
-            f.2.set_height(x, z, height(wz) / config::HEIGHT_SCALE);
+            f.2.set_height(x, z, height(wz));
         }
     }
     let lights = emit(&f, vec![car_only, sidewalks]);

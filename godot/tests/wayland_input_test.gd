@@ -226,7 +226,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(512, 512, 8, 128, 50), "fixture world")
+	_expect(simulation.create_blank_world(512, 512, 8, 128, 1000), "fixture world")
 	camera = CameraNode.new()
 	camera.name = "CameraNode"
 	host.add_child(camera)

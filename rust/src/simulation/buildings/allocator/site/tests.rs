@@ -418,7 +418,7 @@ fn square_site_with_surface() -> BuildingSiteClient {
 
 #[test]
 fn site_support_validation_target_uses_visible_road_surface() {
-    let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 1.0);
+    let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 20.0);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(
         Vector3::new(0.0, 0.0, -16.0),

@@ -307,7 +307,7 @@ fn graded_curve_with_lots(cross_first: bool) -> SimCore {
             let (wx, wz) = (x as f32 * cell - half_x, z as f32 * cell - half_z);
             let height = 30.0 + 0.08 * wx + 3.0 * (wx / 17.0).sin() + 2.0 * (wz / 13.0).sin();
             c.heightmap
-                .set_height(x, z, height / crate::config::HEIGHT_SCALE);
+                .set_height(x, z, height);
         }
     }
     // The street bends round the lots, so its sidewalks are not its centre line's offsets.
@@ -522,7 +522,7 @@ fn a_terrain_stroke_undo_on_a_graded_curve_publishes_doors_on_lifted_lanes() {
     c.sculpt_terrain_stroke_step_internal(
         godot::prelude::Vector2::new(0.0, 60.0),
         80.0,
-        2.0 / crate::config::HEIGHT_SCALE,
+        2.0,
     );
     assert!(c.end_terrain_stroke_internal(), "the stroke is accepted");
     c.finalize_network_render_products();

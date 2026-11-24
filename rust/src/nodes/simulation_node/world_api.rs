@@ -148,8 +148,7 @@ impl SimulationNode {
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 if let Some(mut camera) = self.active_game_camera() {
-                    let height_m = self.lock_core().heightmap.sample_height_world(0.0, 0.0)
-                        * config::HEIGHT_SCALE;
+                    let height_m = self.lock_core().heightmap.sample_height_world(0.0, 0.0);
                     camera.bind_mut().reset_for_world(height_m);
                 }
                 true
@@ -289,8 +288,7 @@ impl SimulationNode {
         for lake in &core.world_lake_fills {
             let terrain_height_m = core
                 .heightmap
-                .sample_height_world(lake.world_x, lake.world_z)
-                * config::HEIGHT_SCALE;
+                .sample_height_world(lake.world_x, lake.world_z);
             markers.push(
                 &Self::world_water_authoring_marker_dict(
                     "lake_fill",
@@ -306,8 +304,7 @@ impl SimulationNode {
         for open_water in &core.world_open_water_fills {
             let terrain_height_m = core
                 .heightmap
-                .sample_height_world(open_water.world_x, open_water.world_z)
-                * config::HEIGHT_SCALE;
+                .sample_height_world(open_water.world_x, open_water.world_z);
             markers.push(
                 &Self::world_water_authoring_marker_dict(
                     "open_water_fill",

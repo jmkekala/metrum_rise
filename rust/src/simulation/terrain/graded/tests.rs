@@ -6,7 +6,6 @@
 
 use super::tile::{Evaluation, bake_tiles_with, lattice};
 use super::*;
-use crate::config::HEIGHT_SCALE;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::fixtures::{
     SLOPE, bend, connect, point, road_edge, t_junction,
@@ -66,7 +65,7 @@ pub(super) fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSystem {
     for z in 0..53 {
         for x in 0..53 {
             let (wx, wz) = (x as f32 * 10.0 - 260.0, z as f32 * 10.0 - 260.0);
-            terrain.set_height(x, z, height(wx, wz) / HEIGHT_SCALE);
+            terrain.set_height(x, z, height(wx, wz));
         }
     }
     terrain

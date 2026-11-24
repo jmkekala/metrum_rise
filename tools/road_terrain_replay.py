@@ -7,6 +7,7 @@ The SQLite reference is opened read-only and never used as a desired Y profile.
 """
 
 import argparse
+import array
 from collections import Counter
 import hashlib
 import json
@@ -137,6 +138,8 @@ def import_manifest(log, reference, world):
     with sqlite3.connect(reference.resolve().as_uri() + "?mode=ro", uri=True) as db:
         saved_edges = db.execute("SELECT count(*) FROM network_edges").fetchone()[0]
         source = db.execute("SELECT height_blob_f32_le FROM terrain_state").fetchone()[0]
+        if db.execute("SELECT version FROM save_meta").fetchone()[0] < 131:
+            source = legacy_heights_to_metres(source)
         config = db.execute("SELECT * FROM world_config").fetchone()
         saved_geometry = {}
         for edge_id, x, y, z in db.execute("SELECT edge_id,x,y,z FROM network_edge_geometry WHERE physical=1 ORDER BY edge_id,point_index"):
@@ -161,19 +164,30 @@ def import_manifest(log, reference, world):
     }
 
 
+def legacy_heights_to_metres(blob):
+    """Heights of a world definition before format 6 or a save before format 131 are in units of
+    20 m: the loaders' exact `f32(raw) * 20`, as little-endian f32 bytes."""
+    values = array.array("f", blob)
+    return array.array("f", (value * 20.0 for value in values)).tobytes()
+
+
 def verify_source_terrain(world, config, source):
-    """Check every source sample, not merely the map's human-readable name."""
+    """Check every source sample, not merely the map's human-readable name. `source` is the
+    reference save's height blob in metres."""
     width, height = (math.floor(config[axis] / config[2] + 0.5) + 1 for axis in (0, 1))
     chunk_size = math.ceil(config[3] / config[2])
-    dense = bytearray(struct.pack("<f", config[4] / 20.0) * (width * height))
+    dense = bytearray(struct.pack("<f", config[4]) * (width * height))
     with sqlite3.connect(world.resolve().as_uri() + "?mode=ro", uri=True) as db:
         world_config = db.execute("SELECT width_m,height_m,terrain_cell_m,terrain_chunk_m,terrain_base_elevation_m,env_cell_m,zone_cell_m FROM world_definition_meta").fetchone()
+        world_format = db.execute("SELECT format_version FROM world_definition_meta").fetchone()[0]
         if tuple(config) != world_config:
             raise ValueError("reference/source world configuration mismatch")
         for cx, cz, w, h, blob in db.execute("SELECT * FROM world_terrain_chunks"):
             for row in range(h):
                 offset = ((cz * chunk_size + row) * width + cx * chunk_size) * 4
                 dense[offset:offset + w * 4] = blob[row * w * 4:(row + 1) * w * 4]
+    if world_format < 6:
+        dense = legacy_heights_to_metres(dense)
     if dense != source:
         raise ValueError("reference/source terrain samples differ")
 
@@ -185,6 +199,8 @@ def pin_reference(manifest_path, reference, world):
     with sqlite3.connect(Path(reference).resolve().as_uri() + "?mode=ro", uri=True) as db:
         live_edges = db.execute("SELECT count(*) FROM network_edges").fetchone()[0]
         source = db.execute("SELECT height_blob_f32_le FROM terrain_state").fetchone()[0]
+        if db.execute("SELECT version FROM save_meta").fetchone()[0] < 131:
+            source = legacy_heights_to_metres(source)
     verify_source_terrain(world, manifest["world_config"], source)
     if hashlib.sha256(source).hexdigest() != manifest["source_terrain_sha256"]:
         raise ValueError("reference terrain differs from the pinned source terrain")

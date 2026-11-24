@@ -568,10 +568,10 @@ impl SlopeAnchors {
             radius,
             start_x,
             start_y,
-            self.start_height_m / config::HEIGHT_SCALE,
+            self.start_height_m,
             end_x,
             end_y,
-            self.end_height_m / config::HEIGHT_SCALE,
+            self.end_height_m,
             strength,
         );
     }
@@ -893,7 +893,7 @@ impl SimCore {
         // zero-distance plant and reproduces its ID after unrelated authored removals.
         let id = ((u64::from(plant.x.to_bits()) << 32) | u64::from(plant.z.to_bits())) as usize;
         let height = |x, z| {
-            self.heightmap.sample_height_world(x, z) * config::HEIGHT_SCALE
+            self.heightmap.sample_height_world(x, z)
                 + BULLDOZE_HIGHLIGHT_Y_OFFSET_M
         };
         let points = (0..16)
@@ -1356,7 +1356,7 @@ impl SimCore {
         strength: f32,
     ) {
         self.terrain_brush_edit(pos, radius, TerrainBrushEdit::Single, |terrain, x, y, r| {
-            terrain.level_to_height(x, y, r, target_height_m / config::HEIGHT_SCALE, strength);
+            terrain.level_to_height(x, y, r, target_height_m, strength);
         });
     }
 
@@ -1403,7 +1403,7 @@ impl SimCore {
             radius,
             TerrainBrushEdit::StrokeStep,
             |terrain, x, y, r| {
-                terrain.level_to_height(x, y, r, target_height_m / config::HEIGHT_SCALE, strength);
+                terrain.level_to_height(x, y, r, target_height_m, strength);
             },
         );
     }
@@ -4086,7 +4086,7 @@ mod tests {
         };
 
         let mut core = test_core();
-        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 20.0);
+        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 400.0);
         core.vegetation.config.enabled = false;
         core.prepare_bulldoze_target_indices();
         let cell = VegetationCell {
@@ -4115,7 +4115,7 @@ mod tests {
                 target
                     .points
                     .iter()
-                    .all(|p| p.is_finite() && p.y > 20.0 * crate::config::HEIGHT_SCALE)
+                    .all(|p| p.is_finite() && p.y > 400.0)
             );
             let radius = if species == 0 {
                 3.0
@@ -4199,7 +4199,7 @@ mod tests {
         use crate::simulation::vegetation::edits::{VegetationCell, VegetationLayer};
 
         let mut core = test_core();
-        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 20.0);
+        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 400.0);
         core.prepare_bulldoze_target_indices();
         let (plant, _) = (-16..=16)
             .find_map(|i| vegetation_api::plant_at(&core, Vector2::new(i as f32 * 4.0, 0.0)))
@@ -4295,8 +4295,8 @@ mod tests {
     fn terrain_stroke_batching_pushes_one_undo_snapshot_and_finalizes_on_end() {
         let mut core = test_core();
         core.start_terrain_stroke_internal();
-        core.sculpt_terrain_stroke_step_internal(Vector2::new(0.0, 0.0), 15.0, 0.5);
-        core.sculpt_terrain_stroke_step_internal(Vector2::new(2.0, 1.0), 15.0, 0.5);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(0.0, 0.0), 15.0, 10.0);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(2.0, 1.0), 15.0, 10.0);
 
         assert_eq!(core.undo_stack.len(), 1);
         assert!(core.terrain_stroke_active);
@@ -4319,7 +4319,7 @@ mod tests {
         let neighbor_generation_before = core.terrain_payload_generation_for_patch(1, 0);
 
         core.start_terrain_stroke_internal();
-        core.sculpt_terrain_stroke_step_internal(pos, 1.0, 0.5);
+        core.sculpt_terrain_stroke_step_internal(pos, 1.0, 10.0);
 
         assert!(core.heightmap.dirty_render_patches().contains(&(0, 0)));
         assert!(
@@ -4702,7 +4702,7 @@ mod tests {
         assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
         let baseline_generation = core.cached_road_mesh_generation;
 
-        core.sculpt_terrain_internal(Vector2::ZERO, 12.0, 0.05);
+        core.sculpt_terrain_internal(Vector2::ZERO, 12.0, 1.0);
 
         assert!(core.road_tool_surface_generation > baseline_generation);
         assert_eq!(

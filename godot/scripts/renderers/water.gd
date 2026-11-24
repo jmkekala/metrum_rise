@@ -17,7 +17,6 @@ const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
 const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const BORDER_CURTAIN_SHADER := preload("res://scripts/renderers/water_border.gdshader")
-const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
 const SHALLOW_WATER_COLOR := Color(0.07, 0.19, 0.24, 0.80)
@@ -403,7 +402,6 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	var height_texture := _terrain_height_texture(key)
 	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("watermap", depth_texture)
-	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("shore_softness_m", SHORE_SOFTNESS_M)
 	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
 	material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)

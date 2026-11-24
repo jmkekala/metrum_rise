@@ -78,7 +78,7 @@ fn generate_stream_pond_fixture() {
     }
 
     let centre = Vector2::new(POND_CENTRE[0], POND_CENTRE[1]);
-    core.level_terrain_internal(centre, POND_RADIUS_M, -POND_DEPTH_M, 1.0);
+    core.level_terrain_internal(centre, POND_RADIUS_M, -POND_DEPTH_M, 20.0);
     let begun = core
         .begin_world_lake_fill_preview_internal(centre, POND_SURFACE_M + 1.0)
         .expect("lake fill preview");

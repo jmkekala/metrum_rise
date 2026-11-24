@@ -98,7 +98,7 @@ fn cached_poses_equal_a_fresh_solve_on_a_slope_and_stay_put_when_only_custody_ch
 fn a_terrain_edit_and_its_undo_refresh_the_poses_on_it() {
     let mut core = hillside();
     let before = fresh_poses(&mut core, "before");
-    core.sculpt_terrain_internal(Vector2::new(40.0, 40.0), 12.0, 1.5);
+    core.sculpt_terrain_internal(Vector2::new(40.0, 40.0), 12.0, 30.0);
     let after = fresh_poses(&mut core, "sculpt");
     assert_eq!(moved(&before, &after), 1, "only the bay under the brush");
     assert!(core.undo_action_internal());
@@ -117,7 +117,7 @@ fn a_regraded_road_refreshes_the_poses_on_it() {
     add_bay(&mut core, 1, 30.0, 40.0, std::f32::consts::FRAC_PI_2);
     core.parking.fill_test_fleet();
     let before = fresh_poses(&mut core, "before");
-    core.sculpt_terrain_internal(Vector2::new(0.0, 40.0), 24.0, 0.5);
+    core.sculpt_terrain_internal(Vector2::new(0.0, 40.0), 24.0, 10.0);
     core.precompute_road_mesh_data();
     let after = fresh_poses(&mut core, "regrade");
     assert!(moved(&before, &after) > 0, "the road moved under the bays");
@@ -321,7 +321,7 @@ fn a_load_rebuilds_every_pose_from_the_loaded_ground() {
             .with_terrain_resolution(2.0),
     );
     core.treasury.balance = 1_000_000.0;
-    core.sculpt_terrain_internal(Vector2::new(0.0, 0.0), 200.0, 2.0);
+    core.sculpt_terrain_internal(Vector2::new(0.0, 0.0), 200.0, 40.0);
     commit_with(
         &mut core,
         (-100.0, 40.0),
