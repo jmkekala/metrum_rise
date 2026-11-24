@@ -134,10 +134,12 @@ pub struct Agent {
     /// entry in that lane's bucket at its `lane_distance`, the crossing's distance on that lane.
     /// `u32::MAX` when it crosses nothing.
     pub crossing_lane: u32,
-    /// Seconds a car or truck has waited for a gap to cross (`PARK-32`): in its lane at a
-    /// far-side detach point, where it gives up at `CROSSING_GIVE_UP_S`, or at an access mouth
-    /// leaving, where it never does. `CROSSING_GAVE_UP` (below zero) once it gave up entering,
-    /// until it leaves the road; zero otherwise.
+    /// Seconds a car or truck has waited for a gap to cross (`PARK-32`) or to join a lane
+    /// (`TRAFFIC-45`): in its lane at a far-side detach point, where it gives up at
+    /// `CROSSING_GIVE_UP_S`; or leaving, at an access mouth, at its lane point or held off the
+    /// lane there, where from `CROSSING_GIVE_UP_S` on it holds its place in its attach lane, a
+    /// stop line at its `lane_distance` (at the line itself while it crosses). `CROSSING_GAVE_UP`
+    /// (below zero) once it gave up entering, until it leaves the road; zero otherwise.
     pub crossing_wait_s: f32,
     /// Time spent held below free-flow speed by traffic in the current lane.
     pub overtake_blocked_time_s: f32,

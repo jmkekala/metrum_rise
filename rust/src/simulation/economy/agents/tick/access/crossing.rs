@@ -79,6 +79,7 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_clear(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::traffic::join_hold;
     use super::crossing_gap_clear;
     use crate::config::IDM_S_MIN;
 
@@ -98,5 +99,34 @@ mod tests {
         assert!(crossing_gap_clear(&[(ahead, 1, HALF)], crossing, HALF, |_| approach));
         assert!(!crossing_gap_clear(&[(ahead - 0.1, 1, HALF)], crossing, HALF, |_| approach));
         assert!(crossing_gap_clear(&[], crossing, HALF, |_| approach));
+    }
+
+    // A join hold (`TRAFFIC-45`) of agent 9 at 100 m: its line at its rear less the gap.
+    #[test]
+    fn a_join_hold_stops_who_can_stop_and_lets_through_who_cannot() {
+        let me = 9;
+        let line = 100.0 - HALF - IDM_S_MIN;
+        let standing = |_| 0.0;
+        // Nothing near: the line holds and it may enter.
+        assert_eq!(join_hold(&[], 100.0, HALF, me, standing, 0.25), (line, true));
+        // A body standing just short of the line is held; one whose front is past it is let
+        // through, the line at its rear.
+        let short = line - HALF - IDM_S_MIN;
+        assert_eq!(join_hold(&[(short, 1, HALF)], 100.0, HALF, me, standing, 0.25), (line, true));
+        let over = short + IDM_S_MIN + 0.01;
+        assert_eq!(
+            join_hold(&[(over, 1, HALF)], 100.0, HALF, me, standing, 0.25),
+            (over - HALF, false)
+        );
+        // One that cannot stop in time at its speed is let through too.
+        let fast = |_| 10.0;
+        assert!(!join_hold(&[(short - 5.0, 1, HALF)], 100.0, HALF, me, fast, 0.25).1);
+        // A body in the slot ahead, or across its centre, keeps it out.
+        assert!(!join_hold(&[(103.0, 1, HALF)], 100.0, HALF, me, standing, 0.25).1);
+        assert!(!join_hold(&[(99.0, 1, HALF)], 100.0, HALF, me, standing, 0.25).1);
+        assert!(join_hold(&[(100.0 + 2.0 * HALF + IDM_S_MIN + 0.001, 1, HALF)], 100.0, HALF, me, standing, 0.25).1);
+        // Its own entry and another hold's stop line are no bodies.
+        let points = [(line, me, 0.0), (line, 4, 0.0), (100.5, 5, 0.0)];
+        assert_eq!(join_hold(&points, 100.0, HALF, me, standing, 0.25), (line, true));
     }
 }

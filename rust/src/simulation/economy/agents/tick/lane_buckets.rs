@@ -83,12 +83,8 @@ impl AgentSystem {
         if live_lane_bucket_transit(self.agents.transit[source]) {
             self.lane_bucket_live_agent_count += 1;
         }
-        let (lane_distance, half) = (
-            self.agents.lane_distance[source],
-            self.lane_half_length_of(source),
-        );
-        for lid in self
-            .agent_bucket_lanes(source, lane_count)
+        for (lid, lane_distance, half) in self
+            .agent_bucket_entries(source, lane_count)
             .into_iter()
             .flatten()
         {
@@ -116,8 +112,8 @@ impl AgentSystem {
                 self.lane_bucket_live_agent_count =
                     self.lane_bucket_live_agent_count.saturating_sub(1);
             }
-            for lid in self
-                .agent_bucket_lanes(index, lane_count)
+            for (lid, _, _) in self
+                .agent_bucket_entries(index, lane_count)
                 .into_iter()
                 .flatten()
             {
@@ -129,8 +125,8 @@ impl AgentSystem {
         }
         if last != index {
             if last < covered {
-                for lid in self
-                    .agent_bucket_lanes(last, lane_count)
+                for (lid, _, _) in self
+                    .agent_bucket_entries(last, lane_count)
                     .into_iter()
                     .flatten()
                 {
@@ -185,8 +181,8 @@ impl AgentSystem {
             self.lane_bucket_live_agent_count = self.lane_bucket_live_agent_count.saturating_sub(1);
         }
         let lane_count = self.lane_bucket_snapshot_lane_count;
-        for lid in self
-            .agent_bucket_lanes(agent_idx, lane_count)
+        for (lid, _, _) in self
+            .agent_bucket_entries(agent_idx, lane_count)
             .into_iter()
             .flatten()
         {
@@ -201,17 +197,17 @@ impl AgentSystem {
         }
     }
 
-    /// The lanes holding agent `agent_idx`'s entries in the retained snapshot, as read before a
-    /// mutator outside the tick changes its bucket membership in place
+    /// Agent `agent_idx`'s entries `(lane, distance, half length)` in the retained snapshot, as
+    /// read before a mutator outside the tick changes its bucket membership in place
     /// ([`Self::update_lane_bucket_membership`]); none when the snapshot does not cover it. O(1).
     pub(in crate::simulation::economy::agents) fn lane_bucket_entry_lanes(
         &self,
         agent_idx: usize,
-    ) -> [Option<usize>; 2] {
+    ) -> [Option<(usize, f32, f32)>; 2] {
         if !self.lane_bucket_snapshot_valid || agent_idx >= self.lane_bucket_snapshot_agent_count {
             return [None, None];
         }
-        self.agent_bucket_lanes(agent_idx, self.lane_bucket_snapshot_lane_count)
+        self.agent_bucket_entries(agent_idx, self.lane_bucket_snapshot_lane_count)
     }
 
     /// Keeps the snapshot in step after a mutator outside the tick changed whether agent
@@ -222,28 +218,23 @@ impl AgentSystem {
     pub(in crate::simulation::economy::agents) fn update_lane_bucket_membership(
         &mut self,
         agent_idx: usize,
-        before: [Option<usize>; 2],
+        before: [Option<(usize, f32, f32)>; 2],
     ) {
         if !self.lane_bucket_snapshot_valid || agent_idx >= self.lane_bucket_snapshot_agent_count {
             return;
         }
-        let after = self.agent_bucket_lanes(agent_idx, self.lane_bucket_snapshot_lane_count);
+        let after = self.agent_bucket_entries(agent_idx, self.lane_bucket_snapshot_lane_count);
         if before == after {
             return;
         }
-        for lid in before.into_iter().flatten() {
+        for (lid, _, _) in before.into_iter().flatten() {
             if self.remove_lane_entry(lid, agent_idx).is_none() {
                 self.invalidate_lane_bucket_snapshot();
                 return;
             }
         }
-        let entry = (
-            self.agents.lane_distance[agent_idx],
-            agent_idx,
-            self.lane_half_length_of(agent_idx),
-        );
-        for lid in after.into_iter().flatten() {
-            self.insert_lane_entry(lid, entry);
+        for (lid, lane_distance, half) in after.into_iter().flatten() {
+            self.insert_lane_entry(lid, (lane_distance, agent_idx, half));
         }
         #[cfg(test)]
         {
@@ -275,16 +266,12 @@ impl AgentSystem {
             if live_lane_bucket_transit(self.agents.transit[agent]) {
                 live += 1;
             }
-            for lid in self
-                .agent_bucket_lanes(agent, lane_count)
+            for (lid, lane_distance, half) in self
+                .agent_bucket_entries(agent, lane_count)
                 .into_iter()
                 .flatten()
             {
-                expected[lid].push((
-                    self.agents.lane_distance[agent],
-                    agent,
-                    self.lane_half_length_of(agent),
-                ));
+                expected[lid].push((lane_distance, agent, half));
             }
         }
         for bucket in &mut expected {
