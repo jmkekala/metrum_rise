@@ -2799,7 +2799,8 @@ reopening requires a current reproduction, not an assumption that the old geomet
   runtime, and large-world terrain rules.
 - Added the first terrain chunk importer slice: `tools/build_terrain_chunks.py` now reads the
   Kuopio world manifest and exports internal `512 m` chunk assets with raw `f32` height payloads
-  plus `2 m / 4 m / 8 m / 32 m` LOD files. See [`terrain.md`](terrain.md).
+  plus `2 m / 4 m / 8 m / 32 m` LOD files. See [`terrain.md`](terrain.md). Removed 2026-11-24
+  with its loader below: nothing read the chunk assets.
 - Tightened the shipped `ROAD-01` contract so compiled standard-road sections now follow the
   solved edge elevation profile already stored on the graph instead of silently re-sampling source
   terrain during render / earthwork compilation. This keeps preview, committed surface mesh, and
@@ -2981,7 +2982,8 @@ reopening requires a current reproduction, not an assumption that the old geomet
   structural owner faces as visible earthwork.
 - Added the first Rust-side terrain chunk loader in `rust/src/simulation/terrain/chunks.rs`,
   including strict `chunk.toml` validation and `.f32` payload loading for partial border chunks as
-  well as full-size interior chunks. See [`terrain.md`](terrain.md).
+  well as full-size interior chunks. See [`terrain.md`](terrain.md). Removed 2026-11-24 with the
+  chunk importer: it had no caller.
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
 - Added a shared top menu scaffold across gameplay and editor scenes, with gameplay File/View/City/Tools/Help menus and reduced editor File/editor-action menus. See [`ui.md`](ui.md).

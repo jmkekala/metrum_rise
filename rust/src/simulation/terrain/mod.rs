@@ -2,15 +2,9 @@
 
 //! Authoritative heightmap terrain used for grading, raycasting, and rendering.
 
-pub mod chunks;
 pub mod graded;
 mod patch_masks;
 pub(crate) mod rect_clip;
-
-pub use chunks::{
-    TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,
-    TerrainChunkManifest, TerrainChunkManifestError,
-};
 
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
