@@ -187,8 +187,9 @@ target in the existing per-lane array. Atomic minimum selects the lowest agent i
 of worker scheduling; these cars then move in parallel. Dynamic handoffs execute afterward in
 stable agent-index order and use the remaining unreserved lanes. A car on its way out of a lot,
 not crossing a lane, is `Egress` (`PERF-33`): the parallel part runs its step when the step stays
-off every lane (it neither reaches its lane point, nor starts or gives up a crossing, and a
-crossing test fails on the buckets alone), and otherwise leaves its row untouched and notes it in
+off every lane (it neither reaches its lane point, nor starts or gives up a crossing, nor ends
+with its wait to join at 30 s or more, when it may take or move a hold in its lane, `TRAFFIC-45`,
+and a crossing test fails on the buckets alone), and otherwise leaves its row untouched and notes it in
 the worker's list; the serial part runs those steps whole, merged with the dynamic handoffs in
 agent-index order. Such a car is in no bucket and reads no other agent's row, so the part that
 runs it changes nothing; the order of every claim is the one it had when every car egress was

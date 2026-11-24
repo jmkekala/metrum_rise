@@ -5,16 +5,18 @@
 //! The snapshot is a function of the agents' lane state: each live lane agent's
 //! `(lane_distance, index, half_length)` in its current lane's bucket (`LaneEntry`), except a walker standing with no route
 //! (`lane_bucket_member`, `TRAFFIC-37`), plus a source-lane ghost while a lane
-//! change is under way, plus each access agent crossing a lane in that lane's bucket at its
-//! `lane_distance` (`crossing_bucket_lane`, `PARK-32`), every bucket sorted by distance with an
-//! index tiebreak. A fill rebuilds
+//! change is under way, plus the entries of an agent off every lane (`off_lane_bucket_entries`):
+//! an access agent crossing a lane in that lane's bucket at its `lane_distance` (`PARK-32`), and
+//! a vehicle holding its place to join a lane, a zero-length stop line (`TRAFFIC-45`), every
+//! bucket sorted by distance with an index tiebreak. A fill rebuilds
 //! it from every agent on the shared pool; between fills it follows appends and swap-removes
 //! entry by entry (`SIM-02-K` part 4).
 
 use super::super::runtime::PAR_THRESHOLD;
+use super::super::access::CROSSING_GIVE_UP_S;
 use super::super::traffic::{
-    LANE_CHANGE_FINISH_EPS_M, crossing_bucket_lane, lane_bucket_member, lane_half_length,
-    live_lane_bucket_transit,
+    LANE_CHANGE_FINISH_EPS_M, OffLaneRow, lane_bucket_member, lane_half_length,
+    live_lane_bucket_transit, off_lane_bucket_entries,
 };
 use crate::config::IDM_S_MIN;
 use crate::simulation::economy::agents::data::AgentSystem;
@@ -49,17 +51,57 @@ struct LaneRange {
     ghosts: Vec<usize>,
 }
 
+// The agent columns that decide an agent's entries, whole (indexed by agent).
+#[derive(Clone, Copy)]
+struct EntryColumns<'a> {
+    transit: &'a [u8],
+    lanes: &'a [usize],
+    distances: &'a [f32],
+    modes: &'a [u8],
+    vehicle_types: &'a [u8],
+    flags: &'a [u8],
+    crossing: &'a [u32],
+    waits: &'a [f32],
+    attach_lanes: &'a [u32],
+    attach_ds: &'a [f32],
+}
+
+impl EntryColumns<'_> {
+    // Whether agent `i` is on lane `lid` and holds its body there (lane-change ghosts aside).
+    #[inline(always)]
+    fn on_lane(&self, i: usize, lane_count: usize) -> bool {
+        live_lane_bucket_transit(self.transit[i])
+            && self.lanes[i] < lane_count
+            && lane_bucket_member(self.modes[i], self.flags[i])
+    }
+
+    // The entries of agent `i` off every lane; two column reads for one with none (most of them).
+    #[inline(always)]
+    fn off_lane(&self, i: usize) -> [Option<(usize, f32, f32)>; 2] {
+        if self.crossing[i] == u32::MAX && self.waits[i] < CROSSING_GIVE_UP_S {
+            return [None, None];
+        }
+        off_lane_bucket_entries(OffLaneRow {
+            transit: self.transit[i],
+            mode: self.modes[i],
+            vehicle_type: self.vehicle_types[i],
+            flags: self.flags[i],
+            lane: self.lanes[i],
+            distance: self.distances[i],
+            crossing_lane: self.crossing[i],
+            wait_s: self.waits[i],
+            attach_lane: self.attach_lanes[i],
+            attach_d: self.attach_ds[i],
+        })
+    }
+}
+
 // The agent columns a fill reads.
 struct FillInput<'a> {
     groups: &'a [Vec<u32>],
     chunk_count: usize,
     range_count: usize,
-    lanes: &'a [usize],
-    distances: &'a [f32],
-    transit: &'a [u8],
-    crossing: &'a [u32],
-    modes: &'a [u8],
-    vehicle_types: &'a [u8],
+    columns: EntryColumns<'a>,
     change_from: &'a [u32],
     speeds: &'a [f32],
     correct_overlaps: bool,
@@ -129,36 +171,49 @@ impl AgentSystem {
         }
     }
 
-    /// The lanes holding agent `agent_idx`'s entries in a snapshot of its current state: its
-    /// current lane and, during a lane change, the source lane's ghost; none for a walker standing
-    /// with no route ([`lane_bucket_member`]).
-    pub(super) fn agent_bucket_lanes(
+    // The columns that decide every agent's entries.
+    fn entry_columns(&self) -> EntryColumns<'_> {
+        let a = &self.agents;
+        EntryColumns {
+            transit: &a.transit,
+            lanes: &a.current_lane_id,
+            distances: &a.lane_distance,
+            modes: &a.transit_mode,
+            vehicle_types: &a.vehicle_type,
+            flags: &a.access_flags,
+            crossing: &a.crossing_lane,
+            waits: &a.crossing_wait_s,
+            attach_lanes: &a.planned_attach_lane_id,
+            attach_ds: &a.planned_attach_lane_d,
+        }
+    }
+
+    /// Agent `agent_idx`'s entries, `(lane, distance, half length)`, in a snapshot of its current
+    /// state: its body in its current lane and, during a lane change, the source lane's ghost;
+    /// none for a walker standing with no route ([`lane_bucket_member`]); off every lane, a
+    /// crossing and a join hold ([`off_lane_bucket_entries`]).
+    pub(super) fn agent_bucket_entries(
         &self,
         agent_idx: usize,
         lane_count: usize,
-    ) -> [Option<usize>; 2] {
-        if let Some(lane) = crossing_bucket_lane(
-            self.agents.transit[agent_idx],
-            self.agents.crossing_lane[agent_idx],
-        ) {
-            return [(lane < lane_count).then_some(lane), None];
+    ) -> [Option<(usize, f32, f32)>; 2] {
+        let columns = self.entry_columns();
+        if columns.on_lane(agent_idx, lane_count) {
+            let lid = self.agents.current_lane_id[agent_idx];
+            let entry = |lane| (lane, self.agents.lane_distance[agent_idx], self.lane_half_length_of(agent_idx));
+            return [
+                Some(entry(lid)),
+                self.agent_source_lane_ghost_lid(agent_idx, lane_count, lid).map(entry),
+            ];
         }
-        if !live_lane_bucket_transit(self.agents.transit[agent_idx])
-            || !lane_bucket_member(
-                self.agents.transit_mode[agent_idx],
-                self.agents.access_flags[agent_idx],
-            )
+        if live_lane_bucket_transit(self.agents.transit[agent_idx])
+            && self.agents.current_lane_id[agent_idx] != usize::MAX
         {
             return [None, None];
         }
-        let lid = self.agents.current_lane_id[agent_idx];
-        if lid >= lane_count {
-            return [None, None];
-        }
-        [
-            Some(lid),
-            self.agent_source_lane_ghost_lid(agent_idx, lane_count, lid),
-        ]
+        columns
+            .off_lane(agent_idx)
+            .map(|entry| entry.filter(|&(lane, _, _)| lane < lane_count))
     }
 
     /// Half the length agent `agent_idx`'s body takes in a lane bucket ([`lane_half_length`]).
@@ -230,63 +285,39 @@ impl AgentSystem {
                 .resize_with(chunk_count * range_count, Vec::new);
         }
         let groups = &mut scratch.groups[..chunk_count * range_count];
-        let transit = &self.agents.transit[..n];
-        let crossing = &self.agents.crossing_lane[..n];
-        let lanes = &self.agents.current_lane_id[..n];
-        let modes = &self.agents.transit_mode[..n];
-        let flags = &self.agents.access_flags[..n];
+        let a = &self.agents;
+        let columns = EntryColumns {
+            transit: &a.transit[..n],
+            lanes: &a.current_lane_id[..n],
+            distances: &a.lane_distance[..n],
+            modes: &a.transit_mode[..n],
+            vehicle_types: &a.vehicle_type[..n],
+            flags: &a.access_flags[..n],
+            crossing: &a.crossing_lane[..n],
+            waits: &a.crossing_wait_s[..n],
+            attach_lanes: &a.planned_attach_lane_id[..n],
+            attach_ds: &a.planned_attach_lane_d[..n],
+        };
+        let group = |(chunk, out): (usize, &mut [Vec<u32>])| {
+            group_lane_agents(chunk, out, &columns, lane_count, range_len)
+        };
         let live = if parallel {
             crate::thread_pools::install(|| {
                 groups
                     .par_chunks_mut(range_count)
-                    .zip(transit.par_chunks(KEY_CHUNK))
-                    .zip(lanes.par_chunks(KEY_CHUNK))
-                    .zip(modes.par_chunks(KEY_CHUNK))
-                    .zip(flags.par_chunks(KEY_CHUNK))
                     .enumerate()
-                    .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
-                        let columns = AgentColumns {
-                            transit,
-                            crossing: &crossing[chunk * KEY_CHUNK..],
-                            lanes,
-                            modes,
-                            flags,
-                        };
-                        group_lane_agents(chunk, out, columns, lane_count, range_len)
-                    })
+                    .map(group)
                     .sum()
             })
         } else {
-            groups
-                .chunks_mut(range_count)
-                .zip(transit.chunks(KEY_CHUNK))
-                .zip(lanes.chunks(KEY_CHUNK))
-                .zip(modes.chunks(KEY_CHUNK))
-                .zip(flags.chunks(KEY_CHUNK))
-                .enumerate()
-                .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
-                    let columns = AgentColumns {
-                        transit,
-                        crossing: &crossing[chunk * KEY_CHUNK..],
-                        lanes,
-                        modes,
-                        flags,
-                    };
-                    group_lane_agents(chunk, out, columns, lane_count, range_len)
-                })
-                .sum()
+            groups.chunks_mut(range_count).enumerate().map(group).sum()
         };
 
         let input = FillInput {
             groups: &scratch.groups[..chunk_count * range_count],
             chunk_count,
             range_count,
-            lanes,
-            distances: &self.agents.lane_distance[..n],
-            transit,
-            crossing,
-            modes,
-            vehicle_types: &self.agents.vehicle_type[..n],
+            columns,
             change_from: &self.agents.lane_change_from_lane_id[..n],
             speeds: &self.agents.speed[..n],
             correct_overlaps,
@@ -354,40 +385,47 @@ impl AgentSystem {
     }
 }
 
-// One agent chunk's columns the grouping reads.
-struct AgentColumns<'a> {
-    transit: &'a [u8],
-    // From the chunk's first agent on (the chunk's own length is `transit`'s).
-    crossing: &'a [u32],
-    lanes: &'a [usize],
-    modes: &'a [u8],
-    flags: &'a [u8],
-}
-
-// Groups the bucket members among the lane agents of agent chunk `chunk` by lane range; returns
-// the chunk's live lane-agent count, members or not.
+// Groups the bucket members among the agents of agent chunk `chunk` by lane range, once per
+// range they hold an entry in; returns the chunk's live lane-agent count, members or not.
 fn group_lane_agents(
     chunk: usize,
     out: &mut [Vec<u32>],
-    columns: AgentColumns<'_>,
+    columns: &EntryColumns<'_>,
     lane_count: usize,
     range_len: usize,
 ) -> usize {
     for group in out.iter_mut() {
         group.clear();
     }
+    let start = chunk * KEY_CHUNK;
+    let end = (start + KEY_CHUNK).min(columns.transit.len());
     let mut live = 0;
-    for (offset, (&transit, &lid)) in columns.transit.iter().zip(columns.lanes).enumerate() {
-        if live_lane_bucket_transit(transit) {
+    for (offset, (&transit, &lid)) in columns.transit[start..end]
+        .iter()
+        .zip(&columns.lanes[start..end])
+        .enumerate()
+    {
+        let agent = start + offset;
+        let is_live = live_lane_bucket_transit(transit);
+        if is_live {
             live += 1;
-            if lid < lane_count && lane_bucket_member(columns.modes[offset], columns.flags[offset])
+            if lid < lane_count
+                && lane_bucket_member(columns.modes[agent], columns.flags[agent])
             {
-                out[lid / range_len].push((chunk * KEY_CHUNK + offset) as u32);
+                out[lid / range_len].push(agent as u32);
+                continue;
             }
-        } else if let Some(lid) = crossing_bucket_lane(transit, columns.crossing[offset])
-            && lid < lane_count
-        {
-            out[lid / range_len].push((chunk * KEY_CHUNK + offset) as u32);
+            if lid != usize::MAX {
+                continue;
+            }
+        }
+        // Off every lane: a crossing, a join hold, or both, in one range or two.
+        let mut last_range = usize::MAX;
+        for (lane, _, _) in columns.off_lane(agent).into_iter().flatten() {
+            if lane < lane_count && lane / range_len != last_range {
+                last_range = lane / range_len;
+                out[last_range].push(agent as u32);
+            }
         }
     }
     live
@@ -412,21 +450,40 @@ fn fill_lane_range(
     range.dirty.clear();
     range.corrections.clear();
     range.ghosts.clear();
+    let columns = &input.columns;
+    let end = start + buckets.len();
+    let push = |lid: usize,
+                entry: LaneEntry,
+                buckets: &mut [Vec<LaneEntry>],
+                flags: &mut [bool],
+                dirty: &mut Vec<usize>| {
+        let local = lid - start;
+        if !flags[local] {
+            flags[local] = true;
+            dirty.push(lid);
+        }
+        buckets[local].push(entry);
+    };
     for chunk in 0..input.chunk_count {
         for &agent in &input.groups[chunk * input.range_count + r] {
             let agent = agent as usize;
-            let lid = crossing_bucket_lane(input.transit[agent], input.crossing[agent])
-                .unwrap_or(input.lanes[agent]);
-            let local = lid - start;
-            if !flags[local] {
-                flags[local] = true;
-                range.dirty.push(lid);
+            let lid = columns.lanes[agent];
+            if live_lane_bucket_transit(columns.transit[agent]) && lid != usize::MAX {
+                // The body's half length, read at the index whose distance the fill already
+                // reads.
+                let half = lane_half_length(columns.modes[agent], columns.vehicle_types[agent]);
+                push(lid, (columns.distances[agent], agent, half), buckets, flags, &mut range.dirty);
+                if input.change_from[agent] != u32::MAX
+                    && columns.transit[agent] == TRANSIT_NETWORK
+                {
+                    range.ghosts.push(agent);
+                }
+                continue;
             }
-            // The body's half length, read at the index whose distance the fill already reads.
-            let half = lane_half_length(input.modes[agent], input.vehicle_types[agent]);
-            buckets[local].push((input.distances[agent], agent, half));
-            if input.change_from[agent] != u32::MAX && input.transit[agent] == TRANSIT_NETWORK {
-                range.ghosts.push(agent);
+            for (lane, d, half) in columns.off_lane(agent).into_iter().flatten() {
+                if (start..end).contains(&lane) {
+                    push(lane, (d, agent, half), buckets, flags, &mut range.dirty);
+                }
             }
         }
     }
@@ -442,16 +499,19 @@ fn fill_lane_range(
         let mut lead_held = false;
         for j in (0..bucket.len().saturating_sub(1)).rev() {
             let (rear, lead) = (bucket[j].1, bucket[j + 1].1);
-            // A crossing vehicle is not on the lane it holds: nothing moves it back.
-            if crossing_bucket_lane(input.transit[rear], input.crossing[rear]).is_some() {
+            // A crossing vehicle or a join hold is not on the lane it holds: nothing moves it
+            // back.
+            if !live_lane_bucket_transit(columns.transit[rear])
+                || columns.lanes[rear] == usize::MAX
+            {
                 lead_held = false;
                 continue;
             }
             // Walkers walk through each other's lane distance to pass (`walker_crowd`); they
             // queue, bodies the minimum gap apart, only behind one standing still or held in
             // the queue ahead of it, whose speed is still the step it took before the hold.
-            if input.modes[rear] != MODE_CAR
-                && input.modes[lead] != MODE_CAR
+            if columns.modes[rear] != MODE_CAR
+                && columns.modes[lead] != MODE_CAR
                 && !lead_held
                 && input.speeds[lead] >= WALKER_STANDING_MS
             {

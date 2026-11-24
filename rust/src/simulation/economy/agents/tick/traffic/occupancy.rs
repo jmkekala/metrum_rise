@@ -3,9 +3,11 @@
 //! Lane occupancy, gap, and entry-claim helpers.
 
 use super::super::super::{
-    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_ACCESS_EGRESS,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_INTERSECTION, TRANSIT_NETWORK, VEHICLE_FREIGHT_DELIVERY,
+    ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK,
+    TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    VEHICLE_FREIGHT_DELIVERY,
 };
+use super::super::access::CROSSING_GIVE_UP_S;
 use super::super::claims::LaneClaimContext;
 use crate::config::{
     CAR_BODY_LENGTH_M, IDM_S_MIN, IDM_T_HEAD, TRUCK_BODY_LENGTH_M, WALKER_BODY_LENGTH_M,
@@ -124,6 +126,107 @@ pub(in crate::simulation::economy::agents) fn crossing_bucket_lane(
     (crossing_lane != u32::MAX
         && (transit == TRANSIT_ACCESS_INGRESS || transit == TRANSIT_ACCESS_EGRESS))
         .then_some(crossing_lane as usize)
+}
+
+/// One agent's columns that decide the bucket entries it holds while it is off every lane:
+/// a crossing (`PARK-32`) and a join hold (`TRAFFIC-45`).
+#[derive(Clone, Copy)]
+pub(in crate::simulation::economy::agents) struct OffLaneRow {
+    pub transit: u8,
+    pub mode: u8,
+    pub vehicle_type: u8,
+    pub flags: u8,
+    pub lane: usize,
+    pub distance: f32,
+    pub crossing_lane: u32,
+    pub wait_s: f32,
+    pub attach_lane: u32,
+    pub attach_d: f32,
+}
+
+/// The bucket entries, `(lane, distance, half length)`, of an agent off every lane: the lane it
+/// crosses, its body at its `lane_distance` ([`crossing_bucket_lane`]), and the lane it holds its
+/// place in to join (`TRAFFIC-45`): a car or truck that has waited [`CROSSING_GIVE_UP_S`] to join
+/// its attach lane, at an access mouth or lane point (`ACCESS_EGRESS`) or held at its lane point
+/// off the lane (`ACCESS_LANE_ATTACH_PENDING`), holds a zero-length entry there, its stop line
+/// ([`join_hold`]): at its `lane_distance` while it crosses nothing (none while that is below
+/// zero), at the line itself while it crosses to the lane. The one membership test of both, for the fill, its patches and its
+/// rebuild check. O(1).
+#[inline(always)]
+pub(in crate::simulation::economy::agents) fn off_lane_bucket_entries(
+    row: OffLaneRow,
+) -> [Option<(usize, f32, f32)>; 2] {
+    let half = lane_half_length(row.mode, row.vehicle_type);
+    let crossing =
+        crossing_bucket_lane(row.transit, row.crossing_lane).map(|lane| (lane, row.distance, half));
+    let joining = row.wait_s >= CROSSING_GIVE_UP_S
+        && row.mode != MODE_WALK
+        && row.attach_lane != u32::MAX
+        && row.attach_d >= 0.0
+        && (row.transit == TRANSIT_ACCESS_EGRESS
+            || (row.transit == TRANSIT_NETWORK
+                && row.lane == usize::MAX
+                && row.flags & ACCESS_LANE_ATTACH_PENDING != 0));
+    // A vehicle at its mouth holds its far lane only while the lane it crosses is clear: its
+    // `lane_distance` is below zero meanwhile.
+    let stop = if crossing.is_some() {
+        join_line(row.attach_d, half)
+    } else {
+        row.distance
+    };
+    let hold = (joining && stop >= 0.0).then_some((row.attach_lane as usize, stop, 0.0));
+    [crossing, hold]
+}
+
+// The stop line of a join hold at `attach_d` for a body of half length `half`: its rear in its
+// slot less the standstill gap, never before the lane's start.
+#[inline(always)]
+fn join_line(attach_d: f32, half: f32) -> f32 {
+    (attach_d - half - IDM_S_MIN).max(0.0)
+}
+
+/// A join hold (`TRAFFIC-45`) of agent `me`, a body of half length `half`, at `attach_d` in
+/// `bucket`: its stop line, and whether it may enter now. Its line is its rear in its slot less
+/// [`IDM_S_MIN`], never past the rear of the body just ahead. The nearest body behind it stops
+/// there, its car following stopping it as behind a body standing ahead, unless its front is
+/// already past the line, or would be after `lag` seconds at its speed `speed(agent)` (the tick
+/// a hold is taken, before any car following has seen it): that one is let through, and the
+/// line stands at its rear, moving up with it. It may enter once the line holds (nobody let
+/// through) and no body lies within its slot. Its own entry and other holds' zero-length stop
+/// lines are not bodies: they neither stop nor block it; two holds at one point both see a free
+/// slot, and the tick's lane claim lets one in. O(log bucket), allocation-free.
+pub(in crate::simulation::economy::agents::tick) fn join_hold(
+    bucket: &[LaneEntry],
+    attach_d: f32,
+    half: f32,
+    me: usize,
+    speed: impl Fn(usize) -> f32,
+    lag: f32,
+) -> (f32, bool) {
+    let line = join_line(attach_d, half);
+    let body = |entry: &&LaneEntry| entry.1 != me && entry.2 > 0.0;
+    let behind = bucket.partition_point(|entry| entry.0 < line);
+    // Never past the rear of the body just ahead: one standing across the line keeps the stop
+    // behind it, so a body behind it never runs into it.
+    let stop = bucket[behind..]
+        .iter()
+        .find(body)
+        .map_or(line, |&(d, _, h)| line.min(d - h));
+    let let_through = bucket[..behind].iter().rev().find(body).filter(|&&(d, agent, h)| {
+        let v = speed(agent).max(0.0);
+        d + h + v * lag > stop
+    });
+    if let Some(&(d, _, h)) = let_through {
+        return ((d - h).max(0.0), false);
+    }
+    let ahead = bucket.partition_point(|entry| entry.0 < attach_d);
+    let clear = bucket[ahead..]
+        .iter()
+        .find(body)
+        .is_none_or(|&(d, _, h)| d - attach_d >= h + half + IDM_S_MIN);
+    // A body across the slot with its centre between the line and the slot's centre.
+    let straddling = bucket[behind..ahead].iter().any(|entry| body(&entry));
+    (stop.max(0.0), clear && !straddling)
 }
 
 /// Returns whether a transit state should appear in live lane occupancy buckets.

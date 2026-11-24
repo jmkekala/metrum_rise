@@ -10,8 +10,9 @@ use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::{held_attach_origin, lane_origin_node, preferred_entry_lanes};
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
+use super::super::super::access::CROSSING_GIVE_UP_S;
 use super::super::super::traffic::{
-    claim_lane_entry, lane_attach_slot_clear, lane_entry_slot_clear, lane_half_length,
+    claim_lane_entry, join_hold, lane_attach_slot_clear, lane_entry_slot_clear, lane_half_length,
 };
 use super::super::super::trip_failures::FailureCause;
 use super::super::super::walk_lanes::WalkFrom;
@@ -50,8 +51,10 @@ pub(super) enum LaneEntryAction {
 /// Steps a car held by `AgentVec::hold_for_lane_attach` onto its attach lane once the slot is
 /// clear and claimed, exactly as egress attaches. Returns whether the hold handled this tick
 /// (attached or still waiting); `false` leaves a car without a hold to ordinary lane entry. A
-/// hold whose lane is gone is dropped, and the car repairs from its lane's origin node.
-/// O(log bucket), no allocation.
+/// hold whose lane is gone is dropped, and the car repairs from its lane's origin node. Its wait
+/// counts in `crossing_wait_s`; from [`CROSSING_GIVE_UP_S`] on it holds its place in the lane
+/// (`TRAFFIC-45`, [`join_hold`]), its stop line in `lane_distance`, and enters once its slot is
+/// free ahead with the bodies behind held. O(log bucket), no allocation.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 // Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
@@ -59,6 +62,7 @@ pub(super) enum LaneEntryAction {
 #[inline]
 pub(super) unsafe fn try_pending_lane_attach(
     i: usize,
+    delta: f32,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     lane_buckets: &[Vec<LaneEntry>],
@@ -80,18 +84,35 @@ pub(super) unsafe fn try_pending_lane_attach(
             *s_access_flags.get_mut(i) &= !ACCESS_LANE_ATTACH_PENDING;
             return false;
         };
-        let clear = lane_buckets.get(lane_id).is_some_and(|bucket| {
-            lane_attach_slot_clear(
-                bucket,
-                lane_d,
-                lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
-            )
-        });
+        let half = lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i));
+        let waited = slices.crossing_wait.get(i).max(0.0);
+        // The tick a hold is taken no car following has seen it yet: a body that would run past
+        // its line in this tick is let through.
+        let hold = |lag: f32| {
+            lane_buckets.get(lane_id).map(|bucket| {
+                join_hold(bucket, lane_d, half, i, |agent| *slices.speed.get(agent), lag)
+            })
+        };
+        let clear = if waited >= CROSSING_GIVE_UP_S {
+            hold(0.0).is_some_and(|(_, ready)| ready)
+        } else {
+            lane_buckets
+                .get(lane_id)
+                .is_some_and(|bucket| lane_attach_slot_clear(bucket, lane_d, half))
+        };
         if !clear || !claim_lane_entry(i, lane_id, lane_claims) {
             *slices.speed.get_mut(i) = 0.0;
+            *slices.crossing_wait.get_mut(i) = waited + delta;
+            let lag = if waited >= CROSSING_GIVE_UP_S { 0.0 } else { delta };
+            if waited + delta >= CROSSING_GIVE_UP_S
+                && let Some((stop, _)) = hold(lag)
+            {
+                *slices.lane_d.get_mut(i) = stop;
+            }
             return true;
         }
         enter_lane!(slices, i, transit_network, lane_id, lane_d, origin);
+        *slices.crossing_wait.get_mut(i) = 0.0;
         *s_access_flags.get_mut(i) &= !ACCESS_LANE_ATTACH_PENDING;
         *slices.speed.get_mut(i) = graph.edge(edge).speed_limit.min(AGENT_DRIVEWAY_SPEED_MS);
         true

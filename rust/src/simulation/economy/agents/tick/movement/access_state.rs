@@ -144,6 +144,8 @@ pub(super) unsafe fn stand_in_yard(i: usize, slices: &MovementSlices) {
         trip.ready = true;
         trip.replan_needed = true;
         *slices.speed.get_mut(i) = 0.0;
+        // Its wait to join, and any hold it took, end with its way out (`TRAFFIC-45`).
+        *slices.crossing_wait.get_mut(i) = 0.0;
     }
 }
 

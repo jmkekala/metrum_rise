@@ -6,7 +6,7 @@ use super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_CAR,
     MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
-use super::access::planned_detach_is_legal;
+use super::access::{CROSSING_GIVE_UP_S, planned_detach_is_legal};
 use super::lane_nav::{
     held_attach_origin, junction_approach_lane, junction_approach_node, lane_origin_node,
     route_lane_group,
@@ -261,10 +261,12 @@ fn classify_network_claims(
             && let Some((attach_lane, attach_d)) = agents.pending_lane_attach(i)
         {
             // A car waiting at its attach point stays off the serial pass until the slot is
-            // clear; an invalid hold goes to the serial pass, which drops it. O(log bucket), no
-            // allocation.
+            // clear or its wait reaches `CROSSING_GIVE_UP_S`, from which it holds its place in
+            // the lane (`TRAFFIC-45`); an invalid hold goes to the serial pass, which drops it.
+            // O(log bucket), no allocation.
             let attach_lane = attach_lane as usize;
-            let held = held_attach_origin(
+            let held = agents.crossing_wait_s[i].max(0.0) + preparation.delta < CROSSING_GIVE_UP_S
+                && held_attach_origin(
                 attach_lane,
                 attach_d,
                 agents.current_edge[i],

@@ -66,7 +66,15 @@ pub(super) unsafe fn handle_network_movement(
             *slices.speed.get_mut(i) = 0.0;
         }
 
-        if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices)
+        if try_pending_lane_attach(
+            i,
+            delta,
+            transit_network,
+            graph,
+            lane_buckets,
+            lane_claims,
+            slices,
+        )
             || walk_home::walk_to_sidewalk(
                 i,
                 delta,
