@@ -80,6 +80,8 @@ pub(super) struct FrameState {
     split: [i64; 5],
     // Resident patches whose step changed since the last frame (`follow_terrain`).
     pub(super) step_news: i64,
+    // The frame's cell set builds held while holes wait (`TERRAIN-41` L2): 1 when one waited.
+    pub(super) builds_held: i64,
 }
 
 fn now_us() -> i64 {
@@ -161,7 +163,9 @@ impl GradedTileBook {
         // The budget checks measure from a start moved back by what the ledger cannot give of
         // the share, so every check of the frame (results, builds, syncs) keeps to the room.
         let frame = Engine::singleton().get_process_frames();
-        let room = with_ledger(frame, |ledger| ledger.upgrade_room_us());
+        // The streaming node's last frame left holes waiting: builds no shown tile waits for
+        // wait (`TERRAIN-41` L2).
+        let (room, holes) = with_ledger(frame, |ledger| (ledger.upgrade_room_us(), ledger.holes_waiting));
         // The resident patches whose level of detail changed since the last frame rewrite their
         // cells later in this frame (`follow_news`): charged up front, as the queued ones are in
         // every check (`PATCH_CHARGE_US`). A patch that became resident rewrites none.
@@ -177,6 +181,7 @@ impl GradedTileBook {
             frame.considered = 0;
             frame.handed = 0;
             frame.split = [0; 5];
+            frame.builds_held = 0;
             this.reset_frame_counters();
             this.uploads()
         };
@@ -214,7 +219,7 @@ impl GradedTileBook {
             Self::effects(&mut book, &mut renderer);
         }
         let changes_us = now_us();
-        Self::advance_builds(book.clone(), renderer.clone(), budget_start_us);
+        Self::advance_builds(book.clone(), renderer.clone(), budget_start_us, holes);
         let builds_us = now_us();
         if book.bind().has_variant_waits() {
             Self::take_variant_waits(book.clone(), renderer.clone());
@@ -576,6 +581,8 @@ impl GradedTileBook {
         parts.set("result_effects_ms", split[2] as f64 / 1e6);
         parts.set("result_callback_ms", split[3] as f64 / 1e6);
         parts.set("result_tiles", split[4]);
+        parts.set("builds_held", self.frame.builds_held);
+        parts.set("builds_queued", self.builds_queued());
         parts
     }
 }

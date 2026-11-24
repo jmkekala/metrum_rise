@@ -414,32 +414,42 @@ pub(super) struct Run<H: Host> {
     // Whether the perf channel's split counts this run's time (the frame's result path does; the
     // edit batch and the preview, outside it, do not).
     split: bool,
+    // Whether the cell set builds no shown tile waits for are held this frame: the streaming
+    // node's last frame left holes waiting (`TERRAIN-41` L2; the ledger's flag).
+    pub(super) held: bool,
 }
 
 impl<H: Host> Run<H> {
     // The frame's result path from `start_us` (on the host's clock).
     pub(super) fn budgeted(host: H, start_us: i64) -> Self {
-        Self { host, start_us, progressed: false, placed: 0, split: true }
+        Self { host, start_us, progressed: false, placed: 0, split: true, held: false }
     }
 
     // A run outside the frame's poll (no budget, no split): the edit batch, the preview.
     pub(super) fn unbudgeted(host: H) -> Self {
-        Self { host, start_us: 0, progressed: true, placed: 0, split: false }
+        Self { host, start_us: 0, progressed: true, placed: 0, split: false, held: false }
     }
 
     // `_over_budget` with the placed tiles' cell rewrites and the queued patch rewrites charged
     // (as if the frame had started that much earlier): the trace's answer where one records or
     // replays.
     fn over(&mut self) -> bool {
+        self.over_or(false)
+    }
+
+    // `over`, or `held` outside the load's settle (no budget there): the answer a held cell set
+    // build gets, recorded in the trace as the budget's, so a replay reads it back. O(1).
+    fn over_or(&mut self, held: bool) -> bool {
         let now_us = self.host.now_us();
         let mut book = self.host.book();
         let book = &mut *book;
         let patches = book.state.cells.dirty_patches.len() as i64;
         let start_us = self.start_us - self.placed * CELL_CHARGE_US - patches * PATCH_CHARGE_US;
         if book.trace.is_some() {
-            return over_budget(&mut book.trace, book.state.unbudgeted, start_us);
+            let over = over_budget(&mut None, book.state.unbudgeted, start_us);
+            return budget_answer(&mut book.trace, over || held && !book.state.unbudgeted);
         }
-        !book.state.unbudgeted && now_us - start_us >= 1000
+        !book.state.unbudgeted && (held || now_us - start_us >= 1000)
     }
 
     fn has_counts(&mut self) -> bool {
@@ -623,9 +633,10 @@ impl<H: Host> Run<H> {
     // `_advance_builds`: the sets a flagged tile waits for take the variant first (the first in
     // every frame, the rest while the install budget lasts), then the queued set builds: the
     // patches a shown tile waits for first, at least one tile of the first of them in every
-    // frame, then the rest while the budget lasts. A set first syncs its materials, then writes
-    // its tiles; a built set starts drawing if a tile of it shows graded. O(tiles written this
-    // frame + uniforms synced).
+    // frame, then the rest while the budget lasts; a build no shown tile waits for waits while
+    // the frame is `held` (`TERRAIN-41` L2: holes first). A set first syncs its materials, then
+    // writes its tiles; a built set starts drawing if a tile of it shows graded. O(tiles written
+    // this frame + uniforms synced).
     pub(super) fn advance_builds(&mut self, start_us: i64) {
         let mut added = 0;
         while self.host.book().has_variants_wanted() {
@@ -644,10 +655,14 @@ impl<H: Host> Run<H> {
                 return;
             }
             let key = Vector2i::new(next.x, next.y);
-            if next.z == 0 {
+            let urgent = next.z != 0;
+            if !urgent {
                 minimum = 0;
             }
-            if minimum == 0 && self.over() {
+            if minimum == 0 && self.over_or(self.held && !urgent) {
+                if self.held && !urgent {
+                    self.host.book().frame.builds_held += 1;
+                }
                 return;
             }
             if !self.host.book().is_resident(key) {
@@ -719,13 +734,16 @@ impl GradedTileBook {
 
     /// The frame's cell set builds (`_advance_builds`, `RENDER-32-K` part 6): the variant the
     /// waiting flagged tiles need first, then the queued builds, within the install budget from
-    /// `start_us` (the trace's answers where one records or replays). O(tiles written this frame
-    /// + uniforms synced).
+    /// `start_us` (the trace's answers where one records or replays). With `held` (the streaming
+    /// node's last frame left holes waiting, `TERRAIN-41` L2) a build no shown tile waits for
+    /// waits, answered as over the budget (the trace records that answer). O(tiles written this
+    /// frame + uniforms synced).
     #[func]
-    pub fn advance_builds(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, start_us: i64) {
+    pub fn advance_builds(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, start_us: i64, held: bool) {
         let mut run = Run::budgeted(ScriptHost::timed(book, renderer, None), start_us);
         // Outside the result path's split.
         run.split = false;
+        run.held = held;
         run.advance_builds(start_us);
     }
 

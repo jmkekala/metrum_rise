@@ -279,7 +279,13 @@ fn same(a: &Variant, b: &Variant) -> bool {
 // The trace's budget answer (a replay's recorded one), as `_over_budget` gives it.
 fn over_budget(trace: &mut Option<Gd<RefCounted>>, unbudgeted: bool, start_us: i64) -> bool {
     let elapsed = godot::classes::Time::singleton().get_ticks_usec() as i64 - start_us;
-    let over = !unbudgeted && elapsed as f64 / 1000.0 >= 1.0;
+    budget_answer(trace, !unbudgeted && elapsed as f64 / 1000.0 >= 1.0)
+}
+
+// The budget's answer `over` through the trace: recorded as it is, or a replay's recorded one.
+// Anything folded into `over` (a held build, `TERRAIN-41` L2) is recorded with it, so a replay
+// needs no input of its own for it.
+fn budget_answer(trace: &mut Option<Gd<RefCounted>>, over: bool) -> bool {
     match trace.as_mut() {
         Some(trace) => {
             let answer = trace.call("value", &["budget".to_variant(), GString::from(if over { "1" } else { "0" }).to_variant()]);
