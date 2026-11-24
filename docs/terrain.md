@@ -3615,14 +3615,16 @@ the tile for central-difference normals:
 | `GL0` | 0.5 m | 129 (131) | 32,768 | to 256 m |
 | `GL1` | 1 m | 65 (67) | 8,192 | 256-512 m |
 | `GL2` | 2 m | 33 (35) | 2,048 | 512 m to the end of patch LOD step 1 (2 km) |
-| `GL3` | the base lattice at the patch's LOD step (20, 40 or 80 m), plus the tile's sides | at most 6 (8) | at most 50 | beyond 2 km, to the cull distance |
+| `GL3` | the base lattice at the patch's LOD step (16, 32 or 64 m at the default 8 m cell), plus the tile's sides | at most 6 (8) | at most 50 | beyond 2 km, to the cull distance |
 
-Precondition (proposed, validated by `WorldConfig` and the DEM importer for the worlds the game
-loads, [T17](#terrain-07-open-questions)): the base lattice lies on the 2 m lattice, that is,
-`terrain_cell_m` is a multiple of 2 m and the half extents are multiples of 2 m. The 20 km default
-(half extent 10,000 m) and the 18,432 m Kuopio world (9,216 m, 8 m cells) satisfy it; `TERRAIN-07-A` checks the
-fixture worlds. The lattices then nest, base step lattice ⊂ `GL2` ⊂ `GL1` ⊂ `GL0`, and every patch
-side, being a base lattice line, is a lattice line of every level.
+Precondition ([T17](#terrain-07-open-questions)): the base lattice lies on the 2 m lattice, that
+is, `terrain_cell_m` is a multiple of 2 m and the half extents are multiples of 2 m. Until the grid
+alignment (2026-11-24) nothing validated it; `WorldConfig::validate` now enforces the stronger
+world rules (cell 2, 4 or 8 m, sides in 128 m steps; [section 1](#1-worldconfig-is-the-authoritative-world-metadata)),
+and the DEM importer applies the same ones. The 20,480 m default (half extent 10,240 m) and the
+18,432 m Kuopio world (9,216 m, 8 m cells) satisfy them. The lattices then nest, base step lattice
+⊂ `GL2` ⊂ `GL1` ⊂ `GL0`, every patch side, being a base lattice line, is a lattice line of every
+level, and every 64 m tile lies inside one patch.
 
 **Seams.** `Seam { a: [f64; 3], b: [f64; 3], kind }`, height linear along the segment:
 
@@ -20320,7 +20322,6 @@ pub struct WorldConfig {
     pub width_m: f32,
     pub height_m: f32,
     pub terrain_cell_m: f32,
-    pub terrain_chunk_m: f32,
     pub terrain_base_elevation_m: f32,
     pub env_cell_m: f32,
     pub zone_cell_m: f32,
@@ -20329,26 +20330,45 @@ pub struct WorldConfig {
 
 Current defaults:
 
-- fallback gameplay world: `20_000 m × 20_000 m`
-- editor sandbox: `500 m × 500 m`
-- default terrain sample cell: `10 m`
-- canonical terrain chunk span: `512 m`
+- fallback gameplay world: `20_480 m × 20_480 m`
+- editor sandbox: `512 m × 512 m` (the shipped blank `test.sqlite` too)
+- default terrain sample cell: `8 m`
+- terrain render patch and storage chunk: `512 m` (`WorldConfig::TERRAIN_CHUNK_M`), not
+  configurable
 - default base terrain elevation: `0.0`
 - default environmental cell: `40 m`
 - default zoning cell: `10 m`
 
+World rules (grid alignment, 2026-11-24; `WorldConfig::validate`, each refusal names its rule):
+
+- `terrain_cell_m` is 2, 4 or 8 m. Each divides the 64 m graded tile and the 512 m patch; at 16 m
+  the far level's step of 8 cells (128 m) would be coarser than a tile.
+- `width_m` and `height_m` are whole multiples of 128 m, so the world edge (the sample grid is
+  centred on the origin) lies on a 64 m graded tile line.
+- The render patch is 512 m and the storage chunk 512 m of cells: 64, 128 or 256 cells. Patches
+  stay anchored at the world edge; every 64 m tile then lies inside one patch, and where the side
+  is a multiple of 1,024 m (both shipping sizes: 20,480 m and Kuopio's 18,432 m) the patch grid
+  is the 512 m grid from the origin, the road and building chunk grid. A smaller legal world
+  (for example 640 m) keeps an edge-anchored grid with a partial last patch, as before.
+- Per allowed cell, a patch is 64, 128 or 256 intervals (65, 129 or 257 samples, plus the 4-texel
+  border on each side of the height texture); the LOD steps 1, 2, 4 and 8 divide every one, and
+  the graded tile's 8, 16 or 32 cells too, so the apron and the stepped lattices stay whole.
+
 Current deterministic rules:
 
-- `WorldConfig` is saved and loaded as part of every city save.
+- `WorldConfig` is saved and loaded as part of every city save. Saves and world definitions still
+  store a `terrain_chunk_m` column; it is written as 512 and anything else is refused at load.
 - City saves, world definitions and blank-world creation validate the same metadata before
-  allocating world storage. Invalid spacing is rejected rather than clamped. Terrain spacing
-  must meet the runtime minimum; terrain/environment/chunk dimensions must fit signed grid
-  coordinates and dense-buffer allocation layouts. Environmental grids must contain at least
-  one cell per axis. These structural checks do not impose a fixed world-size or RAM budget.
-- old save migration is intentionally not required; version mismatch is a hard rejection.
-- authored terrain chunk count is:
-  - `terrain_chunk_columns = ceil(width_m / terrain_chunk_m)`
-  - `terrain_chunk_rows = ceil(height_m / terrain_chunk_m)`
+  allocating world storage. Invalid spacing is rejected rather than clamped. Terrain/environment
+  dimensions must fit signed grid coordinates and dense-buffer allocation layouts. Environmental
+  grids must contain at least one cell per axis. These checks impose no RAM budget.
+- A world or save from before the aligned grid (10 m cells, 520 m storage chunks, sides such as
+  500, 4,620 or 18,000 m) is refused at load with the rule it breaks; there is no migration. Older
+  formats that keep the rules still load, heights converted to metres (A1).
+- `TerrainSystem::from_world_config` debug-asserts the rules, so a test or loader that builds a
+  world off them fails in debug builds. Unit fixtures that build a `TerrainSystem`, `WaterSystem`
+  or deposit grid directly (`with_chunking`, 1 m or 10 m cells, small chunks) test the general
+  storage and patch code below the world rules and are not worlds.
 
 ### 2. Terrain And Water Grid Sizing Is Now Explicit
 
@@ -20362,7 +20382,7 @@ Current deterministic rule:
 - `terrain_grid_width = round(width_m / terrain_cell_m) + 1`
 - `terrain_grid_height = round(height_m / terrain_cell_m) + 1`
 - runtime sparse chunk span in cells comes from `WorldConfig.terrain_storage_chunk_cells()`:
-  - `max(1, ceil(terrain_chunk_m / terrain_cell_m))` (shared by terrain, water and deposits)
+  - `512 / terrain_cell_m` (shared by terrain, water and deposits)
 
 Implication:
 
