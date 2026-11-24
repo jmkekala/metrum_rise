@@ -2,8 +2,8 @@
 
 //! The patch layers' units by kind (`TERRAIN-41` L1): what each kind of unit costs the frame's
 //! install ledger, counted a frame ([`super::PatchWork`]) and kept as a histogram of measured
-//! microseconds over a session, from which the fixed unit prices ([`super::UnitCosts`]) are read
-//! at their 95th percentile. Measuring never changes a decision: the prices stay constants.
+//! microseconds over a session: the evidence for the fixed unit prices ([`super::UnitCosts`]).
+//! Measuring never changes a decision: the prices stay constants.
 
 /// A unit's kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

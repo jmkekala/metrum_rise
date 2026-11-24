@@ -80,7 +80,7 @@ pub(super) struct FrameState {
     split: [i64; 5],
     // Resident patches whose step changed since the last frame (`follow_terrain`).
     pub(super) step_news: i64,
-    // The frame's cell set builds held while holes wait (`TERRAIN-41` L2): 1 when one waited.
+    // The frame's cell set builds held behind holes (`TERRAIN-41` L2): 1 when one waited.
     pub(super) builds_held: i64,
 }
 
@@ -163,9 +163,9 @@ impl GradedTileBook {
         // The budget checks measure from a start moved back by what the ledger cannot give of
         // the share, so every check of the frame (results, builds, syncs) keeps to the room.
         let frame = Engine::singleton().get_process_frames();
-        // The streaming node's last frame left holes waiting: builds no shown tile waits for
-        // wait (`TERRAIN-41` L2).
-        let (room, holes) = with_ledger(frame, |ledger| (ledger.upgrade_room_us(), ledger.holes_waiting));
+        // The streaming node's last patch frame held a hole back for its budget: builds no shown
+        // tile waits for wait (`TERRAIN-41` L2).
+        let (room, holes) = with_ledger(frame, |ledger| (ledger.upgrade_room_us(), ledger.holes_deferred));
         // The resident patches whose level of detail changed since the last frame rewrite their
         // cells later in this frame (`follow_news`): charged up front, as the queued ones are in
         // every check (`PATCH_CHARGE_US`). A patch that became resident rewrites none.

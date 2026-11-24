@@ -318,6 +318,36 @@ fn a_blocked_activation_stops_the_frames_activations() {
     assert!(work.activations > 0);
 }
 
+// `TERRAIN-41` L2: a frame counts the holes its budget refused (what the graded book's builds
+// wait behind), not the holes that wait for a payload or behind a blocked activation, and none
+// without a budget.
+#[test]
+fn only_holes_the_budget_refuses_count_as_held_back() {
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    let mut scripts = Scripts::default();
+    let eye = [0.0, 800.0, 0.0];
+    layer.set_square(GRID.target(eye, 16000.0, false));
+    let mut budget = FrameBudget::new(1000.0);
+    let mut run = |layer: &mut PatchStream, scripts: &mut Scripts, unbudgeted: bool| {
+        budget.begin_frame();
+        let work = layer.frame(Some(eye), 0.016, &mut budget, &FixedClock, unbudgeted, &|_| false, scripts);
+        deliver(layer, scripts);
+        work
+    };
+    let work = run(&mut layer, &mut scripts, false);
+    assert!(layer.pending()[0] > 0 && work.holes_deferred == 0, "holes wait for their payloads");
+    scripts.blocked = true;
+    let work = run(&mut layer, &mut scripts, false);
+    assert_eq!((work.activations, work.holes_deferred), (0, 0), "behind a blocked activation");
+    scripts.blocked = false;
+    let work = run(&mut layer, &mut scripts, false);
+    assert!(work.activations > 0 && work.holes_deferred > 0, "the budget held holes back");
+    assert!(work.holes_deferred <= work.deferred);
+    let work = run(&mut layer, &mut scripts, true);
+    assert!(work.activations > 0 && work.holes_deferred == 0, "no budget, none held back");
+}
+
 #[test]
 fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
     let mut terrain = PatchStream::new(TERRAIN_LIMITS, COSTS);

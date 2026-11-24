@@ -396,6 +396,9 @@ pub(crate) struct PatchWork {
     pub(crate) requests: usize,
     /// Units the budget held back.
     pub(crate) deferred: usize,
+    /// Of them holes (any class; a hole skipped for its payload or behind a blocked activation
+    /// is not counted): what the graded book's builds wait behind (`TERRAIN-41` L2).
+    pub(crate) holes_deferred: usize,
     /// Units run by [`UnitKind`] (`TERRAIN-41` L1).
     pub(crate) unit_count: [usize; UNIT_KINDS],
     /// Their measured microseconds by kind.
@@ -949,6 +952,9 @@ impl PatchStream {
             };
             if !admit(budget, cost) {
                 self.work.deferred += 1;
+                // A hole the budget refused: counted only, the order and admission are as
+                // before (`TERRAIN-41` L2). O(1).
+                self.work.holes_deferred += 1;
                 held = true;
                 continue;
             }

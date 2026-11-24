@@ -415,7 +415,8 @@ pub(super) struct Run<H: Host> {
     // edit batch and the preview, outside it, do not).
     split: bool,
     // Whether the cell set builds no shown tile waits for are held this frame: the streaming
-    // node's last frame left holes waiting (`TERRAIN-41` L2; the ledger's flag).
+    // node's last patch frame held a hole back for its budget (`TERRAIN-41` L2; the ledger's
+    // flag).
     pub(super) held: bool,
 }
 
@@ -735,9 +736,9 @@ impl GradedTileBook {
     /// The frame's cell set builds (`_advance_builds`, `RENDER-32-K` part 6): the variant the
     /// waiting flagged tiles need first, then the queued builds, within the install budget from
     /// `start_us` (the trace's answers where one records or replays). With `held` (the streaming
-    /// node's last frame left holes waiting, `TERRAIN-41` L2) a build no shown tile waits for
-    /// waits, answered as over the budget (the trace records that answer). O(tiles written this
-    /// frame + uniforms synced).
+    /// node's last patch frame held a hole back for its budget, `TERRAIN-41` L2) a build no shown
+    /// tile waits for waits, answered as over the budget (the trace records that answer).
+    /// O(tiles written this frame + uniforms synced).
     #[func]
     pub fn advance_builds(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, start_us: i64, held: bool) {
         let mut run = Run::budgeted(ScriptHost::timed(book, renderer, None), start_us);

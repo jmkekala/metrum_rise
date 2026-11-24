@@ -178,6 +178,10 @@ pub(crate) struct FrameLedger {
     pub(crate) budget: FrameBudget,
     /// Whether the streaming node's last frame left holes waiting.
     pub(crate) holes_waiting: bool,
+    /// Whether the streaming node's last patch frame held a terrain or water hole back for its
+    /// budget (`TERRAIN-41` L2): the graded book's builds that no shown tile waits for then wait.
+    /// A hole that waits for anything else (a payload, a layer without scripts) holds nothing.
+    pub(crate) holes_deferred: bool,
     /// Measured microseconds by [`Owner`] this frame.
     pub(crate) charged: [f64; OWNERS],
 }

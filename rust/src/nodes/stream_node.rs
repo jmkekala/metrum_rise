@@ -128,6 +128,8 @@ pub struct StreamNode {
     delta: f64,
     frame_patch_us: f64,
     frame_patch_units_us: f64,
+    // The last patch frame's budget held a terrain or water hole back (`TERRAIN-41` L2).
+    patch_holes_deferred: bool,
     terrain_work: PatchWork,
     water_work: PatchWork,
     // A load's road chunk hydration (`RENDER-32-P`) and its executor, budget and frame.
@@ -208,6 +210,7 @@ impl INode for StreamNode {
             delta: 0.0,
             frame_patch_us: 0.0,
             frame_patch_units_us: 0.0,
+            patch_holes_deferred: false,
             terrain_work: PatchWork::default(),
             water_work: PatchWork::default(),
             roads: RoadHydration::default(),
@@ -1330,6 +1333,7 @@ impl StreamNode {
     fn patch_frame(&mut self) {
         self.frame_patch_us = 0.0;
         self.frame_patch_units_us = 0.0;
+        self.patch_holes_deferred = false;
         let Some(grid) = self.terrain.grid() else {
             return;
         };
@@ -1395,6 +1399,7 @@ impl StreamNode {
                 &in_view,
                 &mut exec,
             );
+            self.patch_holes_deferred |= self.water_work.holes_deferred > 0;
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
         }
@@ -1414,6 +1419,7 @@ impl StreamNode {
                 &in_view,
                 &mut exec,
             );
+            self.patch_holes_deferred |= self.terrain_work.holes_deferred > 0;
         }
         self.follow_terrain();
         // The window closes when the patches first settle with residents, or after
@@ -1522,6 +1528,7 @@ impl StreamNode {
         let holes = self.vegetation.holes_waiting()
             || self.terrain.pending()[0] > 0
             || self.water.pending()[0] > 0;
+        let holes_deferred = self.patch_holes_deferred;
         let perf = self.perf;
         let mut charged = self.frame_charged;
         let spent = with_ledger(self.ledger_frame, |ledger| {
@@ -1535,6 +1542,7 @@ impl StreamNode {
                 ledger.charged[Owner::Free as usize] += free_us;
             }
             ledger.holes_waiting = holes;
+            ledger.holes_deferred = holes_deferred;
             if perf {
                 charged[..OWNERS].copy_from_slice(&ledger.charged);
                 charged[OWNERS] = ledger.budget.predicted_us;
@@ -1835,6 +1843,7 @@ impl StreamNode {
                 patches.set(format!("{name}_builds"), work.builds as i64);
                 patches.set(format!("{name}_requests"), work.requests as i64);
                 patches.set(format!("{name}_deferred"), work.deferred as i64);
+                patches.set(format!("{name}_holes_deferred"), work.holes_deferred as i64);
                 // Units by kind (`TERRAIN-41` L1): count, measured and longest microseconds.
                 for kind in 0..UNIT_KINDS {
                     let kind_name = UNIT_KIND_NAMES[kind];

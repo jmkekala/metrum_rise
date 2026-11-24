@@ -657,8 +657,8 @@ fn the_cores_entries_are_news_and_follow_steps_and_generations() {
 }
 
 // `TERRAIN-41` L2: a hidden set rebuilt for its patch's new step is a build no shown tile waits
-// for; it waits while the streaming node's last frame left holes waiting (the frame `held`). (A
-// frame without holes builds it as before; its tile writes read the engine's clock.)
+// for; it waits while the streaming node's last patch frame held a hole back for its budget (the
+// frame `held`). (A frame without builds it as before; its tile writes read the engine's clock.)
 #[test]
 fn a_build_no_shown_tile_waits_for_waits_while_holes_wait() {
     let mut world = world();
@@ -670,6 +670,6 @@ fn a_build_no_shown_tile_waits_for_waits_while_holes_wait() {
     let mut run = Run::budgeted(&mut world, 0);
     run.held = true;
     run.advance_builds(0);
-    assert_eq!(world.book.next_build(), Vector3i::new(0, 0, 0), "held while holes wait");
+    assert_eq!(world.book.next_build(), Vector3i::new(0, 0, 0), "held behind the holes");
     assert_eq!(world.book.frame.builds_held, 1);
 }
