@@ -650,7 +650,7 @@ impl BuildingAllocator {
             entrance.curb_pos = curb;
             entrance.vehicle_frontage_access =
                 Self::vehicle_access_at(graph, edge_idx, side, entrance.entrance_s_m, lanes);
-            derive_car_lanes(&mut entrance,edge,side,lanes);
+            derive_car_lanes(&mut entrance,edge,side,&frontage_lanes(lanes,edge_idx,edge,side));
             derive_flags(&mut entrance);
         }
         entrance
@@ -697,8 +697,9 @@ impl BuildingAllocator {
         entrance.car_lane_bkw = INVALID_LANE_ID;
         if let Some(edge) = graph.get_edge(entrance.edge_idx) {
             let side = entrance.side;
-            derive_foot_lanes(entrance, edge, side, lanes);
-            derive_car_lanes(entrance, edge, side, lanes);
+            let found = frontage_lanes(lanes, entrance.edge_idx, edge, side);
+            derive_foot_lanes(entrance, edge, &found);
+            derive_car_lanes(entrance, edge, side, &found);
         }
         derive_flags(entrance);
     }
@@ -732,8 +733,9 @@ impl BuildingAllocator {
             Self::project_point_to_polyline_s(&edge.physical_geometry, entrance.door_pos);
         let entrance_t = entrance.entrance_s_m / edge.physical_length;
         let edge_pos = Self::sample_pos_on_edge(graph, edge_idx, entrance_t);
-        derive_foot_lanes(&mut entrance, edge, side, lanes);
-        derive_car_lanes(&mut entrance, edge, side, lanes);
+        let found = frontage_lanes(lanes, edge_idx, edge, side);
+        derive_foot_lanes(&mut entrance, edge, &found);
+        derive_car_lanes(&mut entrance, edge, side, &found);
         derive_flags(&mut entrance);
         derive_curb_pos(&mut entrance, edge_pos, lanes);
         entrance
@@ -1006,28 +1008,18 @@ fn asset_local_front_xz(anchor_forward: [f32; 3]) -> Vector2 {
 fn derive_foot_lanes(
     entrance: &mut BuildingEntrance,
     edge: &crate::simulation::network::graph::Edge,
-    side: i8,
-    lanes: &LaneSystem,
+    found: &FrontageLanes,
 ) {
     if (edge.allowed_types & TransitFlags::FOOT) == 0 {
         return;
     }
 
     if edge.primary_type == TransitType::Foot {
-        entrance.foot_lane_fwd = unique_lane_id(lanes, entrance.edge_idx, LaneType::Foot, true, 0);
-        entrance.foot_lane_bkw = unique_lane_id(lanes, entrance.edge_idx, LaneType::Foot, false, 0);
+        [entrance.foot_lane_fwd, entrance.foot_lane_bkw] = found.foot;
         return;
     }
 
-    let sidewalk_idx = side * 100;
-    let foot_fwd = unique_lane_id(lanes, entrance.edge_idx, LaneType::Foot, true, sidewalk_idx);
-    let foot_bkw = unique_lane_id(
-        lanes,
-        entrance.edge_idx,
-        LaneType::Foot,
-        false,
-        sidewalk_idx,
-    );
+    let [foot_fwd, foot_bkw] = found.foot;
     if foot_fwd != INVALID_LANE_ID && foot_bkw != INVALID_LANE_ID {
         entrance.foot_lane_fwd = foot_fwd;
         entrance.foot_lane_bkw = foot_bkw;
@@ -1038,14 +1030,13 @@ fn derive_car_lanes(
     entrance: &mut BuildingEntrance,
     edge: &crate::simulation::network::graph::Edge,
     side: i8,
-    lanes: &LaneSystem,
+    found: &FrontageLanes,
 ) {
     if (edge.allowed_types & TransitFlags::CAR) == 0 || edge.primary_type == TransitType::Foot {
         return;
     }
 
-    let mut car_fwd = best_vehicle_lane(lanes, entrance.edge_idx, true);
-    let mut car_bkw = best_vehicle_lane(lanes, entrance.edge_idx, false);
+    let [mut car_fwd, mut car_bkw] = found.car;
 
     match entrance.vehicle_frontage_access {
         VehicleFrontageAccess::SameSideOnly => {
@@ -1611,29 +1602,83 @@ fn freight_candidate_from_border(
     })
 }
 
-fn unique_lane_id(
+// The frontage lane ids of one edge, `[forward, backward]`, from one pass over its lanes
+// ([`frontage_lanes`]).
+struct FrontageLanes {
+    // Each direction's foot lane at the scanned index, where it is the only one there.
+    foot: [usize; 2],
+    // Each direction's vehicle lane [`best_vehicle_lane`] picks.
+    car: [usize; 2],
+}
+
+// The lanes `derive_foot_lanes` and `derive_car_lanes` read for a frontage on side `side` of
+// `edge`, numbered `edge_idx`, in one lookup and one pass over its lanes (`PERF-33`: every car
+// and walker on a parking leg refreshes its entrance's lanes each tick, which took four
+// lookups and four passes). Exactly the per-lane rules of the four passes: a foot lane where
+// it is the only one of its direction at the sidewalk index (0 on a footpath, `side x 100`
+// beside a road), a vehicle lane by [`best_vehicle_lane`]'s order. O(lanes on the edge),
+// allocation-free.
+fn frontage_lanes(
     lanes: &LaneSystem,
     edge_idx: usize,
-    lane_type: LaneType,
-    is_fwd: bool,
-    lane_idx: i8,
-) -> usize {
-    let mut found = INVALID_LANE_ID;
-    let Some(edge_lanes) = lanes.edge_lanes.get(&edge_idx) else {
-        return INVALID_LANE_ID;
+    edge: &crate::simulation::network::graph::Edge,
+    side: i8,
+) -> FrontageLanes {
+    let mut found = FrontageLanes {
+        foot: [INVALID_LANE_ID; 2],
+        car: [INVALID_LANE_ID; 2],
     };
-
+    let Some(edge_lanes) = lanes.edge_lanes.get(&edge_idx) else {
+        return found;
+    };
+    let foot_idx = if edge.primary_type == TransitType::Foot {
+        0
+    } else {
+        side.wrapping_mul(100)
+    };
+    let mut foot_count = [0u32; 2];
+    let mut best_idx = [i8::MIN, i8::MAX];
     for &lane_id in edge_lanes {
         let lane = &lanes.lanes[lane_id];
-        if lane.lane_type == lane_type && lane.is_fwd == is_fwd && lane.lane_idx == lane_idx {
-            if found != INVALID_LANE_ID {
-                return INVALID_LANE_ID;
-            }
-            found = lane_id;
+        let dir = usize::from(!lane.is_fwd);
+        if lane.lane_type == LaneType::Foot && lane.lane_idx == foot_idx {
+            foot_count[dir] += 1;
+            found.foot[dir] = lane_id;
+        } else if lane.lane_type == LaneType::Vehicle
+            && vehicle_lane_better(
+                lane.is_fwd,
+                lane.lane_idx,
+                lane_id,
+                best_idx[dir],
+                found.car[dir],
+            )
+        {
+            best_idx[dir] = lane.lane_idx;
+            found.car[dir] = lane_id;
         }
     }
-
+    for (foot, count) in found.foot.iter_mut().zip(foot_count) {
+        if count != 1 {
+            *foot = INVALID_LANE_ID;
+        }
+    }
     found
+}
+
+// Whether vehicle lane `lane_id` at index `lane_idx` beats the best so far (`best_idx`,
+// `best_lane`) in its direction: the outermost index, then the lowest id.
+fn vehicle_lane_better(
+    is_fwd: bool,
+    lane_idx: i8,
+    lane_id: usize,
+    best_idx: i8,
+    best_lane: usize,
+) -> bool {
+    if is_fwd {
+        lane_idx > best_idx || (lane_idx == best_idx && lane_id < best_lane)
+    } else {
+        lane_idx < best_idx || (lane_idx == best_idx && lane_id < best_lane)
+    }
 }
 
 fn best_vehicle_lane(lanes: &LaneSystem, edge_idx: usize, is_fwd: bool) -> usize {
@@ -1650,12 +1695,7 @@ fn best_vehicle_lane(lanes: &LaneSystem, edge_idx: usize, is_fwd: bool) -> usize
             continue;
         }
 
-        let better = if is_fwd {
-            lane.lane_idx > best_idx || (lane.lane_idx == best_idx && lane_id < best_lane)
-        } else {
-            lane.lane_idx < best_idx || (lane.lane_idx == best_idx && lane_id < best_lane)
-        };
-        if better {
+        if vehicle_lane_better(is_fwd, lane.lane_idx, lane_id, best_idx, best_lane) {
             best_idx = lane.lane_idx;
             best_lane = lane_id;
         }
@@ -1809,5 +1849,89 @@ mod tests {
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
         assert_eq!(BuildingAllocator::vehicle_access_at(&graph, id, 1, 50.0, &lanes), SameSideOnly);
+    }
+
+    // `PERF-33`: the one-pass frontage scan picks exactly the lanes of the four passes it
+    // replaced (a foot lane only where it is the only one of its direction at the sidewalk
+    // index, a vehicle lane by `best_vehicle_lane`), on roads and a footpath, every side, and
+    // with a foot lane listed twice.
+    #[test]
+    fn one_pass_frontage_lanes_match_the_per_lane_passes() {
+        fn unique(lanes: &LaneSystem, edge_idx: usize, fwd: bool, idx: i8) -> usize {
+            let mut found = INVALID_LANE_ID;
+            for &id in lanes.edge_lanes.get(&edge_idx).into_iter().flatten() {
+                let lane = &lanes.lanes[id];
+                if lane.lane_type == LaneType::Foot && lane.is_fwd == fwd && lane.lane_idx == idx {
+                    if found != INVALID_LANE_ID {
+                        return INVALID_LANE_ID;
+                    }
+                    found = id;
+                }
+            }
+            found
+        }
+        let mut graph = RegionGraph::new();
+        let mut ids = Vec::new();
+        for (k, (primary, allowed, fwd, bkw)) in [
+            (TransitType::Road, TransitFlags::CAR | TransitFlags::FOOT, 1, 1),
+            (TransitType::Road, TransitFlags::CAR | TransitFlags::FOOT, 2, 2),
+            (TransitType::Road, TransitFlags::CAR | TransitFlags::FOOT, 2, 0),
+            (TransitType::Road, TransitFlags::CAR, 1, 1),
+            (TransitType::Foot, TransitFlags::FOOT, 0, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let z = k as f32 * 50.0;
+            let start = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+            let end = graph.add_node(Vector3::new(100.0, 0.0, z), NodeType::Junction);
+            let points = vec![graph.node(start).pos, graph.node(end).pos];
+            ids.push(graph.add_edge(Edge {
+                start_node: start,
+                end_node: end,
+                primary_type: primary,
+                allowed_types: allowed,
+                // A car road is walked exactly when it has a sidewalk side (`ROAD-107`).
+                sidewalks: if allowed == TransitFlags::CAR {
+                    crate::simulation::network::graph::SidewalkSides::NONE
+                } else {
+                    crate::simulation::network::graph::SidewalkSides::BOTH
+                },
+                width: 10.0,
+                fwd_lanes: fwd,
+                bkw_lanes: bkw,
+                physical_length: 100.0,
+                physical_geometry: points.clone(),
+                geometry: points,
+                vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+                ..Default::default()
+            }));
+        }
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let check = |lanes: &LaneSystem, graph: &RegionGraph| {
+            for &id in &ids {
+                let edge = graph.edge(id);
+                for side in [-1i8, 0, 1] {
+                    let idx = if edge.primary_type == TransitType::Foot { 0 } else { side * 100 };
+                    let found = frontage_lanes(lanes, id, edge, side);
+                    assert_eq!(found.foot, [unique(lanes, id, true, idx), unique(lanes, id, false, idx)]);
+                    assert_eq!(
+                        found.car,
+                        [best_vehicle_lane(lanes, id, true), best_vehicle_lane(lanes, id, false)]
+                    );
+                }
+            }
+        };
+        check(&lanes, &graph);
+        assert!(ids.iter().any(|id| frontage_lanes(&lanes, *id, graph.edge(*id), 1).foot[0] != INVALID_LANE_ID));
+        // A foot lane listed twice is no longer the only one.
+        let foot = lanes.edge_lanes[&ids[0]]
+            .iter()
+            .copied()
+            .find(|&id| lanes.lanes[id].lane_type == LaneType::Foot)
+            .unwrap();
+        lanes.edge_lanes.get_mut(&ids[0]).unwrap().push(foot);
+        check(&lanes, &graph);
     }
 }
