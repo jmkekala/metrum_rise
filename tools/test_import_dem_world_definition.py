@@ -18,7 +18,7 @@ except ImportError as missing:
     )
     raise unittest.SkipTest(f"missing Python module {missing.name or missing}") from None
 
-from dem_water import SampleGrid, WaterBody, WaterRule, apply_hydrography, synthetic_bed
+from dem_water import DepthChart, SampleGrid, WaterBody, WaterRule, apply_hydrography, synthetic_bed
 from import_dem_world_definition import world_frame
 
 
@@ -257,6 +257,123 @@ class RiverJoinTest(unittest.TestCase):
 
         fill = result.fills[0]
         self.assertEqual((fill.world_x, fill.world_z), (1056.0 - 1160.0, 2160.0 - 2064.0))
+
+
+class DepthChartTest(unittest.TestCase):
+    # 41 x 41 samples at 8 m, source E 1000..1320, N 2000..2320; sample (i, j) at E 1000 + 8 i,
+    # N 2320 - 8 j. Lakes stand at 50 m on ground 49.5 m (raised shores keep each fill in its
+    # polygon). Depth is the water level minus the bed.
+    GRID = SampleGrid(west_e=1000.0, north_n=2320.0, cell_m=8.0, width=41, height=41)
+
+    def run_rule(self, bodies, depths):
+        dem = np.full((41, 41), 49.5, dtype=np.float32)
+        result = apply_hydrography(dem, self.GRID, bodies, [], WaterRule(), depths)
+        level = np.full((41, 41), np.nan)
+        for fill in result.fills:
+            i = int(round((fill.world_x + 160.0) / 8.0))
+            j = int(round((fill.world_z + 160.0) / 8.0))
+            flooded = flood(result.heights, (i, j), np.float32(fill.surface_elevation_m))
+            self.assertTrue(np.array_equal(flooded, result.group_of_sample == fill.group))
+            level[result.group_of_sample == fill.group] = fill.surface_elevation_m
+        water = result.group_of_sample >= 0
+        self.assertTrue(np.all(result.heights[water] < np.float32(50.0)), "every water sample is wet")
+        return result, np.where(water, level - result.heights, np.nan)
+
+    @staticmethod
+    def sample(e, n):
+        return (2320 - n) // 8, (e - 1000) // 8
+
+    def test_charted_lake_takes_the_depths_at_contours_and_soundings(self):
+        lake = WaterBody(key=1, kind="lake", level_mm=50_000,
+                         geometry=shapely.box(1020.0, 2020.0, 1300.0, 2300.0))
+        ring3 = shapely.LinearRing([(1080, 2080), (1240, 2080), (1240, 2240), (1080, 2240)])
+        ring6 = shapely.LinearRing([(1120, 2120), (1200, 2120), (1200, 2200), (1120, 2200)])
+        depths = DepthChart(
+            contours=((10, 3_000, shapely.LineString(ring3.coords)), (11, 6_000, shapely.LineString(ring6.coords))),
+            soundings=((20, 9_500, shapely.Point(1160.0, 2160.0)),),
+        )
+        result, depth = self.run_rule([lake], depths)
+
+        self.assertEqual(result.report["depth_chart"]["charted_keys"], [1])
+        for along in range(0, 161, 8):
+            for side in (0, 160):
+                self.assertAlmostEqual(depth[self.sample(1080 + along, 2080 + side)], 3.0, places=4)
+                self.assertAlmostEqual(depth[self.sample(1080 + side, 2080 + along)], 3.0, places=4)
+        self.assertAlmostEqual(depth[self.sample(1120, 2160)], 6.0, places=4)
+        self.assertAlmostEqual(depth[self.sample(1160, 2160)], 9.5, places=4)
+        # Deeper than the 12 m cap would allow is kept: the cap is the synthetic bed's.
+        self.assertGreater(np.nanmax(depth), 9.0)
+        # Between the shore and the 3 m contour no deeper than 3 m.
+        self.assertLessEqual(depth[self.sample(1048, 2160)], 3.0)
+
+    def test_uncharted_lake_keeps_the_synthetic_bed_and_land_features_change_nothing(self):
+        # Lake 1 holds a sounding; lake 2 only the grazing end of a contour that runs mostly on
+        # land, so no polygon holds the larger part of it and lake 2 stays uncharted.
+        charted = WaterBody(key=1, kind="lake", level_mm=50_000,
+                            geometry=shapely.box(1020.0, 2020.0, 1140.0, 2300.0))
+        uncharted = WaterBody(key=2, kind="lake", level_mm=50_000,
+                              geometry=shapely.box(1180.0, 2020.0, 1300.0, 2300.0))
+        grazing = shapely.LineString([(1150.0, 2160.0), (1185.0, 2160.0)])  # 5 of 35 m inside
+        on_land = shapely.LineString([(1150.0, 2030.0), (1160.0, 2290.0)])
+        depths = DepthChart(contours=((5, 1_500, grazing), (6, 3_000, on_land)),
+                            soundings=((7, 4_000, shapely.Point(1080.0, 2160.0)),))
+        plain, _ = self.run_rule([charted, uncharted], None)
+        result, depth = self.run_rule([charted, uncharted], depths)
+
+        self.assertEqual(result.report["depth_chart"]["charted_keys"], [1])
+        self.assertEqual(result.report["depth_chart"]["contours_owned_by_no_kept_polygon"], 2)
+        east = np.s_[:, (1180 - 1000) // 8 :]
+        np.testing.assert_array_equal(result.heights[east], plain.heights[east])
+        self.assertAlmostEqual(depth[self.sample(1080, 2160)], 4.0, places=4)
+        self.assertEqual([f.__dict__ for f in result.fills], [f.__dict__ for f in plain.fills])
+
+        # A chart whose features all lie on land charts nothing: the result is the plain one.
+        land_only = DepthChart(contours=((6, 3_000, on_land),), soundings=((8, 2_000, shapely.Point(1160.0, 2100.0)),))
+        result, _ = self.run_rule([charted, uncharted], land_only)
+        np.testing.assert_array_equal(result.heights, plain.heights)
+        self.assertEqual(result.report["depth_chart"]["charted_keys"], [])
+
+    def test_partly_charted_lake_is_shallower_than_the_shallowest_contour_where_none_is_drawn(self):
+        # A 312 m by 72 m lake charted only at its east end (a 3 m ring). Where no contour is
+        # drawn, the bed is the shore ramp min(0.15 d, 1.5 m): no deeper than the chart's
+        # shallowest contour level, which a chart would have drawn around deeper water.
+        lake = WaterBody(key=1, kind="lake", level_mm=50_000,
+                         geometry=shapely.box(1004.0, 2124.0, 1316.0, 2196.0))
+        ring = shapely.LineString([(1240, 2144), (1296, 2144), (1296, 2176), (1240, 2176), (1240, 2144)])
+        # A 1.5 m contour elsewhere (off the map) sets the chart's shallowest level.
+        shallow = DepthChart(contours=((1, 1_500, shapely.LineString([(0, 0), (1, 0)])), (2, 3_000, ring)), soundings=())
+        result, depth = self.run_rule([lake], shallow)
+
+        self.assertEqual(result.report["depth_chart"]["shallowest_contour_m"], 1.5)
+        self.assertAlmostEqual(depth[self.sample(1240, 2160)], 3.0, places=4)
+        west = depth[:, : (1150 - 1000) // 8]
+        west = west[~np.isnan(west)]
+        self.assertLessEqual(float(west.max()), 1.5 + 1e-5)
+        # 24 m or more from the shore (the lake's middle rows) the ramp has reached 1.5 m.
+        middle = depth[self.sample(1104, 2160)[0], 4 : (1150 - 1000) // 8]
+        np.testing.assert_allclose(middle, 1.5, atol=1e-5)
+        self.assertTrue(np.all(depth[~np.isnan(depth)] > 0.0))
+
+    def test_charted_lake_meets_uncharted_water_of_its_group_without_a_step(self):
+        # Two lakes share the edge E 1164; the west one is charted with a 6 m ring 44 m from it.
+        west = WaterBody(key=1, kind="lake", level_mm=50_000,
+                         geometry=shapely.box(1020.0, 2020.0, 1164.0, 2300.0))
+        east = WaterBody(key=2, kind="lake", level_mm=50_000,
+                         geometry=shapely.box(1164.0, 2020.0, 1300.0, 2300.0))
+        ring = shapely.LineString([(1056, 2120), (1120, 2120), (1120, 2216), (1056, 2216), (1056, 2120)])
+        depths = DepthChart(contours=((2, 6_000, ring),), soundings=())
+        result, depth = self.run_rule([west, east], depths)
+
+        self.assertEqual(len(result.fills), 1)
+        self.assertEqual(result.report["depth_chart"]["charted_keys"], [1])
+        seam = (1168 - 1000) // 8  # the east lake's first column
+        rows = slice(self.sample(0, 2200)[0], self.sample(0, 2140)[0] + 1)
+        # The east side is the synthetic bed (capped at 12 m, 80 m+ from any shore there). The
+        # seam carries that depth, so the west side's last sample, 4 m from the seam, is within
+        # one cell's synthetic slope (1.2 m) of it, not 6 m (the ring) away.
+        np.testing.assert_allclose(depth[rows, seam], 12.0, atol=1e-5)
+        step = np.abs(depth[rows, seam - 1] - depth[rows, seam])
+        self.assertLessEqual(float(step.max()), 1.2)
 
 
 if __name__ == "__main__":

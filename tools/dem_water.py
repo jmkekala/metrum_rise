@@ -7,7 +7,9 @@ flat at the water surface over lakes, so the lake bed is synthetic:
     bed = level - min(depth_cap, slope * d)
 
 with `d` the distance from the sample to the shore of the water at the sample's level, and
-`depth_cap` lowered to the shoal cap inside a shoal polygon. Samples outside every water polygon
+`depth_cap` lowered to the shoal cap inside a shoal polygon. With a depth chart (`DepthChart`:
+surveyed contours and soundings), a charted polygon's bed comes from the chart instead
+(`_charted_polygons`, `_charted_depths`); uncharted water keeps the synthetic bed. Samples outside every water polygon
 keep the elevation model. The runtime floods an authored fill 4-connected over samples at or
 below its level (`FillFlood::flood`), so the shore rules below make each fill flood
 exactly its own samples:
@@ -135,18 +137,39 @@ class WaterResult:
     bodies: list[WaterBody]
     fills: list[WaterFill]
     report: dict
+    # With a depth chart: per charted sample the share of its depth's weight held by shore points
+    # (1 where no contour or sounding is in its triangle), NaN elsewhere; None without a chart.
+    chart_shore_weight: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class DepthChart:
+    """Surveyed depths below the water surface (`--depths`): contour lines and soundings, each
+    `(key, depth_mm, geometry)` in source coordinates, sorted by key."""
+
+    contours: tuple
+    soundings: tuple
+
+
+def synthetic_depth(distance_m, cap_m, rule: WaterRule) -> np.ndarray:
+    """`min(cap, slope * d)` in f64; `cap_m` is per sample (the shoal cap inside shoals)."""
+    return np.minimum(np.asarray(cap_m, dtype=np.float64),
+                      rule.slope * np.asarray(distance_m, dtype=np.float64))
+
+
+def bed_below(level_m, depth_m) -> np.ndarray:
+    """`level - depth` in f32. A bed that rounds to its level (a sample within micrometres of the
+    shore, or a charted depth of 0) is moved one f32 step below it, so the runtime counts it wet
+    rather than flooded at depth 0."""
+    level = np.asarray(level_m, dtype=np.float64)
+    bed = (level - np.asarray(depth_m, dtype=np.float64)).astype(np.float32)
+    surface = level.astype(np.float32)
+    return np.where(bed < surface, bed, np.nextafter(surface, np.float32(-np.inf)))
 
 
 def synthetic_bed(level_m, distance_m, cap_m, rule: WaterRule) -> np.ndarray:
-    """`level - min(cap, slope * d)` in f32; `cap_m` is per sample (the shoal cap inside shoals).
-    A bed that rounds to its level (a sample within micrometres of the shore) is moved one f32
-    step below it, so the runtime counts it wet rather than flooded at depth 0."""
-    depth = np.minimum(np.asarray(cap_m, dtype=np.float64),
-                       rule.slope * np.asarray(distance_m, dtype=np.float64))
-    level = np.asarray(level_m, dtype=np.float64)
-    bed = (level - depth).astype(np.float32)
-    surface = level.astype(np.float32)
-    return np.where(bed < surface, bed, np.nextafter(surface, np.float32(-np.inf)))
+    """`level - min(cap, slope * d)` in f32 (`synthetic_depth`, `bed_below`)."""
+    return bed_below(level_m, synthetic_depth(distance_m, cap_m, rule))
 
 
 def inscribed_width_m(geometry, tolerance_m: float) -> float:
@@ -201,17 +224,21 @@ def _samples_inside(grid: SampleGrid, geometry) -> tuple[np.ndarray, np.ndarray]
     return jj[inside].astype(np.int64), ii[inside].astype(np.int64)
 
 
-def _shore_distance(grid: SampleGrid, shore, rows, cols, max_distance: float) -> np.ndarray:
-    """Distance from each sample to the nearest segment of `shore`; `inf` beyond `max_distance`."""
+def _shore_segments(shore) -> list:
+    """`shore`'s lines as two-point segments."""
     coords = []
     for line in shapely.get_parts(shore):
         xy = shapely.get_coordinates(line)
         if len(xy) >= 2:
             coords.append(np.stack([xy[:-1], xy[1:]], axis=1))
+    return list(shapely.linestrings(np.concatenate(coords))) if coords else []
+
+
+def _shore_distance(grid: SampleGrid, segments, rows, cols, max_distance: float) -> np.ndarray:
+    """Distance from each sample to the nearest shore segment; `inf` beyond `max_distance`."""
     out = np.full(rows.shape, np.inf)
-    if not coords or rows.size == 0:
+    if not segments or rows.size == 0:
         return out
-    segments = shapely.linestrings(np.concatenate(coords))
     tree = shapely.STRtree(segments)
     points = shapely.points(grid.west_e + cols * grid.cell_m, grid.north_n - rows * grid.cell_m)
     (point_idx, seg_idx), dist = tree.query_nearest(
@@ -310,14 +337,128 @@ def _river_joins(body_of: np.ndarray, bodies: list[WaterBody], rule: WaterRule):
     return joined, dropped
 
 
+def _charted_polygons(bodies: list[WaterBody], kept: list[int], depths: DepthChart):
+    """The kept polygons the depth chart covers: a polygon is charted when a sounding lies inside
+    it or it holds more than half of some contour's length. A contour is drawn for one lake: on
+    the 60 km maps 3,422 of Kuopio's 3,463 contours and 1,568 of Vieremä's 1,601 lie within one
+    polygon, and the majority keeps a contour that grazes a neighbour's shore (by 0.24 mm on one
+    5 km2 Kuopio polygon) from charting that neighbour. Returns the charted indices into `bodies`
+    and the count of contours and soundings no kept polygon takes."""
+    geometries = [bodies[k].geometry for k in kept]
+    tree = shapely.STRtree(geometries)
+    charted = set()
+    contours = np.array([geometry for _, _, geometry in depths.contours], dtype=object)
+    contour_hit, polygon_hit = tree.query(contours, predicate="intersects")
+    inside = shapely.length(shapely.intersection(
+        contours[contour_hit], np.array(geometries, dtype=object)[polygon_hit]
+    ))
+    owner = inside * 2.0 > shapely.length(contours[contour_hit])
+    charted.update(kept[int(p)] for p in polygon_hit[owner])
+    unowned_contours = len(contours) - int(np.unique(contour_hit[owner]).size)
+    points = np.array([geometry for _, _, geometry in depths.soundings], dtype=object)
+    point_hit, polygon_hit = tree.query(points, predicate="within")
+    charted.update(kept[int(p)] for p in polygon_hit)
+    unowned_soundings = len(points) - int(np.unique(point_hit).size)
+    return charted, unowned_contours, unowned_soundings
+
+
+def _line_points(lines, cell_m: float) -> np.ndarray:
+    """The vertices of `lines` with every segment split to at most one terrain cell."""
+    if lines is None or shapely.is_empty(lines):
+        return np.empty((0, 2))
+    return shapely.get_coordinates(shapely.segmentize(lines, cell_m))
+
+
+def _charted_depths(grid, bodies, body_of, groups, charted, kept, shore_segments, depths, rule):
+    """Two arrays over the samples of charted polygons (NaN elsewhere): the depth the chart's
+    points give, linear inside their Delaunay triangles, and the share of that depth's weight
+    held by shore points (the sum of the shore vertices' barycentric weights). One triangulation
+    per group and its charted polygons together (their union `R`), from:
+
+    - the shore (the boundary of `R` outside every other kept polygon) at depth 0;
+    - the seam (the boundary of `R` shared with uncharted kept water) at the synthetic depth
+      without the shoal cap, so the bed meets the uncharted bed without a step;
+    - contours clipped to `R` at their depth (a part outside it, on land or in uncharted water,
+      is not used) and soundings inside `R` at theirs.
+
+    Lines are split to one terrain cell so the triangles follow them; a point given twice takes
+    the first in that order (shore, seam, contours, soundings, each by key). The polygons are not
+    clipped to the world, so a lake cut by the world edge keeps its shore beyond it. Qhull's
+    Delaunay is deterministic for one input order; a sample outside every triangle stops the
+    import."""
+    from scipy.spatial import Delaunay
+
+    depth = np.full(body_of.shape, np.nan)
+    shore_weight = np.full(body_of.shape, np.nan)
+    charted_mask = np.isin(body_of, sorted(charted))
+    if not charted_mask.any():
+        return depth, shore_weight
+    kept_tree = shapely.STRtree([bodies[k].geometry for k in kept])
+    contour_tree = shapely.STRtree([geometry for _, _, geometry in depths.contours])
+    sounding_tree = shapely.STRtree([geometry for _, _, geometry in depths.soundings])
+    shore_tree = shapely.STRtree(shore_segments)
+    slices = ndimage.find_objects(np.where(charted_mask, groups, 0))
+    origin = np.array([grid.west_e, grid.north_n])
+    for label, window in enumerate(slices, start=1):
+        if window is None:
+            continue
+        mask = charted_mask[window] & (groups[window] == label)
+        members = [int(b) for b in np.unique(body_of[window][mask])]
+        region = shapely.union_all([bodies[b].geometry for b in members])
+        others = [kept[int(i)] for i in kept_tree.query(region, predicate="intersects")]
+        other = shapely.union_all([bodies[b].geometry for b in others if b not in members])
+        boundary = shapely.boundary(region)
+        shore = _line_points(shapely.difference(boundary, other), grid.cell_m)
+        seam = _line_points(shapely.intersection(boundary, other), grid.cell_m)
+        seam_distance = np.full(len(seam), np.inf)
+        if len(seam):
+            (point_idx, _), dist = shore_tree.query_nearest(
+                shapely.points(seam), max_distance=rule.depth_cap_m / rule.slope,
+                return_distance=True, all_matches=True,
+            )
+            np.minimum.at(seam_distance, point_idx, dist)
+        parts = [(shore, np.zeros(len(shore))), (seam, synthetic_depth(seam_distance, rule.depth_cap_m, rule))]
+        for index in sorted(int(i) for i in contour_tree.query(region, predicate="intersects")):
+            _, depth_mm, line = depths.contours[index]
+            xy = _line_points(shapely.intersection(line, region), grid.cell_m)
+            parts.append((xy, np.full(len(xy), depth_mm / 1000.0)))
+        for index in sorted(int(i) for i in sounding_tree.query(region, predicate="contains")):
+            _, depth_mm, point = depths.soundings[index]
+            parts.append((shapely.get_coordinates(point), np.array([depth_mm / 1000.0])))
+        xy = np.concatenate([p for p, _ in parts]) - origin
+        value = np.concatenate([v for _, v in parts])
+        on_shore = np.arange(len(xy)) < len(shore)
+        _, first = np.unique(xy, axis=0, return_index=True)
+        first.sort()
+        triangulation = Delaunay(xy[first])
+        value, on_shore = value[first], on_shore[first]
+
+        rows, cols = np.nonzero(mask)
+        samples = np.stack([(cols + window[1].start) * grid.cell_m,
+                            -(rows + window[0].start) * grid.cell_m], axis=1)
+        simplex = triangulation.find_simplex(samples)
+        if np.any(simplex < 0):
+            raise RuntimeError(f"charted water group {label}: {int(np.sum(simplex < 0))} samples outside the triangulation")
+        transform = triangulation.transform[simplex]
+        b = np.einsum("nij,nj->ni", transform[:, :2], samples - transform[:, 2])
+        weights = np.concatenate([b, 1.0 - b.sum(axis=1, keepdims=True)], axis=1)
+        vertices = triangulation.simplices[simplex]
+        at = (rows + window[0].start, cols + window[1].start)
+        depth[at] = np.maximum(np.einsum("ni,ni->n", weights, value[vertices]), 0.0)
+        shore_weight[at] = np.clip(np.einsum("ni,ni->n", weights, on_shore[vertices].astype(np.float64)), 0.0, 1.0)
+    return depth, shore_weight
+
+
 def apply_hydrography(
     dem: np.ndarray,
     grid: SampleGrid,
     bodies: list[WaterBody],
     shoals: list,
     rule: WaterRule,
+    depths: DepthChart | None = None,
 ) -> WaterResult:
-    """Carves the synthetic beds, raises the shores and returns one fill per water group."""
+    """Carves the beds (synthetic, or from `depths` in charted polygons), raises the shores and
+    returns one fill per water group."""
     if dem.shape != (grid.height, grid.width):
         raise ValueError(f"DEM shape {dem.shape} does not match the sample grid")
     world = grid.box()
@@ -377,15 +518,17 @@ def apply_hydrography(
     # share is not a shore, and a polygon cut by the world edge keeps its real shore beyond it.
     distance = np.full(dem.shape, np.inf)
     max_distance = rule.depth_cap_m / rule.slope
-    kept = [
-        body.geometry for body in bodies
+    kept_indices = [
+        k for k, body in enumerate(bodies)
         if body.key not in dropped and body.key not in not_joined_keys
     ]
-    if kept:
+    shore_segments = []
+    if kept_indices:
         reach = world.buffer(max_distance + 2.0 * grid.cell_m, join_style="mitre")
-        union = shapely.intersection(shapely.union_all(kept), reach)
+        union = shapely.intersection(shapely.union_all([bodies[k].geometry for k in kept_indices]), reach)
+        shore_segments = _shore_segments(shapely.boundary(union))
         rows, cols = np.nonzero(water)
-        distance[rows, cols] = _shore_distance(grid, shapely.boundary(union), rows, cols, max_distance)
+        distance[rows, cols] = _shore_distance(grid, shore_segments, rows, cols, max_distance)
 
     shoal_mask = np.zeros(dem.shape, dtype=bool)
     for shoal in shoals:
@@ -396,7 +539,34 @@ def apply_hydrography(
 
     heights = np.array(dem, dtype=np.float32, copy=True)
     level_m = level_mm / 1000.0
-    bed = synthetic_bed(level_m, np.where(water, distance, 0.0), cap, rule)
+    depth_m = synthetic_depth(np.where(water, distance, 0.0), cap, rule)
+    chart_report = None
+    shore_weight = None
+    if depths is not None:
+        charted, unowned_contours, unowned_soundings = _charted_polygons(bodies, kept_indices, depths)
+        point_depth, shore_weight = _charted_depths(
+            grid, bodies, body_of, groups, charted, kept_indices, shore_segments, depths, rule
+        )
+        # Where no contour is drawn the chart says the water is shallower than its shallowest
+        # contour level: a shore point stands for the shore ramp, the synthetic bed capped at that
+        # level, which is 0 at the shore itself and leaves every contour and sounding exact.
+        shallowest_m = min(depth_mm for _, depth_mm, _ in depths.contours) / 1000.0
+        ramp = np.minimum(depth_m, shallowest_m)
+        on_chart = water & ~np.isnan(point_depth)
+        charted_depth = point_depth + shore_weight * ramp
+        depth_m = np.where(on_chart, charted_depth, depth_m)
+        chart_report = {
+            "charted_keys": sorted(bodies[k].key for k in charted),
+            "charted_samples": int(np.count_nonzero(on_chart)),
+            "shallowest_contour_m": shallowest_m,
+            "shore_only_samples": int(np.count_nonzero(on_chart & (shore_weight > 1.0 - 1e-9))),
+            "contours": len(depths.contours),
+            "soundings": len(depths.soundings),
+            "contours_owned_by_no_kept_polygon": unowned_contours,
+            "soundings_in_no_kept_polygon": unowned_soundings,
+            "deepest_charted_m": float(np.max(charted_depth[on_chart])) if on_chart.any() else 0.0,
+        }
+    bed = bed_below(level_m, depth_m)
     heights[water] = bed[water]
 
     # Shores: land beside water stands above the highest level it touches, so no fill floods
@@ -452,8 +622,10 @@ def apply_hydrography(
             for k, b in enumerate(bodies)
         ],
     }
+    if chart_report is not None:
+        report["depth_chart"] = chart_report
     group_of = np.where(water, groups - 1, -1).astype(np.int32)
-    return WaterResult(heights, body_of, group_of, bodies, fills, report)
+    return WaterResult(heights, body_of, group_of, bodies, fills, report, shore_weight)
 
 
 def _group_fills(grid, bodies, body_of, groups, group_count, distance, level_mm) -> list[WaterFill]:

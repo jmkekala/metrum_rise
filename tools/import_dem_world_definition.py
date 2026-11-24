@@ -378,6 +378,40 @@ def load_hydrography(path: Path, epsg: int):
     return bodies, shoals
 
 
+def load_depths(path: Path, epsg: int):
+    """Depth contours (`syvyyskayra`, lines) and soundings (`syvyyspiste`, points) of the
+    topographic database's height theme, depth below the water `syvyysarvo` in mm, sorted by
+    `mtk_id`; vertex heights are not used."""
+    import shapely
+    from osgeo import ogr
+
+    from dem_water import DepthChart
+
+    ogr.UseExceptions()
+    source = ogr.Open(str(path))
+    if source is None:
+        raise RuntimeError(f"OGR failed to open {path}")
+
+    def features(layer_name):
+        layer = source.GetLayerByName(layer_name)
+        if layer is None:
+            raise ValueError(f"{path} has no layer {layer_name}")
+        srs = layer.GetSpatialRef()
+        code = srs.GetAuthorityCode(None) if srs is not None else None
+        if code is None or not same_crs(int(code), epsg):
+            raise ValueError(f"{path} layer {layer_name} is EPSG:{code}, the DEM EPSG:{epsg}")
+        rows = []
+        for feature in layer:
+            depth = feature.GetField("syvyysarvo")
+            if depth is None or depth <= 0:
+                raise ValueError(f"{layer_name} {feature.GetField('mtk_id')} has no positive syvyysarvo")
+            geometry = shapely.force_2d(shapely.from_wkb(bytes(feature.GetGeometryRef().ExportToIsoWkb())))
+            rows.append((int(feature.GetField("mtk_id")), int(depth), geometry))
+        return tuple(sorted(rows, key=lambda row: row[0]))
+
+    return DepthChart(contours=features("syvyyskayra"), soundings=features("syvyyspiste"))
+
+
 def pack_f32_slice(values: np.ndarray) -> bytes:
     return np.asarray(values, dtype="<f4").tobytes(order="C")
 
@@ -507,6 +541,11 @@ def parse_args() -> argparse.Namespace:
         "--hydrography",
         help="Hydrography GeoPackage with layers jarvi, virtavesialue and matalikko",
     )
+    parser.add_argument(
+        "--depths",
+        help="Height-theme GeoPackage with layers syvyyskayra and syvyyspiste: charted lakes take "
+        "their bed from the surveyed depths (needs --hydrography)",
+    )
     parser.add_argument("--lake-slope", type=float, default=0.15, help="Bed slope from the shore")
     parser.add_argument("--lake-depth-cap-m", type=float, default=12.0, help="Deepest synthetic bed")
     parser.add_argument("--shoal-depth-cap-m", type=float, default=1.0, help="Deepest bed in a shoal")
@@ -556,6 +595,8 @@ def main() -> int:
     validate_positive(args.zone_cell_m, "zone_cell_m")
     if not math.isfinite(args.terrain_base_elevation_m):
         raise SystemExit("terrain_base_elevation_m must be finite")
+    if args.depths and not args.hydrography:
+        raise SystemExit("--depths needs --hydrography")
 
     source_paths = discover_tifs(input_dir)
     min_e, min_n, max_e, max_n, source_sample_m, nodata = source_metadata(source_paths)
@@ -615,8 +656,10 @@ def main() -> int:
             width=elevation_m.shape[1],
             height=elevation_m.shape[0],
         )
-        bodies, shoals = load_hydrography(resolve_repo_path(args.hydrography), source_epsg(source_paths[0]))
-        water = apply_hydrography(elevation_m, grid, bodies, shoals, rule)
+        epsg = source_epsg(source_paths[0])
+        bodies, shoals = load_hydrography(resolve_repo_path(args.hydrography), epsg)
+        depths = load_depths(resolve_repo_path(args.depths), epsg) if args.depths else None
+        water = apply_hydrography(elevation_m, grid, bodies, shoals, rule, depths)
         for fill in water.fills:
             row = (fill.world_x, fill.world_z, fill.surface_elevation_m)
             (lake_fills if fill.kind == "lake" else open_water_fills).append(row)
@@ -628,12 +671,14 @@ def main() -> int:
             (report_dir / "water_report.json").write_text(
                 json.dumps(report, indent=1, sort_keys=True) + "\n"
             )
+            chart = {} if water.chart_shore_weight is None else {"chart_shore_weight": water.chart_shore_weight}
             np.savez_compressed(
                 report_dir / "water_labels.npz",
                 body_of_sample=water.body_of_sample,
                 group_of_sample=water.group_of_sample,
                 dem_m=elevation_m,
                 heights_m=water.heights,
+                **chart,
             )
         elevation_m = water.heights
         print(
@@ -645,6 +690,12 @@ def main() -> int:
             f"{len(lake_fills)} lake fills, {len(open_water_fills)} open-water fills, "
             f"{water.report['water_samples']} water samples"
         )
+        if "depth_chart" in water.report:
+            chart = water.report["depth_chart"]
+            print(
+                f"depths: {len(chart['charted_keys'])} charted polygons, "
+                f"{chart['charted_samples']} charted samples, deepest {chart['deepest_charted_m']:.2f} m"
+            )
 
     write_world_definition(
         output_path=output_path,
