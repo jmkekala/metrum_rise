@@ -86,13 +86,15 @@ pub(super) unsafe fn try_pending_lane_attach(
         };
         let half = lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i));
         let waited = slices.crossing_wait.get(i).max(0.0);
-        let hold = || {
+        // The tick a hold is taken no car following has seen it yet: a body that would run past
+        // its line in this tick is let through.
+        let hold = |lag: f32| {
             lane_buckets.get(lane_id).map(|bucket| {
-                join_hold(bucket, lane_d, half, i, |agent| *slices.speed.get(agent), delta)
+                join_hold(bucket, lane_d, half, i, |agent| *slices.speed.get(agent), lag)
             })
         };
         let clear = if waited >= CROSSING_GIVE_UP_S {
-            hold().is_some_and(|(_, ready)| ready)
+            hold(0.0).is_some_and(|(_, ready)| ready)
         } else {
             lane_buckets
                 .get(lane_id)
@@ -101,8 +103,9 @@ pub(super) unsafe fn try_pending_lane_attach(
         if !clear || !claim_lane_entry(i, lane_id, lane_claims) {
             *slices.speed.get_mut(i) = 0.0;
             *slices.crossing_wait.get_mut(i) = waited + delta;
+            let lag = if waited >= CROSSING_GIVE_UP_S { 0.0 } else { delta };
             if waited + delta >= CROSSING_GIVE_UP_S
-                && let Some((stop, _)) = hold()
+                && let Some((stop, _)) = hold(lag)
             {
                 *slices.lane_d.get_mut(i) = stop;
             }

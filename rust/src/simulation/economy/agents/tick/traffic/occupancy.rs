@@ -149,8 +149,8 @@ pub(in crate::simulation::economy::agents) struct OffLaneRow {
 /// place in to join (`TRAFFIC-45`): a car or truck that has waited [`CROSSING_GIVE_UP_S`] to join
 /// its attach lane, at an access mouth or lane point (`ACCESS_EGRESS`) or held at its lane point
 /// off the lane (`ACCESS_LANE_ATTACH_PENDING`), holds a zero-length entry there, its stop line
-/// ([`join_hold`]): at its `lane_distance` while it crosses nothing, at the line itself while it
-/// crosses to the lane. The one membership test of both, for the fill, its patches and its
+/// ([`join_hold`]): at its `lane_distance` while it crosses nothing (none while that is below
+/// zero), at the line itself while it crosses to the lane. The one membership test of both, for the fill, its patches and its
 /// rebuild check. O(1).
 #[inline(always)]
 pub(in crate::simulation::economy::agents) fn off_lane_bucket_entries(
@@ -167,14 +167,14 @@ pub(in crate::simulation::economy::agents) fn off_lane_bucket_entries(
             || (row.transit == TRANSIT_NETWORK
                 && row.lane == usize::MAX
                 && row.flags & ACCESS_LANE_ATTACH_PENDING != 0));
-    let hold = joining.then(|| {
-        let stop = if crossing.is_some() {
-            join_line(row.attach_d, half)
-        } else {
-            row.distance
-        };
-        (row.attach_lane as usize, stop, 0.0)
-    });
+    // A vehicle at its mouth holds its far lane only while the lane it crosses is clear: its
+    // `lane_distance` is below zero meanwhile.
+    let stop = if crossing.is_some() {
+        join_line(row.attach_d, half)
+    } else {
+        row.distance
+    };
+    let hold = (joining && stop >= 0.0).then_some((row.attach_lane as usize, stop, 0.0));
     [crossing, hold]
 }
 
@@ -187,21 +187,21 @@ fn join_line(attach_d: f32, half: f32) -> f32 {
 
 /// A join hold (`TRAFFIC-45`) of agent `me`, a body of half length `half`, at `attach_d` in
 /// `bucket`: its stop line, and whether it may enter now. Its line is its rear in its slot less
-/// [`IDM_S_MIN`]; the nearest body behind the line that does not reach it in this tick (its
-/// front and one tick at its speed `speed(agent)`, the tick before its car following sees the
-/// line) stops there, and one that cannot is let through: the line then stands at that body's rear,
-/// moving up with it; a body standing across the line keeps it at that body's rear. It enters
-/// once the line holds (nobody let through), so every body behind stops short of its slot, and
-/// no body lies within its slot. Its own entry and other holds' zero-length stop lines are not
-/// bodies: they neither stop nor block it. Two holds at one point both see a free slot; the
-/// tick's lane claim lets one in. O(log bucket), allocation-free.
+/// [`IDM_S_MIN`], never past the rear of the body just ahead. The nearest body behind it stops
+/// there, its car following stopping it as behind a body standing ahead, unless its front is
+/// already past the line, or would be after `lag` seconds at its speed `speed(agent)` (the tick
+/// a hold is taken, before any car following has seen it): that one is let through, and the
+/// line stands at its rear, moving up with it. It may enter once the line holds (nobody let
+/// through) and no body lies within its slot. Its own entry and other holds' zero-length stop
+/// lines are not bodies: they neither stop nor block it; two holds at one point both see a free
+/// slot, and the tick's lane claim lets one in. O(log bucket), allocation-free.
 pub(in crate::simulation::economy::agents::tick) fn join_hold(
     bucket: &[LaneEntry],
     attach_d: f32,
     half: f32,
     me: usize,
     speed: impl Fn(usize) -> f32,
-    delta: f32,
+    lag: f32,
 ) -> (f32, bool) {
     let line = join_line(attach_d, half);
     let body = |entry: &&LaneEntry| entry.1 != me && entry.2 > 0.0;
@@ -214,7 +214,7 @@ pub(in crate::simulation::economy::agents::tick) fn join_hold(
         .map_or(line, |&(d, _, h)| line.min(d - h));
     let let_through = bucket[..behind].iter().rev().find(body).filter(|&&(d, agent, h)| {
         let v = speed(agent).max(0.0);
-        d + h + v * delta > stop
+        d + h + v * lag > stop
     });
     if let Some(&(d, _, h)) = let_through {
         return ((d - h).max(0.0), false);
