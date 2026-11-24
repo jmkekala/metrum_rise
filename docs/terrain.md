@@ -20865,8 +20865,8 @@ Current deterministic rules:
   before deeper renderer architecture work
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
-- dense terrain or water materialization may still exist at save/load, undo, or other explicit
-  compatibility boundaries, but it is no longer the gameplay or WorldEditor terrain / water render
+- dense terrain or water materialization may still exist at save/load or other explicit
+  compatibility boundaries (undo records share sparse chunks since round A5), but it is no longer the gameplay or WorldEditor terrain / water render
   path
 
 This is a rendering boundary, not an excuse for simulation systems to depend on dense storage.
@@ -21774,8 +21774,11 @@ Current repository state:
   Godot input path never rebuilds the roadbed, the road meshes or the graded tiles synchronously
 - building deletion retains an operation-local inverse journal for touched buildings, sites,
   agents, households, and freight records rather than cloning complete runtime systems
-- terrain-authoring and water-authoring undo still capture dense source terrain or baseline-depth
-  snapshots for compatibility with the pre-sparse mutation path
+- terrain-authoring and water-authoring undo records hold shared clones of the sparse source
+  terrain and baseline-depth grids, not dense copies (grid-alignment round A5, 2026-11-24): a
+  terrain record costs `O(chunks)` pointers to take and `O(edited chunks)` memory as later brush
+  writes copy the chunks they touch (`Arc::make_mut`), a water record one `Arc`; the restore and
+  its whole-world resets (lanes, roadbed, payload generations, height reset) are unchanged
 
 Required direction:
 
