@@ -89,12 +89,12 @@ pub(crate) fn rectangle(centre: [f32; 2], half: [f32; 2], degrees: f32) -> Vec<V
         .collect()
 }
 
-// A 53 x 53 heightmap of 10 m cells on the sloped road plane.
+// A 65 x 65 heightmap of 8 m cells (a legal 512 m world) on the sloped road plane.
 fn sloped_terrain() -> TerrainSystem {
-    let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-    for z in 0..53 {
-        for x in 0..53 {
-            let wx = x as f32 * 10.0 - 260.0;
+    let mut terrain = TerrainSystem::with_chunking(65, 65, 8.0, 65, 0.0);
+    for z in 0..65 {
+        for x in 0..65 {
+            let wx = x as f32 * 8.0 - 256.0;
             terrain.set_height(x, z, SLOPE * wx);
         }
     }
@@ -599,9 +599,9 @@ fn walls_close_the_step_at_the_lower_road() {
     road(&mut graph, 2.0 * half + 10.0, 9.0);
     graph.rebuild_intersection_clips();
     let roadbed = compiled(&graph);
-    let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-    for z in 0..53 {
-        for x in 0..53 {
+    let mut terrain = TerrainSystem::with_chunking(65, 65, 8.0, 65, 0.0);
+    for z in 0..65 {
+        for x in 0..65 {
             terrain.set_height(x, z, 3.0);
         }
     }
@@ -658,10 +658,10 @@ pub(crate) fn structure_mouth(
     structure.class = class;
     graph.add_edge(structure);
     graph.rebuild_intersection_clips();
-    let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-    for z in 0..53 {
-        for x in 0..53 {
-            let wx = x as f32 * 10.0 - 260.0;
+    let mut terrain = TerrainSystem::with_chunking(65, 65, 8.0, 65, 0.0);
+    for z in 0..65 {
+        for x in 0..65 {
+            let wx = x as f32 * 8.0 - 256.0;
             terrain.set_height(x, z, slope * (wx + 20.0).max(0.0));
         }
     }

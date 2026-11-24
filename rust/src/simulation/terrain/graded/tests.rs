@@ -59,12 +59,13 @@ fn conflict() -> RegionGraph {
     graph
 }
 
-// A 53 x 53 heightmap of 10 m cells centred on the origin, heights from `height(x, z)`.
+// A 65 x 65 heightmap of 8 m cells centred on the origin (a legal 512 m world, so the `GL3`
+// lattice is in phase with the tiles), heights from `height(x, z)`.
 pub(super) fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSystem {
-    let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-    for z in 0..53 {
-        for x in 0..53 {
-            let (wx, wz) = (x as f32 * 10.0 - 260.0, z as f32 * 10.0 - 260.0);
+    let mut terrain = TerrainSystem::with_chunking(65, 65, 8.0, 65, 0.0);
+    for z in 0..65 {
+        for x in 0..65 {
+            let (wx, wz) = (x as f32 * 8.0 - 256.0, z as f32 * 8.0 - 256.0);
             terrain.set_height(x, z, height(wx, wz));
         }
     }
@@ -1383,7 +1384,7 @@ fn benchmark_graded_point_queries() {
 #[test]
 #[ignore = "controlled release timing: cargo test --release --lib benchmark_graded_tiles_locality -- --ignored --nocapture"]
 fn benchmark_graded_tiles_locality() {
-    let terrain = TerrainSystem::with_chunking(2_001, 2_001, 10.0, 64, 0.0);
+    let terrain = TerrainSystem::with_chunking(2_001, 2_001, 8.0, 64, 0.0);
     // The first size's dirty tiles and their texel bits.
     type Local = (Vec<TileKey>, Vec<Vec<[u32; 4]>>);
     let mut reference: Option<Local> = None;

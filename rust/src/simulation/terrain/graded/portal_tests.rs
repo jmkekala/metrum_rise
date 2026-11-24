@@ -265,7 +265,7 @@ fn trough_texels_name_their_seam() {
 }
 
 // test (`ROAD-61` round R8e): the trough's walls along the approach of `structure_mouth`'s tunnel
-// with a 2 m bump on the base 70 m before the row. Every face on a retained seam stands from the
+// with a 2 m bump on the base 72 m before the row. Every face on a retained seam stands from the
 // skirt's depth below the seam (round R8g) up to the ground, its top within 1 mm of the higher of
 // the base and the road at both ends (the ground is natural on both sides of a retained seam, so
 // no sawtooth), and faces stand exactly where the road runs below the ground: from where the
@@ -274,9 +274,9 @@ fn trough_texels_name_their_seam() {
 #[test]
 fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
     let (graph, mut terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
-    // Base lattice x index 19 is x = -70 (10 m cells from x = -260).
-    for z in 0..53 {
-        terrain.set_height(19, z, 2.0);
+    // Base lattice x index 23 is x = -72 (8 m cells from x = -256).
+    for z in 0..65 {
+        terrain.set_height(23, z, 2.0);
     }
     let roadbed = compiled(&graph);
     let retained = retained_seams(&roadbed);
@@ -322,10 +322,12 @@ fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
             }
         }
     }
-    // The walls end where the ground meets the road: the hill's foot at x = -20 rises at 1:2,
-    // so it reaches the road's edge 2 h beyond.
+    // The walls end where the ground meets the road. The hill's foot at x = -20 lies between the
+    // 8 m base samples at -24 (height 0) and -16 (2 m, then 1:2 on), so the bilinear base rises
+    // at 1:4 from x = -24 and reaches a road edge below 2 m at 4 h beyond.
     let edge = retained.iter().map(|seam| seam.a[1]).fold(f64::NEG_INFINITY, f64::max);
-    let meets = -20.0 + edge / 0.5;
+    assert!(edge < 2.0, "the road's edge {edge} m lies below the -16 m sample");
+    let meets = -24.0 + edge / 0.25;
     assert!(
         (hill_from - meets).abs() <= 0.5,
         "the walls start at {hill_from}, the ground meets the road at {meets}"

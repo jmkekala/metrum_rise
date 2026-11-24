@@ -511,43 +511,24 @@ enum Bake {
     Baked,
 }
 
-// The lattice coordinates of one axis of a tile at `level`, apron included: one spacing
-// beyond each side at `GL0`-`GL2`; at `GL3` the sides, the base step lines between them, and
-// the step line beyond each side. Every value is exact, so neighbours share border points and
-// levels share their common points bitwise.
+// The lattice coordinates of one axis of a tile at `level`, apron included: the tile's sides,
+// the lines between them and one spacing beyond each side. `GL3`'s lines are the base lattice's
+// at its step: the world rules (cell 2, 4 or 8 m, sides in 128 m steps) make every step (4 to
+// 64 m) divide the 64 m tile and put a base lattice line on every tile side, so they fall at the
+// tile's own multiples like `GL0`-`GL2`'s (grid alignment A3: the out-of-phase `GL3` lattice
+// went). Every value is an exact integer or half, so neighbours share border points and levels
+// share their common points bitwise.
 fn lattice_axis(origin_m: f64, level: Level, grid: &BaseGrid, axis: usize, out: &mut Vec<f64>) {
     out.clear();
-    match level {
-        Level::Gl3 { step } => {
-            let step_m = f64::from(step) * grid.cell_m;
-            let line = |m: i64| -grid.half[axis] + m as f64 * step_m;
-            let end = origin_m + TILE_M;
-            let mut m = ((origin_m + grid.half[axis]) / step_m).floor() as i64;
-            while line(m) >= origin_m {
-                m -= 1;
-            }
-            out.push(line(m));
-            out.push(origin_m);
-            m += 1;
-            while line(m) <= origin_m {
-                m += 1;
-            }
-            while line(m) < end {
-                out.push(line(m));
-                m += 1;
-            }
-            out.push(end);
-            while line(m) <= end {
-                m += 1;
-            }
-            out.push(line(m));
-        }
-        _ => {
-            let spacing = level.spacing_m(grid.cell_m);
-            let steps = (TILE_M / spacing) as i64;
-            out.extend((-1..=steps + 1).map(|i| origin_m + i as f64 * spacing));
-        }
-    }
+    let spacing = level.spacing_m(grid.cell_m);
+    debug_assert!(
+        !matches!(level, Level::Gl3 { .. })
+            || (TILE_M % spacing == 0.0 && (origin_m + grid.half[axis]) % spacing == 0.0),
+        "the {level:?} lattice of a {} m cell is out of phase with the tile at {origin_m}",
+        grid.cell_m
+    );
+    let steps = (TILE_M / spacing) as i64;
+    out.extend((-1..=steps + 1).map(|i| origin_m + i as f64 * spacing));
 }
 
 /// Both lattice axes of a tile at `level` over the terrain's base lattice.

@@ -726,39 +726,38 @@ fn patch_tile_lists_hold_every_tile_that_renders_graded() {
     let mut listed = Vec::new();
     for (name, graph, terrain) in fixtures() {
         let roadbed = compiled(&graph);
-        // Two patch-like rectangles, one on tile borders and one off them.
-        for rect in [[-128.0, -128.0, 128.0, 128.0], [-110.0, -97.0, 93.0, 121.0]] {
-            graded_tiles_in_rect(
-                &terrain,
-                &roadbed,
-                &NoSites,
-                rect,
-                &mut scratch,
-                &mut listed,
-            )
-            .expect("list");
-            assert!(listed.is_sorted(), "{name}: sorted");
-            for level in LEVELS {
-                let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
-                for payload in &payloads {
-                    let (mut xs, mut zs) = (Vec::new(), Vec::new());
-                    lattice(&terrain, payload.tile, level, &mut xs, &mut zs);
-                    let renders = zs.iter().enumerate().any(|(j, &z)| {
-                        xs.iter().enumerate().any(|(i, &x)| {
-                            x >= rect[0].max(payload.tile.origin()[0])
-                                && x <= rect[2].min(payload.tile.origin()[0] + TILE_M)
-                                && z >= rect[1].max(payload.tile.origin()[1])
-                                && z <= rect[3].min(payload.tile.origin()[1] + TILE_M)
-                                && texel_renders(payload.texels[j * xs.len() + i])
-                        })
-                    });
-                    if renders {
-                        assert!(
-                            listed.contains(&payload.tile),
-                            "{name} {level:?}: {:?} renders graded but is not listed",
-                            payload.tile
-                        );
-                    }
+        // A patch-like rectangle on tile lines, as every patch side is on a legal world.
+        let rect = [-128.0, -128.0, 128.0, 128.0];
+        graded_tiles_in_rect(
+            &terrain,
+            &roadbed,
+            &NoSites,
+            rect,
+            &mut scratch,
+            &mut listed,
+        )
+        .expect("list");
+        assert!(listed.is_sorted(), "{name}: sorted");
+        for level in LEVELS {
+            let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
+            for payload in &payloads {
+                let (mut xs, mut zs) = (Vec::new(), Vec::new());
+                lattice(&terrain, payload.tile, level, &mut xs, &mut zs);
+                let renders = zs.iter().enumerate().any(|(j, &z)| {
+                    xs.iter().enumerate().any(|(i, &x)| {
+                        x >= rect[0].max(payload.tile.origin()[0])
+                            && x <= rect[2].min(payload.tile.origin()[0] + TILE_M)
+                            && z >= rect[1].max(payload.tile.origin()[1])
+                            && z <= rect[3].min(payload.tile.origin()[1] + TILE_M)
+                            && texel_renders(payload.texels[j * xs.len() + i])
+                    })
+                });
+                if renders {
+                    assert!(
+                        listed.contains(&payload.tile),
+                        "{name} {level:?}: {:?} renders graded but is not listed",
+                        payload.tile
+                    );
                 }
             }
         }

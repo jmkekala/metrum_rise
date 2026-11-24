@@ -30,8 +30,8 @@ pub struct PatchTilesScratch {
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
-    // Per candidate tile, rows along +z: its rectangle clipped to the query, its base range and
-    // whether it renders graded.
+    // Per candidate tile, rows along +z: its rectangle, its base range and whether it renders
+    // graded.
     tiles: Vec<Candidate>,
 }
 
@@ -43,15 +43,19 @@ struct Candidate {
     graded: bool,
 }
 
-/// Sets `out` to the tiles whose interior meets `rect` (a render patch, world XZ
-/// `[min_x, min_z, max_x, max_z]`) and whose rendering inside `rect` can differ from the base
-/// heightmap at some level, sorted by [`TileKey`].
+/// Sets `out` to the tiles inside `rect` (a render patch, world XZ
+/// `[min_x, min_z, max_x, max_z]`, its sides on 64 m tile lines) whose rendering can differ
+/// from the base heightmap at some level, sorted by [`TileKey`].
+///
+/// The world rules (cell 2, 4 or 8 m, sides in 128 m steps, 512 m patches from the world edge)
+/// put every patch side on a tile line, so each tile lies wholly inside one patch and is tested
+/// whole (grid alignment A3: the clip of a tile to the patch went).
 ///
 /// The test is exact in the safe direction, over the inputs a bake reads (the base, the
 /// roadbed's grounded seams and top triangles, the sites within the cap) and with no reach
 /// parameter: `g = max(L, min(b, U))` differs from the base only where some seam's cone
 /// excludes it, so a tile is listed when a road or pad seam within the cap comes within
-/// `max(h_hi - b_lo, b_hi - h_lo) / k` of the tile's part in `rect` (any seam meeting it
+/// `max(h_hi - b_lo, b_hi - h_lo) / k` of the tile (any seam meeting it
 /// does), when a grounded top triangle meets it (coverage and the mask's discard), or when a
 /// site footprint or surface meets it (pad and material classes). A tile left out has
 /// `delta = 0`, no covered sample, no class and no seam inside, so its cells render the base.
@@ -68,6 +72,10 @@ pub fn graded_tiles_in_rect(
     if !sites.ready() {
         return Err(BakeError::SitesUnavailable);
     }
+    debug_assert!(
+        rect.iter().all(|side| side.rem_euclid(TILE_M) == 0.0),
+        "a patch side off the 64 m tile lines: {rect:?}"
+    );
     let first = TileKey::at(rect[0], rect[1]);
     let last = [
         (rect[2] / TILE_M).ceil() as i32 - 1,
@@ -87,16 +95,11 @@ pub fn graded_tiles_in_rect(
         for x in first.x..=last[0] {
             let key = TileKey { x, z };
             let [ox, oz] = key.origin();
-            let clipped = [
-                ox.max(rect[0]),
-                oz.max(rect[1]),
-                (ox + TILE_M).min(rect[2]),
-                (oz + TILE_M).min(rect[3]),
-            ];
+            let tile = [ox, oz, ox + TILE_M, oz + TILE_M];
             scratch.tiles.push(Candidate {
                 key,
-                rect: clipped,
-                base: scratch.base.range(clipped),
+                rect: tile,
+                base: scratch.base.range(tile),
                 graded: false,
             });
         }
@@ -177,9 +180,9 @@ fn box_distance(a: [f64; 4], b: [f64; 4]) -> f64 {
 }
 
 /// Lattice points per side of a level's slot layer, apron included: 131, 67 and 35 at
-/// `GL0`-`GL2`; at `GL3` the most any tile's lattice holds over a base of `cell_m` cells: the
-/// two sides, the step lines strictly between them (at most `ceil(64 m / spacing)`) and one
-/// apron line beyond each side.
+/// `GL0`-`GL2`; at `GL3` `64 m / spacing + 4`, one line more than its in-phase lattice holds
+/// (the bound of the out-of-phase lattice grid alignment round A3 removed; kept, as it sizes the
+/// pages' slot layers).
 pub fn slot_side(level: Level, cell_m: f64) -> usize {
     match level {
         Level::Gl3 { .. } => (TILE_M / level.spacing_m(cell_m)).ceil() as usize + 4,
