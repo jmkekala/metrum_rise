@@ -1780,8 +1780,14 @@ snapshots. The full contract is required before merging an economy change.
    searches, supplier route quotes, household job-search keys, and CCH searches (point searches
    plus bucket sources, which replace them). Job-search keys are compared per search batch, a
    job-queue slot whose searches ran against an open job (the calls of the `workplace_queries`
-   phase), since `PERF-32` ([below](#job-search-keys-per-search-batch-perf-32)). Pass, census
-   and rebuild event counts are reported but not bounded.
+   phase), since `PERF-32` ([below](#job-search-keys-per-search-batch-perf-32)). Since
+   `PERF-34` ([below](#work-per-driving-event-perf-34)) the other event counts are read per
+   driving event too: proposed site rows per buyer-site rebuild at the same household margin;
+   staffing trials, supplier searches and supplier route quotes over the limit fail only when
+   their work per staffing operation, staffing trial or supplier search also grew more than
+   1.2×. A per-event count whose 10k city had no driving event is not compared in that
+   workload (the report's `not_compared`), and the run fails if neither workload compares it.
+   Pass, census and rebuild event counts are reported but not bounded.
 4. **Locality checks:** a profitability-failing supply cycle resolves in at most **3** funding
    censuses at lengths 4/16/64 (`benchmark_combined_financing_cascades`), and a warm queued
    check after a frontage-price change costs at most **1.2×** as much at 131,072 background
@@ -2156,7 +2162,8 @@ ratio. The number of batches is bounded by the day's slots whatever the city's s
 by it removes only the hours an open job happened to exist. Keys per batch that grow faster than
 the households (more searches per slot, or fewer of them sharing a home, in the larger city)
 still fail at the old margin. A
-city with keys and no batch reads as new work, as any count that is zero in the 10k city does.
+30k city with keys and no batch reads as new work; a 10k city with no batch is not compared in
+that workload since `PERF-34` ([below](#work-per-driving-event-perf-34)).
 On the rows above the new rule reads 2.68× (v11), 2.68× (v12 control) and 2.67× (`dev`) against
 3.28×, 3.28× and 3.28×: all pass; the old rule read pass, fail and pass. The runner reads the
 batches from the `workplace_queries` phase calls the report already holds, so control binaries
@@ -2174,7 +2181,72 @@ cities clear all five on the 2026-11-23 control and on `dev`, but the branch of 
 2026-11-23 session failed `supplier_searches` 4.91× and `supplier_routes` 4.17× again: moved
 below the limit by the cities' history, not resolved. They keep their absolute rule; a
 per-unit form for them needs its own count of what drives each (proposal passes, hiring
-operations, restock requests) and is not part of `PERF-32`.
+operations, restock requests) and is not part of `PERF-32`. `PERF-34` gives them one.
+
+#### Work per driving event (`PERF-34`)
+
+After the `PERF-32` rule, `dev` (`b93b3f2df`) still failed two baseline checks, both a zero
+in the 10k city: `buyer_sites_built` 0 → 4 and job-search keys per search batch 0.00 → 1.00.
+That day the 10k city had no buyer-site rebuild and no search batch; the 30k city had two
+rebuilds and 26 batches, each batch one searcher. The other event counts passed or failed by
+the city's history: the 2026-11-23 branch failed `supplier_searches` and `supplier_routes`,
+the 2026-11-22 control `staffing_trials` too. The same counts per driving event:
+
+| Count | Driver (report field) | Driver's day count is set by | Rule |
+| --- | --- | --- | --- |
+| `job_search_keys` | search batch (`workplace_queries` calls) | the day's job-queue slots | per event ≤ 1.2× household ratio (`PERF-32`) |
+| `buyer_sites_built` | buyer-site rebuild (`buyer_site_rebuilds`) | planning passes and epochs | per event ≤ 1.2× household ratio |
+| `staffing_trials` | staffing operation (`staffing_operations`) | the city: one per census business with a crew | total ≤ 1.2× household ratio, or per event ≤ 1.2× |
+| `supplier_searches` | staffing trial (`staffing_trials`) | the city | same |
+| `supplier_routes` | supplier search (`supplier_searches`) | the city | same |
+
+A rebuild happens at most once per planning pass or construction epoch, whatever the city's
+size, so rows per rebuild may grow with the households, as keys per batch do. A staffing
+operation, a trial and a supplier search each grow with the city; the work each does is bounded
+by the building (a trial per crew size tried, a supplier search a bounded nearest scan), so a
+total over the limit is new scaling only when the work per event grew too. A search that turned
+into a scan of the whole city fails both: its total grows with the square of the city, its work
+per search with the city. More events at the same cost each, the city's history, pass.
+
+Work per driving event, 10k → 30k, baseline (B) and fiscal stress (F), from the contract
+reports of the level L sessions (identical counts in the reruns of each binary):
+
+| Run | B trials/op | B searches/trial | B routes/search | B rows/rebuild | F keys/batch | F rows/rebuild | F trials/op | Old rule | New rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-22 control (v11) | 1.06 → 1.29 | 0.32 → 0.37 | 16.8 → 17.8 | 3.33 → 3.43 | 8.12 → 21.80 | 31.8 → 95.2 | 7.01 → 8.01 | 5 fail | `staffing_trials` fails |
+| 2026-11-22 branch (v12) | 1.01 → 1.01 | 0.50 → 0.38 | 16.7 → 18.0 | no rebuild | 8.15 → 21.82 | 31.7 → 89.5 | 7.08 → 8.27 | 1 fail | pass |
+| 2026-11-23 control | 1.03 → 1.00 | 0.36 → 0.33 | 27.9 → 18.0 | no rebuild | 8.14 → 21.84 | 31.7 → 89.2 | 7.30 → 8.30 | 1 fail | pass |
+| 2026-11-23 branch | 1.01 → 1.00 | 0.31 → 0.50 | 14.7 → 12.5 | 3.33 → 0 | 8.13 → 21.78 | 31.7 → 89.2 | 7.08 → 8.34 | 3 fail | `supplier_searches` fails |
+| 2026-11-24 control | 1.00 → 1.00 | 0.34 → 0.33 | 11.6 → 12.5 | no rebuild | 8.14 → 21.77 | 31.7 → 89.2 | 7.04 → 8.22 | pass | pass |
+| 2026-11-24 branch | 1.01 → 1.01 | 0.54 → 0.47 | 24.7 → 15.5 | no rebuild | 8.13 → 21.81 | 31.7 → 89.2 | 6.93 → 8.07 | 2 fail | pass |
+
+No scaling fault on `dev`: rows per rebuild grow 2.82× for 2.73× the households (under 3.28×),
+trials per operation 1.00× in the baseline and 1.16-1.17× in fiscal stress (where the total
+is within its limit anyway), supplier searches per trial and routes per search flat or falling.
+Two readings stay failures under the new rule, and they now mean something: the 2026-11-22
+control's 30k city ran 1.22× the trials per staffing operation (more businesses stepping down
+their crews; v11 cities, no longer built), and the 2026-11-23 branch's 30k city ran 1.61× the
+supplier searches per trial (a buyer searches again when its cached offers run out of supply;
+that branch was superseded and neither the control nor `dev` repeats it). Each is work per
+event growing in the larger city, the thing to investigate if it recurs on a landing, not a
+ratio of a handful of events.
+
+**No event at 10k.** A count whose driver is zero in the 10k city has no work per event to
+grow from. It is not compared in that workload; the report lists it under `not_compared` and
+the runner prints it. The run fails if neither workload's 10k city compares it, so a count
+cannot drop out of the contract unseen. On `dev` the baseline 10k city has no buyer-site
+rebuild and no search batch and the fiscal cities no supplier search; the fiscal cities compare
+the first two (24 rebuilds and 1,889 batches at 10k), the baseline the third. A 30k city with work
+and no driving event still reads as new work.
+
+The staffing operations themselves are not bounded: how many businesses the census evaluates
+is the economy's outcome, and the census's own visits are bounded as census building rows.
+`reservation_rows_copied` is zero in both cities of both workloads in every run since the
+fixture change, so its absolute rule (any copy at 30k without one at 10k fails) is unexercised.
+Runner change only; the table re-reads each session's saved report with the new rule. A fresh
+contract run of `dev` `b93b3f2df` with the new runner (release test binary, shared snapshot
+cache, eight workers, 50.5 s) reproduces the 2026-11-24 branch row count for count: the old rule
+fails the two zero-at-10k checks, the new rule passes and lists the three uncompared counts.
 
 #### Parking contract acceptance (`PARK-02`)
 
