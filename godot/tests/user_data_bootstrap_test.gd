@@ -27,6 +27,8 @@ func _write(path: String, text: String) -> void:
 
 # Empties the scratch folder (two levels: ROOT/<dir>/<file>).
 func _clear() -> void:
+	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(ROOT)):
+		return
 	for dir_name in DirAccess.get_directories_at(ROOT):
 		var dir := ROOT.path_join(dir_name)
 		for file_name in DirAccess.get_files_at(dir):
