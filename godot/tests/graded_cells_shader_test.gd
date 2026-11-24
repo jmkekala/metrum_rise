@@ -51,7 +51,7 @@ func _material(shader_path: String, pools: Array[Texture2DArray]) -> ShaderMater
 	material.set_shader_parameter("heightmap", _texture(Color.BLACK))
 	material.set_shader_parameter("watermap", _texture(Color.BLACK))
 	material.set_shader_parameter("heightmap_texture_size", Vector2(2, 2))
-	material.set_shader_parameter("terrain_cell_m", 10.0)
+	material.set_shader_parameter("terrain_cell_m", 8.0)
 	material.set_shader_parameter("world_size", Vector2(64.0, 64.0))
 	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
 	material.set_shader_parameter("ground_shadow_ambient", 1.0)
@@ -119,7 +119,7 @@ func _run() -> void:
 		quit(2)
 		return
 	var tiles := GradedTiles.new()
-	tiles.terrain_cell_m = 10.0
+	tiles.terrain_cell_m = 8.0
 	tiles._build_meshes()
 	var pools := _slot_pools()
 	# GL0, slot 0, every side its own code.

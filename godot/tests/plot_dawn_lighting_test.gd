@@ -39,7 +39,7 @@ func run() -> void:
 	Materials.apply_terrain_paving_parameters(terrain)
 	# Frontage paving is drawn by graded cells (the base test's graded_paving).
 	var tiles := GradedTiles.new()
-	tiles.terrain_cell_m = 10.0
+	tiles.terrain_cell_m = 8.0
 	tiles._build_meshes()
 	cell_meshes = tiles._meshes
 	var frontages := {"asphalt": graded_paving(1), "concrete": graded_paving(2)}

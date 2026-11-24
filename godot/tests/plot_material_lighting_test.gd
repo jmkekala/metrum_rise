@@ -111,7 +111,7 @@ func graded_paving(class_id: int) -> MultiMeshInstance3D:
 			material.set_shader_parameter(name, terrain.get_shader_parameter(name))
 	material.set_shader_parameter("graded_texels", texel_array)
 	material.set_shader_parameter("graded_atlas", row_array)
-	material.set_shader_parameter("terrain_cell_m", 10.0)
+	material.set_shader_parameter("terrain_cell_m", 8.0)
 	material.set_shader_parameter("world_size", Vector2(64.0, 64.0))
 	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
 	var multimesh := MultiMesh.new()
@@ -173,7 +173,7 @@ func run() -> void:
 	terrain = Materials.flat_terrain_material().duplicate()
 	Materials.apply_terrain_paving_parameters(terrain)
 	var tiles := GradedTiles.new()
-	tiles.terrain_cell_m = 10.0
+	tiles.terrain_cell_m = 8.0
 	tiles._build_meshes()
 	cell_meshes = tiles._meshes
 	check_cell_winding(tiles)

@@ -308,49 +308,133 @@ fn texel_renders(texel: [f32; 4]) -> bool {
 fn cell_lattices_are_the_bake_lattices() {
     let mut cases = 0;
     for (name, _, terrain) in fixtures() {
-        let cell = cell_hm(&terrain);
-        let (mut xs, mut zs) = (Vec::new(), Vec::new());
-        for level in LEVELS
-            .into_iter()
-            .chain([2, 4, 8].map(|step| Level::Gl3 { step }))
-        {
-            let code = level_code(level);
-            for tile in window_tiles() {
-                lattice(&terrain, tile, level, &mut xs, &mut zs);
-                let frame = frame(code, cell);
-                let [ox, oz] = tile.origin();
-                assert!(
-                    xs.len() <= slot_side(level, f64::from(cell) * 0.5),
-                    "{name}: slot side"
-                );
-                for (axis, coords, origin) in [(0, &xs, ox), (1, &zs, oz)] {
-                    for (idx, &world) in coords.iter().enumerate() {
-                        let hm = (world - origin) * 2.0;
-                        assert_eq!(
-                            f64::from(index_hm(idx as i32, frame.spacing)),
-                            hm,
-                            "{name} {level:?} {tile:?} axis {axis} index {idx}"
-                        );
-                        if (0.0..=128.0).contains(&hm) {
-                            assert_eq!(
-                                index_at(hm as i32, frame.spacing),
-                                idx as i32,
-                                "{name} {level:?} {tile:?} axis {axis} at {hm}"
-                            );
-                        }
-                    }
-                    // Every mesh vertex lies on a lattice point.
-                    for k in 0..mesh_vertices(code, cell) {
-                        let p = vertex_hm(code, k, frame.spacing);
-                        let idx = index_at(p, frame.spacing);
-                        assert_eq!(index_hm(idx, frame.spacing), p);
-                    }
-                }
-                cases += 1;
-            }
-        }
+        cases += assert_cell_lattices(name, &terrain, &window_tiles());
     }
     assert!(cases > 0);
+}
+
+// Every level and far step: the bake's lattice of each tile is the shader's (lattice point `idx`
+// lies at the port's `index_hm(idx)` and a point in the tile maps back to its index), it fits the
+// slot, and every mesh vertex lies on a lattice point. Returns the cases checked.
+fn assert_cell_lattices(name: &str, terrain: &TerrainSystem, tiles: &[TileKey]) -> usize {
+    let mut cases = 0;
+    let cell = cell_hm(terrain);
+    let (mut xs, mut zs) = (Vec::new(), Vec::new());
+    for level in LEVELS
+        .into_iter()
+        .chain([2, 4, 8].map(|step| Level::Gl3 { step }))
+    {
+        let code = level_code(level);
+        for &tile in tiles {
+            lattice(terrain, tile, level, &mut xs, &mut zs);
+            let frame = frame(code, cell);
+            let [ox, oz] = tile.origin();
+            assert!(
+                xs.len() <= slot_side(level, f64::from(cell) * 0.5),
+                "{name}: slot side"
+            );
+            for (axis, coords, origin) in [(0, &xs, ox), (1, &zs, oz)] {
+                for (idx, &world) in coords.iter().enumerate() {
+                    let hm = (world - origin) * 2.0;
+                    assert_eq!(
+                        f64::from(index_hm(idx as i32, frame.spacing)),
+                        hm,
+                        "{name} {level:?} {tile:?} axis {axis} index {idx}"
+                    );
+                    if (0.0..=128.0).contains(&hm) {
+                        assert_eq!(
+                            index_at(hm as i32, frame.spacing),
+                            idx as i32,
+                            "{name} {level:?} {tile:?} axis {axis} at {hm}"
+                        );
+                    }
+                }
+                // Every mesh vertex lies on a lattice point.
+                for k in 0..mesh_vertices(code, cell) {
+                    let p = vertex_hm(code, k, frame.spacing);
+                    let idx = index_at(p, frame.spacing);
+                    assert_eq!(index_hm(idx, frame.spacing), p);
+                }
+            }
+            cases += 1;
+        }
+    }
+    cases
+}
+
+// The legal 2 m and 4 m cells (every other fixture is 8 m), on a 640 m world: a side that is a
+// multiple of 128 m but not of 1,024 m, so the patches from the west edge (-320 m) meet at
+// x = 192 m and the last one is 128 m wide. A level road along z = 0 from x = 100 m to 300 m
+// over ground rising 8% in z crosses that patch border into the partial last patch. Tiles on
+// the west edge, on both sides of the border and in the last patch, at every level and far step
+// (2, 4 and 8 cells): the port's index arithmetic holds on the bake's lattice, each bake samples
+// that lattice, and the two tiles at the border share their border samples bitwise.
+#[test]
+fn two_and_four_metre_cells_index_and_bake_their_lattices() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::roadbed::fixtures::{connect, point};
+    use crate::simulation::network::types::NodeType;
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(point(100.0, 0.0, false), NodeType::Junction);
+    let b = graph.add_node(point(300.0, 0.0, false), NodeType::Junction);
+    connect(&mut graph, a, b, 7.0, false);
+    graph.rebuild_intersection_clips();
+    let roadbed = compiled(&graph);
+    let tiles: Vec<TileKey> = [-5, 2, 3, 4]
+        .into_iter()
+        .flat_map(|x| [-5, -1, 0, 4].map(|z| TileKey { x, z }))
+        .collect();
+    for cell_m in [2.0_f32, 4.0] {
+        let name = format!("{cell_m} m cell");
+        let config = WorldConfig::new(640.0, 640.0, 40.0, 10.0).with_terrain_resolution(cell_m);
+        let mut terrain = TerrainSystem::from_world_config(&config);
+        let samples = (640.0 / cell_m) as usize + 1;
+        for z in 0..samples {
+            for x in 0..samples {
+                terrain.set_height(x, z, 0.08 * (z as f32 * cell_m - 320.0));
+            }
+        }
+        let cell = cell_hm(&terrain);
+        assert_eq!(cell, (cell_m * 2.0) as i32);
+        assert!(assert_cell_lattices(&name, &terrain, &tiles) > 0);
+        let (mut xs, mut zs) = (Vec::new(), Vec::new());
+        let mut graded = 0;
+        for level in LEVELS
+            .into_iter()
+            .chain([4, 8].map(|step| Level::Gl3 { step }))
+        {
+            let payloads = bake_level(&terrain, &roadbed, &tiles, level);
+            let baked = |tile: TileKey| {
+                payloads
+                    .iter()
+                    .find(|payload| payload.tile == tile)
+                    .unwrap_or_else(|| panic!("{name} {level:?}: {tile:?} baked"))
+            };
+            for &tile in &tiles {
+                lattice(&terrain, tile, level, &mut xs, &mut zs);
+                assert_eq!(baked(tile).samples, [xs.len(), zs.len()], "{name} {level:?} {tile:?}");
+            }
+            let frame = frame(level_code(level), cell);
+            for z in [-1, 0] {
+                let (west, east) = (baked(TileKey { x: 2, z }), baked(TileKey { x: 3, z }));
+                for p in (0..=SIDE_HM).step_by(frame.spacing as usize) {
+                    let texel = |payload: &TilePayload, x: i32| {
+                        let ix = index_at(x, frame.spacing) as usize;
+                        let iz = index_at(p, frame.spacing) as usize;
+                        payload.texels[iz * payload.samples[0] + ix][0]
+                    };
+                    let shared = texel(west, SIDE_HM);
+                    assert_eq!(
+                        shared.to_bits(),
+                        texel(east, 0).to_bits(),
+                        "{name} {level:?} z {z} at {p} hm: the border's delta"
+                    );
+                    graded += usize::from(shared != 0.0);
+                }
+            }
+        }
+        assert!(graded > 0, "{name}: the road grades the patch border");
+    }
 }
 
 #[test]
