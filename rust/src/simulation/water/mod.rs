@@ -217,6 +217,12 @@ impl WaterSystem {
         }
     }
 
+    /// The terrain intervals one render patch spans along each axis; patch `p` owns samples
+    /// `p * interval ..= (p + 1) * interval` (clamped to the grid).
+    pub(crate) fn render_patch_interval_cells(&self) -> usize {
+        self.render_patch_interval_cells
+    }
+
     /// Returns the current set of dirty water render patches.
     pub(crate) fn dirty_render_patches(&self) -> &HashSet<(usize, usize)> {
         &self.dirty_render_patches
