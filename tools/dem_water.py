@@ -33,7 +33,7 @@ step depends on hash or thread order.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import shapely
@@ -94,7 +94,9 @@ class WaterBody:
 
     key: int
     kind: str  # "lake" or "river"
-    level_mm: int
+    # None only for a river whose polygon carries no vertex heights: `apply_hydrography` then
+    # takes its level from the elevation model.
+    level_mm: int | None
     geometry: object
     interior_en: tuple[float, float] | None = None
 
@@ -236,7 +238,22 @@ def apply_hydrography(
             if narrow:
                 narrow_rivers.append({"key": body.key, "inscribed_width_m": width})
     narrow_keys = {river["key"] for river in narrow_rivers}
-    bodies = sort_bodies([b for b in bodies if b.key not in narrow_keys])
+    bodies = [b for b in bodies if b.key not in narrow_keys]
+    # A river without vertex heights (the whole-country database stores 2D polygons) takes the
+    # lowest elevation sample inside it, the same outlet rule as the lowest vertex: the elevation
+    # model stands at the water surface over water. A river with no sample inside it has no
+    # level and is left out.
+    unlevelled_rivers = []
+    levelled = []
+    for body in bodies:
+        if body.level_mm is None:
+            rows, cols = _samples_inside(grid, body.geometry)
+            if rows.size == 0:
+                unlevelled_rivers.append(body.key)
+                continue
+            body = replace(body, level_mm=int(round(float(dem[rows, cols].min()) * 1000.0)))
+        levelled.append(body)
+    bodies = sort_bodies(levelled)
     body_of = np.full(dem.shape, LAND, dtype=np.int32)
     body_samples = []
     for index, body in enumerate(bodies):
@@ -315,6 +332,7 @@ def apply_hydrography(
         "rule": rule.__dict__,
         "bodies_in_world": bodies_in_world,
         "rivers_dropped_narrow": narrow_rivers,
+        "rivers_without_level": unlevelled_rivers,
         "bodies_dropped_under_min_samples": len(dropped),
         "dropped_keys": dropped,
         "fragment_samples_returned_to_land": fragment_samples,

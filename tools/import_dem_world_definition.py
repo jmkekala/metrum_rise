@@ -306,8 +306,13 @@ def same_crs(a: int, b: int) -> bool:
     return a == b or (a in TM35FIN_EPSG_CODES and b in TM35FIN_EPSG_CODES)
 
 
-def read_interior_point(value) -> tuple[float, float] | None:
-    # `sijainti_piste` is a GeoJSON point string in the layer's own coordinates.
+def read_interior_point(feature) -> tuple[float, float] | None:
+    # `sijainti_piste` is a GeoJSON point string in the layer's own coordinates. The themed
+    # hydrography download carries it; the whole-country database does not, and then the fill's
+    # seed is its group's deepest sample (`dem_water`).
+    if feature.GetFieldIndex("sijainti_piste") < 0:
+        return None
+    value = feature.GetField("sijainti_piste")
     if not value:
         return None
     coordinates = json.loads(value)["coordinates"]
@@ -352,18 +357,20 @@ def load_hydrography(path: Path, epsg: int):
                 kind="lake",
                 level_mm=int(level),
                 geometry=shapely.force_2d(geometry),
-                interior_en=read_interior_point(feature.GetField("sijainti_piste")),
+                interior_en=read_interior_point(feature),
             )
         )
     for feature, geometry in features("virtavesialue"):
-        z = shapely.get_coordinates(geometry, include_z=True)[:, 2]
+        # The themed download stores 3D polygons; the whole-country database stores them flat,
+        # and then the level comes from the elevation model (`dem_water.apply_hydrography`).
+        z = shapely.get_coordinates(geometry, include_z=True)[:, 2] if shapely.has_z(geometry) else None
         bodies.append(
             WaterBody(
                 key=int(feature.GetField("mtk_id")),
                 kind="river",
-                level_mm=int(round(float(z.min()) * 1000.0)),
+                level_mm=None if z is None else int(round(float(z.min()) * 1000.0)),
                 geometry=shapely.force_2d(geometry),
-                interior_en=read_interior_point(feature.GetField("sijainti_piste")),
+                interior_en=read_interior_point(feature),
             )
         )
     keyed = sorted((int(f.GetField("mtk_id")), shapely.force_2d(g)) for f, g in features("matalikko"))
