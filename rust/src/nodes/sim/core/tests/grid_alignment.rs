@@ -43,16 +43,18 @@ fn aligned_products(core: &SimCore) -> String {
     );
     // The renderer's copy rule on this world's patch grid, as `terrain.gd` sets it up.
     let origin = core.config.terrain_world_origin_m();
-    let mut graded = Graded::default();
-    graded.shape = Shape {
-        world_min: [origin.0, origin.1],
-        patch_span: terrain.chunk_span_m(),
-        patch_grid: [
-            terrain.render_patch_cols() as i32,
-            terrain.render_patch_rows() as i32,
-        ],
-        block_patches: 2,
-        layer_limit: 2048,
+    let graded = Graded {
+        shape: Shape {
+            world_min: [origin.0, origin.1],
+            patch_span: terrain.chunk_span_m(),
+            patch_grid: [
+                terrain.render_patch_cols() as i32,
+                terrain.render_patch_rows() as i32,
+            ],
+            block_patches: 2,
+            layer_limit: 2048,
+        },
+        ..Graded::default()
     };
     let (mut scratch, mut listed) = (PatchTilesScratch::default(), Vec::new());
     let mut owner: BTreeMap<TileKey, (usize, usize)> = BTreeMap::new();
