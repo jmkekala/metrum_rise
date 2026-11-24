@@ -642,6 +642,14 @@ arrival ticks move.
     carried traffic at the limit, so no gap passed. None waited for a hole a moving queue never
     opened. The congestion rows (A, B) are for information: they swing between runs, and the
     join rule changes when vehicles enter the queues. Trips are not counted by the probe.
+
+    Timing (one level-F session, `./run.sh --timing --level F`, control `dev`'s code, the
+    prepared 30k city on both sides, so each binary runs its own city from the same snapshot;
+    the machine had just been loaded by another session): 30k 32× mean 4.013 against 4.013 ms,
+    p99 6.69 against 6.60, worst unpreempted frames 7.87 and 7.26 against 7.39 and 7.69 (under
+    the 8 ms limit; one branch row flagged noisy, p99.9 8.16); 30k 1× mean 1.643 against 1.610
+    (+2.0 %, at the tolerance) and worst unpreempted 4.61 against 4.21, one day a side, the
+    control's from an earlier session the same boot. Not repeated.
 11. **Limits.** A queue standing across the slot still keeps the joiner out until it moves on:
     the hold only stops the vehicles behind. A far-side joiner still needs a gap in the crossed
     near lane: it holds only its target lane while it waits, so a near lane standing across its
