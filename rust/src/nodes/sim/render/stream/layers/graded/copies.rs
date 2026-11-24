@@ -7,7 +7,7 @@
 //! `_move_block`, `_switch_block`, `_end_waits`) with their order of effects. Each function's
 //! comment names the GDScript one; read docs/terrain.md "Pages and the row atlas" for the rules.
 //!
-//! Bounds: a tile's pages `O(patches meeting it, at most 4)`; a placement `O(its copies x the
+//! Bounds: a tile's pages `O(1)` (its one patch's block); a placement `O(its copies x the
 //! pages' free runs)`; a block's page size `O(the block's listed tiles)`; a move `O(the moved
 //! pages' holders)`.
 
@@ -102,40 +102,40 @@ impl Graded {
         (first, last)
     }
 
-    /// `_copy_pages`: the pages a copy of `tile` at level `code` goes into, with their blocks:
-    /// per block of the resident patches drawing it its page (made as the block first needs one,
-    /// once its lists are in), and a growing block's target. Into `out`.
+    /// `_copy_pages`: the pages a copy of `tile` at level `code` goes into, with their block:
+    /// while the one patch holding it is resident, its block's page (made as the block first
+    /// needs one, once its lists are in) and a growing block's target. Into `out`.
+    ///
+    /// On a legal world every tile lies wholly inside one patch (patch sides on 64 m tile
+    /// lines), so the copy rule names one patch (grid alignment A3: the walk over the patches a
+    /// tile meets, and the merge of their blocks' pages, went).
     pub(crate) fn copy_pages(&mut self, tile: Tile, code: u8, out: &mut Vec<(PageRef, Block)>) {
         out.clear();
         let (first, last) = self.tile_patch_range(tile);
-        let has = |out: &Vec<(PageRef, Block)>, page: u32| out.iter().any(|(at, _)| *at == PageRef::Page(page));
-        for z in first[1]..=last[1] {
-            for x in first[0]..=last[0] {
-                let key = (x, z);
-                if !self.resident.contains_key(&key) {
-                    continue;
-                }
-                let block = self.block_of(key, code);
-                let target = self.block_target[usize::from(code)].get(&block).copied();
-                let mut bound = self.block_page[usize::from(code)].get(&block).copied();
-                if bound.is_none() && target.is_none() {
-                    if self.block_lists_pending(code, block) {
-                        out.push((PageRef::Pending, block));
-                        continue;
-                    }
-                    bound = self.first_page(code, block);
-                    if bound.is_none() {
-                        out.push((PageRef::Refused, block));
-                        continue;
-                    }
-                }
-                if let Some(target) = target.filter(|&target| !has(out, target)) {
-                    out.push((PageRef::Page(target), block));
-                }
-                if let Some(bound) = bound.filter(|&bound| !has(out, bound)) {
-                    out.push((PageRef::Page(bound), block));
-                }
+        debug_assert_eq!(first, last, "tile {tile:?} meets more than one patch");
+        let key = (first[0], first[1]);
+        if !self.resident.contains_key(&key) {
+            return;
+        }
+        let block = self.block_of(key, code);
+        let target = self.block_target[usize::from(code)].get(&block).copied();
+        let mut bound = self.block_page[usize::from(code)].get(&block).copied();
+        if bound.is_none() && target.is_none() {
+            if self.block_lists_pending(code, block) {
+                out.push((PageRef::Pending, block));
+                return;
             }
+            bound = self.first_page(code, block);
+            if bound.is_none() {
+                out.push((PageRef::Refused, block));
+                return;
+            }
+        }
+        if let Some(target) = target {
+            out.push((PageRef::Page(target), block));
+        }
+        if let Some(bound) = bound.filter(|&bound| target != Some(bound)) {
+            out.push((PageRef::Page(bound), block));
         }
     }
 

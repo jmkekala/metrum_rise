@@ -7,13 +7,13 @@ use super::super::pages::{PageEvent, PoolPolicy};
 use super::super::state::{Effect, Entry, Graded, LevelCaps, PageRef, Shape};
 use super::*;
 
-// A 2 x 2-patch world of 510 m patches from (-510, -510), blocks of 2 patches, the GDScript
+// A 2 x 2-patch world of 512 m patches from (-512, -512), blocks of 2 patches, the GDScript
 // renderer's GL0-GL3 shapes with GL2's cap small.
 fn world() -> Graded {
     let mut graded = Graded {
         shape: Shape {
-            world_min: [-510.0, -510.0],
-            patch_span: 510.0,
+            world_min: [-512.0, -512.0],
+            patch_span: 512.0,
             patch_grid: [2, 2],
             block_patches: 2,
             layer_limit: 2048,

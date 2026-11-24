@@ -10,8 +10,8 @@ use super::results::{Host, Run};
 use super::*;
 use std::collections::VecDeque;
 
-// The patch side and the world: 2 x 2 patches of 510 m from (-510, -510), blocks of 2 patches.
-const SPAN: f32 = 510.0;
+// The patch side and the world: 2 x 2 patches of 512 m from (-512, -512), blocks of 2 patches.
+const SPAN: f32 = 512.0;
 // Four tiles of patch (0, 0), all in GL2's band from the camera below.
 const TILES: [Tile; 4] = [
     Tile { x: -4, z: -4 },
@@ -632,9 +632,9 @@ fn a_poses_backstop_tiles_draw_their_cut_until_their_epoch_is_released() {
 fn the_cores_entries_are_news_and_follow_steps_and_generations() {
     use crate::nodes::sim::render::stream::layers::terrain::Follow;
     let mut book = plain_book();
-    let rect = [-510.0, -510.0, 510.0, 510.0];
+    let rect = [-512.0, -512.0, 512.0, 512.0];
     book.follow_terrain([0, 0], Follow::Resident { step: 2, generation: 7 }, rect);
-    book.follow_terrain([1, 0], Follow::Resident { step: 1, generation: 3 }, [0.0, -510.0, 510.0, 510.0]);
+    book.follow_terrain([1, 0], Follow::Resident { step: 1, generation: 3 }, [0.0, -512.0, 512.0, 512.0]);
     // A step change keeps the rectangle and generation; a commit keeps the step.
     book.follow_terrain([0, 0], Follow::Step(4), [0.0; 4]);
     book.follow_generation([0, 0], 8);

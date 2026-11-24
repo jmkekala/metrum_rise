@@ -372,15 +372,15 @@ impl Graded {
         keys
     }
 
-    // `_side_code`: the code a cell's side stitches to.
+    // `_side_code`: the code a cell's side stitches to. A set holds the tiles inside its patch
+    // (every tile lies wholly inside one patch on a legal world: patch sides lie on tile lines),
+    // so a side lies inside the patch or on one of its sides (grid alignment A3: the branch for
+    // a side beyond the patch went).
     fn side_code(&self, own: u8, neighbour: Tile, side_m: f64, patch: &Patch, axis: usize, own_key: PatchKey) -> u8 {
         let lo = f64::from(patch.rect[axis]);
         let hi = f64::from(patch.rect[axis] + patch.rect[axis + 2]);
         if side_m > lo && side_m < hi {
             return own.max(self.cell_code_in(neighbour, patch.step, own_key));
-        }
-        if side_m != lo && side_m != hi {
-            return own;
         }
         let mut probe = [(neighbour.x as f32 + 0.5) * TILE_M, (neighbour.z as f32 + 0.5) * TILE_M];
         probe[axis] = if side_m == lo { (lo - 0.5) as f32 } else { (hi + 0.5) as f32 };
@@ -497,7 +497,8 @@ impl Graded {
     }
 
     /// `_border_changed`: patch `key`'s residency or step changed: the tiles just outside its
-    /// sides on tile lines stitch across them.
+    /// sides stitch across them. Every patch side lies on a tile line (the world edge does, and
+    /// patches are 512 m; grid alignment A3: the guard for a side off the tile lines went).
     pub(crate) fn border_changed(&mut self, key: PatchKey) {
         let span = self.shape.patch_span;
         let min = self.shape.world_min;
@@ -510,9 +511,6 @@ impl Graded {
         for axis in 0..2 {
             let across = 1 - axis;
             for side in [f64::from(origin[axis]), f64::from(end[axis])] {
-                if side.rem_euclid(tile_m) != 0.0 {
-                    continue;
-                }
                 let column = (side / tile_m) as i32 - i32::from(side == f64::from(origin[axis]));
                 for row in first[across]..=last[across] {
                     let mut tile = [0; 2];
@@ -799,7 +797,10 @@ impl Graded {
     }
 
     // `_rebuild_patch_walls`: the wall faces of the set's shown tiles, each drawn by the patch
-    // holding its midpoint, as instances whose basis carries the face.
+    // holding its midpoint, as instances whose basis carries the face. Tiles lie inside one patch
+    // on a legal world, but a tile's faces are clipped to its closed rectangle: a face along its
+    // side on the patch's high side can be the neighbouring tile's too, which the neighbouring
+    // patch draws, so the filter stays (grid alignment A3).
     fn rebuild_walls(&mut self, set: u32) {
         let key = self.cells.sets[set as usize].key;
         let rect = self.resident.get(&key).expect("a resident patch's walls").rect;
@@ -1283,20 +1284,20 @@ mod tests {
         assert_eq!([0, 1, 2, 4, 8].map(base_code), [3, 3, 4, 5, 6]);
     }
 
-    // One resident 510 m patch at the world's lower corner (64 tiles), the GDScript renderer's
+    // One resident 512 m patch at the world's lower corner (64 tiles), the GDScript renderer's
     // level shapes, its prewarmed sets.
     fn world() -> Graded {
         let mut graded = Graded::default();
         let shape = Shape {
-            world_min: [-510.0, -510.0],
-            patch_span: 510.0,
+            world_min: [-512.0, -512.0],
+            patch_span: 512.0,
             patch_grid: [2, 2],
             block_patches: 2,
             layer_limit: 2048,
         };
         graded.setup(shape, &[(131, 64, 3000), (67, 192, 2000), (35, 96, 1000), (35, 256, 1000)]);
         graded.cells_setup(81, 4);
-        let patch = Patch { rect: [-510.0, -510.0, 510.0, 510.0], step: 1, generation: 0 };
+        let patch = Patch { rect: [-512.0, -512.0, 512.0, 512.0], step: 1, generation: 0 };
         graded.set_patch((0, 0), Some(patch));
         graded
     }

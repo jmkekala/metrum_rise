@@ -61,8 +61,10 @@ impl Graded {
         let Some(set) = set.filter(|_| graded && built) else {
             return DRAW_NONE;
         };
-        // Every installed tile the patch draws is copied into its block's page: a border tile's
-        // second copy may arrive frames after the first, and the two halves must not differ.
+        // Every installed tile the patch draws is copied into its block's page. On a legal world
+        // a tile has one copy (its one patch's), but an installed tile can still lack it here:
+        // one installed while its patch was not resident has no copy until the patch, resident
+        // again, wants it again, and its list may no longer name it (grid alignment A3: kept).
         for &tile in &set.tiles {
             if self.installed.contains_key(&tile) && self.shown_in(tile, key).is_none() && !self.refused_at_level(tile) {
                 return DRAW_NONE;
