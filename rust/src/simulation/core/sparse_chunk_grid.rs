@@ -123,6 +123,26 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         Self::new(self.width, self.height, self.chunk_size, self.default_value)
     }
 
+    /// Whether `other` has this grid's size, chunk size and default value, so its chunks can
+    /// stand in for this grid's (an undo record's shared clone). O(1).
+    pub(crate) fn layout_matches(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.chunk_size == other.chunk_size
+            && self.default_value == other.default_value
+    }
+
+    /// The stored chunks this grid shares with `other` by pointer, and its stored chunks.
+    #[cfg(test)]
+    pub(crate) fn shared_chunk_counts(&self, other: &Self) -> (usize, usize) {
+        let shared = self
+            .chunks
+            .iter()
+            .filter(|(key, chunk)| other.chunks.get(key).is_some_and(|o| Arc::ptr_eq(chunk, o)))
+            .count();
+        (shared, self.chunks.len())
+    }
+
     /// Compares one storage chunk, including implicit default-valued chunks.
     pub(crate) fn chunk_values_match(&self, other: &Self, x: usize, y: usize) -> bool {
         debug_assert_eq!(self.chunk_size, other.chunk_size);

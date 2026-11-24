@@ -17,6 +17,7 @@ use crate::nodes::sim::render::mist::MistMap;
 use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
 use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
+use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use crate::simulation::core::weather::{WeatherSample, WeatherState};
 use crate::simulation::economy::agents::tick::GridlockReport;
 use crate::simulation::economy::agents::{Agent, MODE_CAR, VEHICLE_FREIGHT_DELIVERY};
@@ -504,8 +505,9 @@ pub(super) fn pedestrian_lane_surface_height(lane: &Lane, lane_y: f32) -> f32 {
 
 /// Full water runtime snapshot for undo history.
 pub(crate) struct WaterRuntimeSnapshot {
-    /// Flat authored or loaded baseline water depth above terrain.
-    pub baseline_depth: Vec<f32>,
+    /// Flat authored or loaded baseline water depth above terrain: the live grid's `Arc`, shared
+    /// until the live water's next write (`WaterSystem::baseline_depth_snapshot`).
+    pub baseline_depth: Arc<SparseChunkGrid<f32>>,
 }
 
 /// Operation-local runtime state retained by one undo entry.
@@ -625,8 +627,9 @@ pub(crate) struct BuildingRemovalUndo {
 
 /// A snapshot of simulation state for undo history.
 pub(crate) struct SimulationSnapshot {
-    /// The source terrain, dense: undo restores it.
-    pub(crate) terrain: Option<Vec<f32>>,
+    /// The source terrain as a shared clone of its chunks (`TerrainSystem::source_snapshot`):
+    /// undo restores it.
+    pub(crate) terrain: Option<SparseChunkGrid<f32>>,
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.

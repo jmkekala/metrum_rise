@@ -113,15 +113,17 @@ impl SimCore {
             roadbed: None,
             graded: None,
             // The authoritative source terrain: the stroke solve, the lots and the graded base
-            // read it (`TERRAIN-07-E`, authoritative undo).
+            // read it (`TERRAIN-07-E`, authoritative undo). Shared chunks, not a dense copy:
+            // `O(chunks)` to take, and `O(edited chunks)` extra memory as later edits copy the
+            // chunks they write. The water is one shared `Arc`, `O(1)` to take.
             terrain: if inc_terrain {
-                Some(self.heightmap.clone_source_dense())
+                Some(self.heightmap.source_snapshot())
             } else {
                 None
             },
             water: if inc_water {
                 Some(WaterRuntimeSnapshot {
-                    baseline_depth: self.watermap.clone_baseline_depth_dense(),
+                    baseline_depth: self.watermap.baseline_depth_snapshot(),
                 })
             } else {
                 None
@@ -633,13 +635,13 @@ impl SimCore {
 
         if let Some(t_data) = terrain {
             self.heightmap
-                .replace_source_from_dense(&t_data)
+                .replace_source_from_snapshot(t_data)
                 .expect("undo terrain snapshot must match the live terrain dimensions");
             sync_trans_graph = true;
         }
         if let Some(w_data) = water {
             self.watermap
-                .replace_baseline_depth_from_dense(&w_data.baseline_depth)
+                .replace_baseline_depth_from_snapshot(w_data.baseline_depth)
                 .expect("undo baseline water snapshot must match the live water dimensions");
             self.water_dirty = true;
             self.bump_road_tool_query_generation();
@@ -1258,3 +1260,6 @@ impl SimCore {
         self.terrain_dirty = true;
     }
 }
+
+#[cfg(test)]
+mod tests;

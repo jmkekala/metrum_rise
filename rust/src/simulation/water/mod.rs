@@ -160,6 +160,27 @@ impl WaterSystem {
         self.baseline.clone_dense()
     }
 
+    /// Baseline depth as a shared clone for an undo record: O(1), one `Arc` to the grid. The
+    /// next write behind it clones the grid's chunk pointers once (`O(chunks)`) and then copies
+    /// only the chunks it touches.
+    pub(crate) fn baseline_depth_snapshot(&self) -> Arc<SparseChunkGrid<f32>> {
+        Arc::clone(&self.baseline.depth)
+    }
+
+    /// Puts back an undo record's [`Self::baseline_depth_snapshot`] and marks every render patch
+    /// dirty, as the dense replacement does. O(1) beyond the patch marks.
+    pub(crate) fn replace_baseline_depth_from_snapshot(
+        &mut self,
+        snapshot: Arc<SparseChunkGrid<f32>>,
+    ) -> Result<(), String> {
+        if !self.baseline.depth.layout_matches(&snapshot) {
+            return Err("water snapshot layout differs from the live water".to_owned());
+        }
+        self.baseline.depth = snapshot;
+        self.mark_all_render_patches_dirty();
+        Ok(())
+    }
+
     /// Replaces the baseline water depth buffer from a dense row-major snapshot.
     pub(crate) fn replace_baseline_depth_from_dense(
         &mut self,
