@@ -20627,7 +20627,7 @@ Current deterministic rules:
   (`authored_water_solve_matches_the_dense_reference_bitwise`). Every terrain edit still
   re-solves every fill (`finish_terrain_authoring_edit_in_pool`, once per gameplay sculpt
   frame); an exact per-fill re-solve is not done. Diagnostic release runs (one each, machine
-  shared, not acceptance; an uncommitted probe in the release `$TEST_BINARY`): the shipped Kuopio (110 fills, 5.31 M
+  shared, not acceptance; an uncommitted probe in the release `$TEST_BINARY`): the shipped Kuopio of round `A4b` (110 fills, 5.31 M
   samples) solves in 0.070 s instead of 1.157 s and a sculpt edit beside its water takes
   0.065-0.071 s instead of 0.86-0.94 s; the retired 18,000 m Kuopio (23 fills, 3.24 M samples)
   0.043 s instead of 0.138 s. What remains is the `O(W)` part: the dense copy, the zeroed
@@ -22270,8 +22270,10 @@ World size and centre (grid alignment `A4`, 2026-11-24):
   `python3 tools/import_dem_world_definition.py --input-dir <the 25 sheets> --output
   godot/bootstrap/worlds/kuopio_18432m_8m.sqlite --world-name Kuopio --terrain-cell-m 8
   --size-m 18432 --centre-e 533000 --centre-n 6975000 --hydrography <hydrografia.gpkg>`, it is
-  byte-identical (sha256 `f13cd135…9e3160`); `kuopio_source_world_floods_exactly_its_water`
-  checks its lakes in the runtime
+  byte-identical (sha256 `594e11ce…045e23` since round `A9` dropped the narrow rivers; it was
+  `f13cd135…9e3160`); `kuopio_source_world_floods_exactly_its_water` checks its lakes in the
+  runtime: 95 lake and 12 open-water fills, exactly 2,541,500 wet samples (`A4b`: 98, 12 and
+  2,541,524 with the two narrow rivers)
 
 The Kuopio fixture on the shipped world (`benchmarks/fixtures/kuopio-terrain`, grid alignment
 `A4b`, 2026-11-24):
@@ -22291,6 +22293,12 @@ The Kuopio fixture on the shipped world (`benchmarks/fixtures/kuopio-terrain`, g
   stay as recorded. All 16 parcels stay feasible and the five hillside houses build the same assets.
   `tools/resample_buildability_fixture.py` regenerates that ground byte for byte (`--check`
   compares only)
+- grid alignment round `A9` (2026-11-24) rebuilt the world without the two narrow rivers: 24
+  samples changed (the rivers' own, now the DEM's heights), the nearest 1.5 km from any stroke.
+  Replayed per case and in one world on the old and new world with one binary, all 75 stroke
+  records are equal (verdict, warning, grade, edges, the line's water and ground). The reference
+  save is re-recorded (two runs, same bytes, 70 live edges) and re-pinned with the world and
+  terrain hashes; the buildability ground regenerates byte-identical (its area holds no change)
 - one measured value moved with the ground: the conflict wall at node 50 (`kuopio_conflict_wall_closes_the_step`)
   still closes the step at all 175 walled samples, its highest 0.24 m (0.37 m on the old ground)
 - what depends on the terrain layout rather than heights and queries: `world_config` (cell and
@@ -22316,6 +22324,21 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   inside a shoal polygon. Samples outside every polygon keep the DEM
 - a polygon with fewer than four samples inside is dropped (counted in the report); a connected
   water fragment smaller than four samples returns to land with its DEM heights
+- a river polygon narrower than two terrain cells (`--min-river-width-cells`, default 2) is not
+  imported: no bed, no fill, its samples keep the DEM. A river is one flat level at its lowest
+  vertex, so a narrow river that climbs its valley is carved into a trench, and a few samples
+  across it break into fragments. Width is the inscribed width: twice the largest distance from a
+  point inside the polygon to its boundary (the diameter of its largest inscribed circle), over
+  the whole polygon, also beyond the world edge. GEOS's maximum inscribed circle (tolerance
+  1 mm) returns a radius at most the tolerance below the true one, so the decision is exact; a
+  river whose bound straddles the limit stops the import. Lakes are not subject to the rule. The
+  report lists each river not imported with its width (`rivers_dropped_narrow`) and each kept
+  river's width. On Kuopio (round `A9`, 2026-11-24) two of three river polygons go: 276761300
+  (5.96 m, its level 82.4 m lay up to 3.9 m under the DEM upstream, a trench up to 4.2 m) and
+  276753566 (8.66 m); 923959600 stays (39.97 m, the strait between two 82.1 m lakes, its surface
+  at most 1.8 m under the DEM). Neither dropped river joined two groups or reached the world
+  edge: they were three lake fills of their own (98 -> 95 lake fills, 12 open-water, 2,541,524 ->
+  2,541,500 water samples), and no other fill's level or samples changed
 - water connected across polygon boundaries (4-neighbour samples) is one group at the lowest level
   among its polygons, with one fill: the runtime solves one flat surface per connected body of
   water, and neighbouring polygons of one lake system carry levels a few decimetres apart (on
@@ -22335,14 +22358,14 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   polygons share goes to the first), ties break by sample index, and SQLite rows are written in
   one fixed order; two runs give equal bytes
 - tool dependencies beyond GDAL: `shapely` (2.x) and `scipy`; `tools/test_import_dem_world_definition.py`
-  covers the frame and the bed and shore rules
+  covers the frame, the bed and shore rules and the river width rule
 
 Explicit non-goals of v1 DEM import:
 
 - automatic extraction of rivers, lakes, or hydrology from the DEM
 - automatic terrain texturing or biome painting
-- hydrography rasters, sloped river surfaces (a river polygon is one flat level) and streams
-  narrower than a terrain cell
+- hydrography rasters, sloped river surfaces (a river polygon is one flat level), river areas
+  narrower than two terrain cells and streams narrower than a terrain cell
 - preserving external CRS coordinates as live gameplay-space coordinates
 - patch-importing one DEM over part of an already edited authored world
 
