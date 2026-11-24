@@ -15,7 +15,17 @@ pub(super) fn t_junction() -> (SimCore, u32, usize, usize) {
 
 // [`t_junction`] on `core`, its side road drawn with `fwd` + `bkw` lanes.
 pub(super) fn t_junction_with_side(
+    core: SimCore,
+    fwd: u8,
+    bkw: u8,
+) -> (SimCore, u32, usize, usize) {
+    t_junction_at(core, Vector3::ZERO, fwd, bkw)
+}
+
+// [`t_junction_with_side`] with every point moved by `at`.
+pub(super) fn t_junction_at(
     mut core: SimCore,
+    at: Vector3,
     fwd: u8,
     bkw: u8,
 ) -> (SimCore, u32, usize, usize) {
@@ -23,13 +33,13 @@ pub(super) fn t_junction_with_side(
     for (points, lanes) in [
         (
             vec![
-                Vector3::new(-100.0, 0.0, 0.0),
-                Vector3::new(100.0, 0.0, 0.0),
+                at + Vector3::new(-100.0, 0.0, 0.0),
+                at + Vector3::new(100.0, 0.0, 0.0),
             ],
             (1, 1),
         ),
         (
-            vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+            vec![at, at + Vector3::new(0.0, 0.0, 100.0)],
             (i32::from(fwd), i32::from(bkw)),
         ),
     ] {
@@ -39,8 +49,8 @@ pub(super) fn t_junction_with_side(
     let node = (0..core.region_graph.node_count() as u32)
         .find(|&node| live_arms(&core, node).len() == 3)
         .expect("T junction");
-    let side = arm_towards(&core, node, Vector3::new(0.0, 0.0, 100.0));
-    let west = arm_towards(&core, node, Vector3::new(-100.0, 0.0, 0.0));
+    let side = arm_towards(&core, node, at + Vector3::new(0.0, 0.0, 100.0));
+    let west = arm_towards(&core, node, at + Vector3::new(-100.0, 0.0, 0.0));
     (core, node, side, west)
 }
 
