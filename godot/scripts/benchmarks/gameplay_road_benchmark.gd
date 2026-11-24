@@ -75,7 +75,7 @@ func _load_benchmark_world() -> bool:
 	if not _uses_synthetic_world():
 		return input_manager.menu_load_world_definition(world_path)
 	# Same terrain, grid origin, and local geometry for every paired/scaling fixture.
-	if not simulation_node.create_blank_world(20400.0, 20400.0, 10.0, 510.0, 100.0):
+	if not simulation_node.create_blank_world(20400.0, 20400.0, 10.0, 510.0, 2000.0):
 		return false
 	input_manager._refresh_after_world_load()
 	input_manager.set_simulation_speed(0.0)

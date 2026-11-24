@@ -65,7 +65,7 @@ func _run() -> void:
 	host.add_child(simulation)
 	simulation.set_simulation_speed(0.0)
 	_check_canopy_model_heights(simulation)
-	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 20.0), "fixture world must be created")
+	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 400.0), "fixture world must be created")
 	var layout: Dictionary = simulation.get_terrain_patch_layout()
 	var span: float = float(layout["terrain_cell_m"]) * float(layout["patch_interval_cells"])
 	_expect(span == 510.0, "native patch layout must match the fixture")

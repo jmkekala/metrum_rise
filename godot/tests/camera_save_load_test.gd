@@ -114,7 +114,7 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
-	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 128.0, 50.0), "camera fixture world must be created")
+	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 128.0, 1000.0), "camera fixture world must be created")
 	var path := OS.get_temp_dir().path_join("metrum_camera_test_%d.sqlite" % OS.get_process_id())
 	for orthogonal: bool in [false, true]:
 		var camera := _camera(host, orthogonal)
