@@ -382,6 +382,20 @@ class DigestTests(unittest.TestCase):
         b["vegetation_digests"][0]["digest"] = "y"
         self.assertEqual(self.counts(sb.compare_digests(a, b))["vegetation"], ["different"])
 
+    def test_a_wet_water_patch_without_its_steps_mesh_is_different(self):
+        # TERRAIN-41 L2: the settle points' water mesh check, either side.
+        a = {"patch_digests": [{"point": 1, "sample": "still", "water_meshes": {"wet": 3, "mismatches": 0, "keys": []}}]}
+        b = copy.deepcopy(a)
+        self.assertEqual(self.counts(sb.compare_digests(a, b))["water_meshes"], ["equal"])
+        b["patch_digests"][0]["water_meshes"] = {"wet": 3, "mismatches": 1, "keys": ["4,5"]}
+        families = sb.compare_digests(a, b)
+        self.assertEqual(self.counts(families)["water_meshes"], ["different"])
+        self.assertIn("b: 1 of 3 wet (4,5)", families["water_meshes"][0][3])
+        # A report without the check (a control before it) has nothing to say.
+        del a["patch_digests"][0]["water_meshes"]
+        del b["patch_digests"][0]["water_meshes"]
+        self.assertEqual(self.counts(sb.compare_digests(a, b))["water_meshes"], ["equal"])
+
     def test_without_level_ends_a_differing_point_is_different(self):
         verdicts = self.counts(sb.compare_digests(self.ctl, self.br))
         self.assertEqual(verdicts["graded"].count("different"), 3)

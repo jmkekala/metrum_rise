@@ -81,6 +81,10 @@ const WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES := 1600000
 const WATER_PATCH_MESH_APPLY_QUEUE_HARD_BYTES := 3200000
 const WATER_PATCH_MESH_APPLY_HEADROOM_FRAME_MS := 5.0
 const WATER_PATCH_MESH_APPLY_HEADROOM_PREVIOUS_APPLY_MS := 1.4
+# `_mesh_need`'s answers (`TERRAIN-41` L2).
+const MESH_NEED_NONE := 0
+const MESH_NEED_HOLE := 1
+const MESH_NEED_UPGRADE := 2
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -95,8 +99,15 @@ var height_texture_rebind_queue: Array[Vector2i] = []
 var height_texture_rebind_lookup: Dictionary = {}
 var terrain_patch_binding_queue: Array[Vector2i] = []
 var terrain_patch_binding_lookup: Dictionary = {}
+# The mesh requests by cause (`TERRAIN-41` L2): `mesh_refresh_queue` for holes (a wet resident
+# patch whose node draws no mesh of its cover and depth), `mesh_upgrade_queue` for upgrades (it
+# draws one at another step), which are submitted and applied only inside the install ledger's
+# upgrade room. `mesh_refresh_requested_lod` holds every request's step, `mesh_refresh_upgrade`
+# the keys whose request is an upgrade; a queue's entry of the other cause is skipped.
 var mesh_refresh_queue: Array[Vector2i] = []
+var mesh_upgrade_queue: Array[Vector2i] = []
 var mesh_refresh_requested_lod: Dictionary = {}
+var mesh_refresh_upgrade: Dictionary = {}
 var mesh_pending_lod: Dictionary = {}
 var mesh_apply_queue: Array[Dictionary] = []
 var full_water_grid_mesh_cache: Dictionary = {}
@@ -119,6 +130,10 @@ var _terrain_debug_verbose: bool = false
 var _water_mesh_ready_backlog_estimate: int = 0
 var _water_mesh_last_frame_elapsed_ms: float = 0.0
 var _water_mesh_last_apply_elapsed_ms: float = 0.0
+# Where the mesh pipeline's next charge to the install ledger starts (Time ticks, us).
+var _mesh_charge_from_us: int = 0
+# Shown patches whose node kept the mesh they need, since the last perf record.
+var _water_mesh_reshow_kept_count: int = 0
 var _water_resource_pool_hit_count: int = 0
 var _water_resource_pool_miss_count: int = 0
 var _water_resource_pool_release_count: int = 0
@@ -227,15 +242,17 @@ func _process(delta: float) -> void:
 		or not mesh_apply_queue.is_empty()
 	)
 	var mesh_refresh_start_us := Time.get_ticks_usec()
+	_mesh_charge_from_us = mesh_refresh_start_us
 	mesh_refresh_perf_stats = _process_mesh_refresh_queue(
 		WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME,
 		perf_enabled
 	)
 	mesh_refresh_elapsed_ms = float(Time.get_ticks_usec() - mesh_refresh_start_us) / 1000.0
 	# The mesh pipeline's and the dirty upload's work, charged to the frame's install ledger
-	# (`RENDER-32-Q`); its own request, submit, poll and apply budgets bound it (`WATER-01`).
+	# (`RENDER-32-Q`); its own request, submit, poll and apply budgets bound it (`WATER-01`). The
+	# part before an upgrade's room check was charged there (`_upgrade_room_us`).
 	if (mesh_work or upload_elapsed_ms > 0.0) and _stream != null:
-		_stream.charge_install(2, (mesh_refresh_elapsed_ms + upload_elapsed_ms) * 1000.0)
+		_stream.charge_install(2, float(Time.get_ticks_usec() - _mesh_charge_from_us) + upload_elapsed_ms * 1000.0)
 
 	if _terrain_debug_enabled:
 		var frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
@@ -462,6 +479,8 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		"depth_nonzero_count": _patch_visible_depth_count(patch_data),
 		"depth_signature": depth_signature,
 		"mesh_stats": mesh_stats,
+		# The mesh its node draws: step, cover generation, depth signature (empty: none).
+		"held_mesh": PackedInt64Array(),
 		"cover_generation": _patch_cover_generation(patch_data),
 		"last_patch_data": patch_data,
 	}
@@ -546,9 +565,10 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		mesh_stats = _empty_water_mesh_stats(lod_step)
 		if depth_nonzero_count > 0:
 			if resident_patch_lookup.has(key):
-				_queue_patch_mesh_refresh(key, lod_step)
+				# New cover or depth: the node's mesh is not this patch's any more (a hole).
+				_queue_patch_mesh_refresh(key, lod_step, true)
 		else:
-			patch_node.mesh = _empty_water_mesh_resource()
+			_set_empty_mesh(patch)
 			mesh_refresh_requested_lod.erase(key)
 			mesh_pending_lod.erase(key)
 		mesh_elapsed_ms = float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
@@ -631,8 +651,12 @@ func stream_activate(key: Vector2i, step: int) -> Vector2i:
 	patch_node.visible = true
 	resident_patch_lookup[key] = true
 	patch_bounds_changed.emit(key)
-	if int(patch.get("depth_nonzero_count", 0)) > 0:
+	# A wet patch asks for a mesh only when its node does not hold the one for its step, cover
+	# and depth (`TERRAIN-41` L2): a kept node shown again draws at once.
+	if _mesh_need(patch) != MESH_NEED_NONE:
 		_queue_patch_mesh_refresh(key, int(patch.get("lod_step", 1)))
+	elif int(patch.get("depth_nonzero_count", 0)) > 0:
+		_water_mesh_reshow_kept_count += 1
 	_queue_height_texture_rebind(key)
 	_queue_terrain_patch_binding(key)
 	return Vector2i(0, -1)
@@ -695,7 +719,9 @@ func _clear_patches() -> void:
 	terrain_patch_binding_queue.clear()
 	terrain_patch_binding_lookup.clear()
 	mesh_refresh_queue.clear()
+	mesh_upgrade_queue.clear()
 	mesh_refresh_requested_lod.clear()
+	mesh_refresh_upgrade.clear()
 	mesh_pending_lod.clear()
 	mesh_apply_queue.clear()
 	_water_mesh_ready_backlog_estimate = 0
@@ -1199,28 +1225,70 @@ func _set_patch_mesh_lod(key: Vector2i, target_lod_step: int) -> void:
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty() or int(patch.get("lod_step", 1)) == target_lod_step:
 		return
-	var patch_node: MeshInstance3D = patch["node"]
 	patch["lod_step"] = target_lod_step
 	var material: ShaderMaterial = patch["material"]
 	material.set_shader_parameter("water_debug_lod_step", float(target_lod_step))
 	var mesh_stats := _empty_water_mesh_stats(target_lod_step)
-	if int(patch.get("depth_nonzero_count", 0)) > 0:
+	var need := _mesh_need(patch)
+	if need != MESH_NEED_NONE:
 		_queue_patch_mesh_refresh(key, target_lod_step)
+	elif int(patch.get("depth_nonzero_count", 0)) > 0:
+		# Back at the step its node draws (`TERRAIN-41` L2): no mesh, and none other in flight.
+		mesh_refresh_requested_lod.erase(key)
+		mesh_pending_lod.erase(key)
+		mesh_stats = patch.get("held_mesh_stats", mesh_stats)
 	else:
-		patch_node.mesh = _empty_water_mesh_resource()
+		_set_empty_mesh(patch)
 		patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = mesh_stats
 
-func _queue_patch_mesh_refresh(key: Vector2i, lod_step: int) -> void:
+## What resident `patch`'s node lacks (`TERRAIN-41` L2): MESH_NEED_NONE when it is dry or draws
+## the mesh of its step, cover generation and depth signature; MESH_NEED_HOLE when it draws none
+## of its cover and depth; MESH_NEED_UPGRADE when it draws one at another step. O(1).
+func _mesh_need(patch: Dictionary) -> int:
+	if int(patch.get("depth_nonzero_count", 0)) <= 0:
+		return MESH_NEED_NONE
+	var held: PackedInt64Array = patch.get("held_mesh", PackedInt64Array())
+	if (
+		held.size() != 3
+		or held[1] != int(patch.get("cover_generation", 0))
+		or held[2] != int(patch.get("depth_signature", 0))
+	):
+		return MESH_NEED_HOLE
+	return MESH_NEED_NONE if held[0] == maxi(1, int(patch.get("lod_step", 1))) else MESH_NEED_UPGRADE
+
+func _set_empty_mesh(patch: Dictionary) -> void:
+	(patch["node"] as MeshInstance3D).mesh = _empty_water_mesh_resource()
+	patch["held_mesh"] = PackedInt64Array()
+
+## Queues `key`'s mesh at `lod_step` by its cause: a hole (`hole`, or its node draws no mesh of
+## its cover and depth) or an upgrade. O(1).
+func _queue_patch_mesh_refresh(key: Vector2i, lod_step: int, hole: bool = false) -> void:
 	var safe_lod_step: int = max(1, lod_step)
 	if (
 		int(mesh_pending_lod.get(key, 0)) == safe_lod_step
 		and not mesh_refresh_requested_lod.has(key)
 	):
 		return
-	if not mesh_refresh_requested_lod.has(key):
-		mesh_refresh_queue.append(key)
+	var upgrade := not hole and _mesh_need(patches.get(key, {})) == MESH_NEED_UPGRADE
+	if not mesh_refresh_requested_lod.has(key) or mesh_refresh_upgrade.has(key) != upgrade:
+		(mesh_upgrade_queue if upgrade else mesh_refresh_queue).append(key)
 	mesh_refresh_requested_lod[key] = safe_lod_step
+	if upgrade:
+		mesh_refresh_upgrade[key] = true
+	else:
+		mesh_refresh_upgrade.erase(key)
+
+## The install ledger's upgrade room left now (`StreamNode.get_install_room_us`), after charging
+## the mesh pipeline's work since the last charge, so each upgrade submitted or applied is
+## charged before the next is admitted. Unbounded without a stream node. O(1).
+func _upgrade_room_us() -> float:
+	if _stream == null:
+		return INF
+	var now_us := Time.get_ticks_usec()
+	_stream.charge_install(2, float(now_us - _mesh_charge_from_us))
+	_mesh_charge_from_us = now_us
+	return _stream.get_install_room_us()
 
 func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) -> Dictionary:
 	var perf_stats: Dictionary = {}
@@ -1280,9 +1348,19 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 			"mesh_apply_queue_sort_count": 0.0,
 			"mesh_applied_count": 0.0,
 			"mesh_queue_after_count": 0.0,
+			"mesh_upgrade_queue_count": float(mesh_upgrade_queue.size()),
+			"mesh_hole_submitted_count": 0.0,
+			"mesh_upgrade_submitted_count": 0.0,
+			"mesh_upgrade_submit_held_count": 0.0,
+			"mesh_hole_applied_count": 0.0,
+			"mesh_upgrade_applied_count": 0.0,
+			"mesh_upgrade_returned_count": 0.0,
+			"mesh_reshow_kept_count": float(_water_mesh_reshow_kept_count),
 			"mesh_pending_after_count": 0.0,
 			"mesh_apply_queue_after_count": 0.0,
 		}
+	if collect_perf_stats:
+		_water_mesh_reshow_kept_count = 0
 	if simulation_node == null:
 		return perf_stats
 
@@ -1337,7 +1415,7 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 	var submit_budget := 0
 	var submitted_count := 0
 	if _water_mesh_refresh_stage_budget_exhausted(refresh_work_start_us, completed_stage_count):
-		if not mesh_refresh_queue.is_empty():
+		if not mesh_refresh_queue.is_empty() or not mesh_upgrade_queue.is_empty():
 			deferred_stage_count += 1
 	else:
 		var submit_start_us := Time.get_ticks_usec()
@@ -1365,7 +1443,7 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 	return perf_stats
 
 func _water_patch_mesh_queue_compaction_needed() -> bool:
-	var queue_count: int = mesh_refresh_queue.size()
+	var queue_count: int = mesh_refresh_queue.size() + mesh_upgrade_queue.size()
 	if queue_count == 0:
 		return false
 	var requested_count: int = mesh_refresh_requested_lod.size()
@@ -1374,24 +1452,27 @@ func _water_patch_mesh_queue_compaction_needed() -> bool:
 	return queue_count >= 256 or queue_count >= requested_count * 2 + 32
 
 func _compact_water_patch_mesh_refresh_queue() -> int:
-	if mesh_refresh_queue.is_empty():
-		return 0
-	var removed_count: int = 0
-	if mesh_refresh_requested_lod.is_empty():
-		removed_count = mesh_refresh_queue.size()
-		mesh_refresh_queue.clear()
-		return removed_count
+	var removed := _compact_mesh_queue(mesh_refresh_queue, false)
+	return removed + _compact_mesh_queue(mesh_upgrade_queue, true)
 
+# Drops `queue`'s stale entries (no request, a request of the other cause, a repeat) in place and
+# sorts the rest by camera priority. Returns the entries dropped. O(queue log queue).
+func _compact_mesh_queue(queue: Array[Vector2i], upgrade: bool) -> int:
+	var removed_count: int = 0
 	var compacted_queue: Array[Vector2i] = []
 	var retained_lookup: Dictionary = {}
-	for key in mesh_refresh_queue:
-		if not mesh_refresh_requested_lod.has(key) or retained_lookup.has(key):
+	for key in queue:
+		if (
+			not mesh_refresh_requested_lod.has(key)
+			or mesh_refresh_upgrade.has(key) != upgrade
+			or retained_lookup.has(key)
+		):
 			removed_count += 1
 			continue
 		retained_lookup[key] = true
 		compacted_queue.append(key)
 	_sort_patch_keys_by_camera_priority(compacted_queue)
-	mesh_refresh_queue = compacted_queue
+	queue.assign(compacted_queue)
 	return removed_count
 
 func _water_patch_mesh_submit_budget(base_budget: int, backlog_active: bool) -> int:
@@ -1441,66 +1522,78 @@ func _submit_water_patch_mesh_requests(
 	var request_in_flight_count := 0
 	var request_build_queued_count := 0
 	var batch_count := 0
-	while submitted_count < budget and not mesh_refresh_queue.is_empty():
-		if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
-			break
-		var requests := PackedInt32Array()
-		var batch_remaining: int = mini(WATER_PATCH_MESH_SUBMIT_BATCH_SIZE, budget - submitted_count)
-		while batch_remaining > 0 and not mesh_refresh_queue.is_empty():
+	var submitted_by_cause := [0, 0]
+	var upgrades_held := 0
+	var core_busy := false
+	# Holes first, then upgrades while the ledger's upgrade room lasts (`TERRAIN-41` L2).
+	for upgrade: bool in [false, true]:
+		var queue: Array[Vector2i] = mesh_upgrade_queue if upgrade else mesh_refresh_queue
+		while not core_busy and submitted_count < budget and not queue.is_empty():
 			if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
 				break
-			var key: Vector2i = mesh_refresh_queue.pop_front()
-			inspected_count += 1
-			if not mesh_refresh_requested_lod.has(key):
-				stale_count += 1
+			if upgrade and _upgrade_room_us() <= 0.0:
+				upgrades_held = queue.size()
+				break
+			var requests := PackedInt32Array()
+			var batch_remaining: int = mini(WATER_PATCH_MESH_SUBMIT_BATCH_SIZE, budget - submitted_count)
+			while batch_remaining > 0 and not queue.is_empty():
+				if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
+					break
+				var key: Vector2i = queue.pop_front()
+				inspected_count += 1
+				if not mesh_refresh_requested_lod.has(key) or mesh_refresh_upgrade.has(key) != upgrade:
+					# No request, or one of the other cause (it has its own entry there).
+					stale_count += 1
+					continue
+				var lod_step := int(mesh_refresh_requested_lod[key])
+				mesh_refresh_requested_lod.erase(key)
+				mesh_refresh_upgrade.erase(key)
+				var patch: Dictionary = patches.get(key, {})
+				if patch.is_empty() or not resident_patch_lookup.has(key):
+					mesh_pending_lod.erase(key)
+					stale_count += 1
+					continue
+				if int(patch.get("depth_nonzero_count", 0)) <= 0:
+					_set_empty_mesh(patch)
+					patch_bounds_changed.emit(key)
+					patch["mesh_stats"] = _empty_water_mesh_stats(int(patch.get("lod_step", 1)))
+					mesh_pending_lod.erase(key)
+					dry_count += 1
+					continue
+				if int(patch.get("lod_step", 1)) != lod_step:
+					stale_count += 1
+					continue
+				requests.push_back(key.x)
+				requests.push_back(key.y)
+				requests.push_back(lod_step)
+				mesh_pending_lod[key] = lod_step
+				batch_remaining -= 1
+			if requests.is_empty():
 				continue
-			var lod_step := int(mesh_refresh_requested_lod[key])
-			mesh_refresh_requested_lod.erase(key)
-			var patch: Dictionary = patches.get(key, {})
-			if patch.is_empty() or not resident_patch_lookup.has(key):
-				mesh_pending_lod.erase(key)
-				stale_count += 1
-				continue
-			if int(patch.get("depth_nonzero_count", 0)) <= 0:
-				var patch_node: MeshInstance3D = patch["node"]
-				patch_node.mesh = _empty_water_mesh_resource()
-				patch_bounds_changed.emit(key)
-				patch["mesh_stats"] = _empty_water_mesh_stats(int(patch.get("lod_step", 1)))
-				mesh_pending_lod.erase(key)
-				dry_count += 1
-				continue
-			if int(patch.get("lod_step", 1)) != lod_step:
-				stale_count += 1
-				continue
-			requests.push_back(key.x)
-			requests.push_back(key.y)
-			requests.push_back(lod_step)
-			mesh_pending_lod[key] = lod_step
-			batch_remaining -= 1
-		if requests.is_empty():
-			continue
-		var request_result: Dictionary = simulation_node.request_water_patch_meshes(requests) as Dictionary
-		if bool(request_result.get("core_busy", false)):
-			for request_index in range(requests.size() / 3):
-				var request_key := Vector2i(
-					requests[request_index * 3],
-					requests[request_index * 3 + 1]
-				)
-				var request_lod := int(requests[request_index * 3 + 2])
-				mesh_pending_lod.erase(request_key)
-				_queue_patch_mesh_refresh(request_key, request_lod)
-			break
-		var batch_submitted_count: int = int(request_result.get("accepted_count", 0))
-		request_sent_count += requests.size() / 3
-		request_raw_count += int(request_result.get("raw_count", requests.size() / 3))
-		request_accepted_count += batch_submitted_count
-		request_invalid_count += int(request_result.get("invalid_count", 0))
-		request_duplicate_count += int(request_result.get("duplicate_count", 0))
-		request_cache_hit_count += int(request_result.get("cache_hit_count", 0))
-		request_in_flight_count += int(request_result.get("in_flight_count", 0))
-		request_build_queued_count += int(request_result.get("build_queued_count", 0))
-		submitted_count += batch_submitted_count
-		batch_count += 1
+			var request_result: Dictionary = simulation_node.request_water_patch_meshes(requests) as Dictionary
+			if bool(request_result.get("core_busy", false)):
+				for request_index in range(requests.size() / 3):
+					var request_key := Vector2i(
+						requests[request_index * 3],
+						requests[request_index * 3 + 1]
+					)
+					var request_lod := int(requests[request_index * 3 + 2])
+					mesh_pending_lod.erase(request_key)
+					_queue_patch_mesh_refresh(request_key, request_lod)
+				core_busy = true
+				break
+			var batch_submitted_count: int = int(request_result.get("accepted_count", 0))
+			request_sent_count += requests.size() / 3
+			request_raw_count += int(request_result.get("raw_count", requests.size() / 3))
+			request_accepted_count += batch_submitted_count
+			request_invalid_count += int(request_result.get("invalid_count", 0))
+			request_duplicate_count += int(request_result.get("duplicate_count", 0))
+			request_cache_hit_count += int(request_result.get("cache_hit_count", 0))
+			request_in_flight_count += int(request_result.get("in_flight_count", 0))
+			request_build_queued_count += int(request_result.get("build_queued_count", 0))
+			submitted_count += batch_submitted_count
+			submitted_by_cause[1 if upgrade else 0] += batch_submitted_count
+			batch_count += 1
 	if not perf_stats.is_empty():
 		perf_stats["mesh_submit_backlog_active_count"] = 1.0 if backlog_active else 0.0
 		perf_stats["mesh_submit_inspected_count"] = float(inspected_count)
@@ -1515,6 +1608,9 @@ func _submit_water_patch_mesh_requests(
 		perf_stats["mesh_request_in_flight_count"] = float(request_in_flight_count)
 		perf_stats["mesh_request_build_queued_count"] = float(request_build_queued_count)
 		perf_stats["mesh_submit_batch_count"] = float(batch_count)
+		perf_stats["mesh_hole_submitted_count"] = float(submitted_by_cause[0])
+		perf_stats["mesh_upgrade_submitted_count"] = float(submitted_by_cause[1])
+		perf_stats["mesh_upgrade_submit_held_count"] = float(upgrades_held)
 	return submitted_count
 
 func _water_patch_mesh_poll_budget() -> int:
@@ -1619,6 +1715,8 @@ func _poll_water_patch_mesh_results(perf_stats: Dictionary) -> int:
 			local_stale_count += 1
 			continue
 		mesh_pending_lod.erase(key)
+		# Its cause when polled: holes apply first (`TERRAIN-41` L2).
+		mesh_data["upgrade"] = _mesh_need(patches[key]) == MESH_NEED_UPGRADE
 		mesh_apply_queue.append(mesh_data)
 		polled_count += 1
 	var sorted_apply_queue_count := 0
@@ -1648,6 +1746,10 @@ func _poll_water_patch_mesh_results(perf_stats: Dictionary) -> int:
 func _sort_mesh_apply_queue_by_camera_priority() -> void:
 	var origin: Vector2i = _current_camera_patch_key()
 	mesh_apply_queue.sort_custom(func(a: Dictionary, b: Dictionary):
+		# Holes before upgrades, then nearest first.
+		var upgrade_a := bool(a.get("upgrade", false))
+		if upgrade_a != bool(b.get("upgrade", false)):
+			return not upgrade_a
 		var ax: int = int(a.get("patch_x", -1))
 		var ay: int = int(a.get("patch_z", -1))
 		var bx: int = int(b.get("patch_x", -1))
@@ -1673,11 +1775,21 @@ func _apply_ready_water_patch_meshes(
 	var processed_count: int = 0
 	var applied_count: int = 0
 	var processed_bytes: int = 0
+	var applied_by_cause := [0, 0]
+	var returned_count := 0
 	while processed_count < max_patches and not mesh_apply_queue.is_empty():
-		var mesh_data: Dictionary = mesh_apply_queue.pop_front()
+		var mesh_data: Dictionary = mesh_apply_queue.front()
+		var upgrade := _mesh_data_is_upgrade(mesh_data)
+		if upgrade and _upgrade_room_us() <= 0.0:
+			# No upgrade room: the queue's upgrades (holes sort first) go back to their requests
+			# (the bake cache answers them again), so they never hold a hole's mesh back.
+			returned_count += _return_upgrade_meshes()
+			continue
+		mesh_apply_queue.pop_front()
 		processed_bytes += _water_mesh_data_estimated_bytes(mesh_data)
 		if _apply_water_patch_mesh_data(mesh_data):
 			applied_count += 1
+			applied_by_cause[1 if upgrade else 0] += 1
 		processed_count += 1
 		var elapsed_ms := float(Time.get_ticks_usec() - apply_start_us) / 1000.0
 		if processed_count > 0 and elapsed_ms >= apply_budget_ms:
@@ -1688,7 +1800,30 @@ func _apply_ready_water_patch_meshes(
 		perf_stats["mesh_apply_processed_count"] = float(processed_count)
 		perf_stats["mesh_apply_processed_bytes"] = float(processed_bytes)
 		perf_stats["mesh_apply_stale_count"] = float(processed_count - applied_count)
+		perf_stats["mesh_hole_applied_count"] = float(applied_by_cause[0])
+		perf_stats["mesh_upgrade_applied_count"] = float(applied_by_cause[1])
+		perf_stats["mesh_upgrade_returned_count"] = float(returned_count)
 	return applied_count
+
+# Whether a polled mesh replaces one its patch's node draws at another step (an upgrade). O(1).
+func _mesh_data_is_upgrade(mesh_data: Dictionary) -> bool:
+	var key := Vector2i(int(mesh_data.get("patch_x", -1)), int(mesh_data.get("patch_z", -1)))
+	return _mesh_need(patches.get(key, {})) == MESH_NEED_UPGRADE
+
+# Puts the apply queue's upgrades back as upgrade requests, keeping its holes in order. Returns
+# how many went back. O(apply queue), at most its hard limit.
+func _return_upgrade_meshes() -> int:
+	var kept: Array[Dictionary] = []
+	var returned := 0
+	for mesh_data: Dictionary in mesh_apply_queue:
+		if not _mesh_data_is_upgrade(mesh_data):
+			kept.append(mesh_data)
+			continue
+		var key := Vector2i(int(mesh_data.get("patch_x", -1)), int(mesh_data.get("patch_z", -1)))
+		_queue_patch_mesh_refresh(key, int(mesh_data.get("lod_step", 1)))
+		returned += 1
+	mesh_apply_queue.assign(kept)
+	return returned
 
 func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 	var key: Vector2i = Vector2i(
@@ -1701,8 +1836,11 @@ func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.mesh = _baked_water_patch_mesh(mesh_data)
+	patch["held_mesh"] = PackedInt64Array([lod_step, int(patch.get("cover_generation", 0)),
+		int(patch.get("depth_signature", 0))])
 	patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = _water_mesh_stats_from_baked_data(mesh_data)
+	patch["held_mesh_stats"] = patch["mesh_stats"]
 	return true
 
 func _water_patch_mesh_data_matches_patch(

@@ -760,6 +760,7 @@ def flight_lines(report, every_s):
                 f"{owner} {statistics.mean(_flight_detail(row, 'vegetation', f'ledger_{owner}_ms') for row in rows):.2f}"
                 for owner in owners) + f"; measured {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_ms') for row in rows):.2f}"
                 f", predicted {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_predicted_ms') for row in rows):.2f}")
+        lines.extend(_flight_cause_lines(rows))
         lines.extend(_flight_unit_lines(sample))
         lines.append("   t s | wanted | missing | in flight | ready | resident | built | oldest wait s | in-view holes")
         elapsed, due = 0.0, 0.0
@@ -781,6 +782,23 @@ def flight_lines(report, every_s):
 
 
 UNIT_KINDS = ("show", "build", "hide", "step", "prewarm")
+
+
+def _flight_cause_lines(rows):
+    """The water's meshes by cause and the graded cell set builds held while holes waited
+    (`TERRAIN-41` L2), totals over the sample; nothing for a report without them."""
+    if not any("mesh_hole_applied_count" in ((row.get("scripts") or {}).get("water") or {}).get("details", {})
+               for row in rows):
+        return []
+    total = lambda record, key: sum(_flight_detail(row, record, key) for row in rows)
+    water = ", ".join(f"{name} {total('water', key):.0f}" for name, key in (
+        ("holes submitted", "mesh_hole_submitted_count"), ("applied", "mesh_hole_applied_count"),
+        ("upgrades submitted", "mesh_upgrade_submitted_count"), ("applied", "mesh_upgrade_applied_count"),
+        ("returned", "mesh_upgrade_returned_count"), ("shown with their mesh", "mesh_reshow_kept_count")))
+    held = sum(1 for row in rows if _flight_detail(row, "terrain", "graded_builds_held"))
+    queued = _flight_detail(rows[-1], "terrain", "graded_builds_queued")
+    return [f"   water meshes: {water}",
+            f"   graded cell set builds held in {held} of {len(rows)} frames, {queued:.0f} queued at the end"]
 
 
 def _flight_unit_lines(sample):
@@ -990,6 +1008,14 @@ def simple_point(a, b, fields):
     return "equal", ""
 
 
+def water_meshes_point(a, b):
+    """`different` when either side has a wet resident water patch without a mesh of its step."""
+    notes = [f"{side}: {check['mismatches']} of {check['wet']} wet ({', '.join(check['keys'])})"
+             for side, check in (("a", a.get("water_meshes")), ("b", b.get("water_meshes")))
+             if check and check.get("mismatches")]
+    return ("different", "; ".join(notes)) if notes else ("equal", "")
+
+
 def compare_digests(a, b, levels=None):
     """Per family (graded, buildings, lamps, roads, parked cars, vegetation, land covers, water) a list of
     `(point, sample, verdict, note)`.
@@ -1013,6 +1039,10 @@ def compare_digests(a, b, levels=None):
         if len(x) != len(y):
             rows.append((None, "", "different", f"{len(x)} settle points against {len(y)}"))
         out[family] = rows
+    # Every wet resident water patch draws a mesh of its own step on both sides (`TERRAIN-41` L2);
+    # a report that predates the check has nothing to say.
+    out["water_meshes"] = [(p.get("point"), p.get("sample", ""), *water_meshes_point(p, q))
+                           for p, q in zip(a.get("patch_digests", []), b.get("patch_digests", []))]
     same = a.get("water_pose", []) == b.get("water_pose", [])
     out["water"] = [(None, "water_pose", "equal" if same else "different", str(a.get("water_pose")))]
     return out

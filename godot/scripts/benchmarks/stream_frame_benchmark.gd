@@ -47,7 +47,8 @@
 ## Every settle point also records the building LOD batches in `building_digests` (per batch its
 ## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
 ## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`; with every
-## built terrain patch's land cover by digest and how many are stale, `RENDER-40`), and the road
+## built terrain patch's land cover by digest and how many are stale, `RENDER-40`, and the wet
+## resident water patches that draw no mesh of their own step, `TERRAIN-41` L2), and the road
 ## chunks drawn (per chunk its key, place and every surface's arrays) in `road_digests` and the
 ## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`), and the
 ## vegetation patches drawn (per visible installed patch its key, bands, detail and every batch's
@@ -952,7 +953,35 @@ func _record_patch_digest() -> void:
 		entry[layer] = {"resident": lines.size(), "built": renderer.patches.size(),
 			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
 	entry["land_cover"] = _land_cover_digest()
+	entry["water_meshes"] = _water_mesh_check()
 	_report.patch_digests.append(entry)
+
+# Every wet resident water patch draws a mesh of its own step (`TERRAIN-41` L2): `wet` counted,
+# `mismatches` those that do not, with their first keys. The node's held mesh where the renderer
+# records it (its step, cover generation and depth signature), else (a control) its mesh stats'
+# step with triangles emitted.
+func _water_mesh_check() -> Dictionary:
+	var wet := 0
+	var keys := PackedStringArray()
+	for key: Vector2i in _water.resident_patch_lookup:
+		var patch: Dictionary = _water.patches.get(key, {})
+		if int(patch.get("depth_nonzero_count", 0)) <= 0:
+			continue
+		wet += 1
+		var step := maxi(1, int(patch.get("lod_step", 1)))
+		var drawn := false
+		if patch.has("held_mesh"):
+			var held: PackedInt64Array = patch["held_mesh"]
+			drawn = (held.size() == 3 and held[0] == step
+				and held[1] == int(patch.get("cover_generation", 0))
+				and held[2] == int(patch.get("depth_signature", 0)))
+		else:
+			var stats: Dictionary = patch.get("mesh_stats", {})
+			drawn = int(stats.get("lod_step", 0)) == step and int(stats.get("emitted_triangles", 0)) > 0
+		if not drawn:
+			keys.append("%d,%d" % [key.x, key.y])
+	keys.sort()
+	return {"wet": wet, "mismatches": keys.size(), "keys": keys.slice(0, 8)}
 
 # The built terrain patches' land covers at a settle point (`RENDER-40`): per patch its key, the
 # bytes' digest and its revisions, from the script's own book, so a control's main-thread query
