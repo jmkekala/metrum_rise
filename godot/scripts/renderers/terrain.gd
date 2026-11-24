@@ -517,6 +517,13 @@ func _graded_material_changed(key: Variant) -> void:
 	if graded_tiles != null and key is Vector2i:
 		_graded_materials_changed[key] = true
 
+# A built patch's material takes another land cover or water map: its render clients (the water
+# reflection's copy) must follow. A patch record without a key (a test's) has none.
+func _patch_material_will_change(patch: Dictionary) -> void:
+	var key: Variant = patch.get("key")
+	if key is Vector2i:
+		patch_render_will_change.emit(key)
+
 # Lends the graded tiles patch `key`'s node, material and culling box after its residency,
 # payload or LOD step changed; a patch that is not resident or has no payload lends none.
 func _graded_patch_changed(key: Vector2i) -> void:
@@ -1593,7 +1600,7 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	_graded_material_changed(patch.get("key"))
 	if stage == patch.get("land_cover", {}):
 		return
-	patch_render_will_change.emit(patch["key"])
+	_patch_material_will_change(patch)
 	patch["spare_land_cover"] = patch.get("land_cover", {})
 	patch["land_cover"] = stage
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
@@ -2491,7 +2498,7 @@ func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> v
 			or int(patch.get("water_texture_width", 0)) != 2 or int(patch.get("water_texture_height", 0)) != 2
 			or int(patch.get("water_inner_offset_x", 0)) != 0 or int(patch.get("water_inner_offset_z", 0)) != 0
 			or int(patch.get("water_sample_width", 0)) != 2 or int(patch.get("water_sample_height", 0)) != 2):
-		patch_render_will_change.emit(patch["key"])
+		_patch_material_will_change(patch)
 	if patch.get("water_texture", null) != empty_water_texture:
 		material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
@@ -2711,7 +2718,7 @@ func _bind_water_texture_from_binding(
 		or int(patch.get("water_sample_height", 0)) != sample_height
 	)
 	if texture_changed or texture_layout_changed:
-		patch_render_will_change.emit(patch["key"])
+		_patch_material_will_change(patch)
 	if texture_changed:
 		material.set_shader_parameter("watermap", water_texture)
 	if texture_layout_changed:
