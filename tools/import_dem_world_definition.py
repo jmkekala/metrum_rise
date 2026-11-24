@@ -640,6 +640,8 @@ def main() -> int:
             f"water: {water.report['bodies_in_world']} polygons, "
             f"{len(water.report['rivers_dropped_narrow'])} narrow rivers not imported "
             f"({', '.join(f"{r['key']} {r['inscribed_width_m']:.2f} m" for r in water.report['rivers_dropped_narrow'])}), "
+            f"{len(water.report['rivers_dropped_level'])} rivers joining lakes at different "
+            f"levels not imported, "
             f"{water.report['bodies_dropped_under_min_samples']} dropped, "
             f"{len(lake_fills)} lake fills, {len(open_water_fills)} open-water fills, "
             f"{water.report['water_samples']} water samples"
