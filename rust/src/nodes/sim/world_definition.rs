@@ -1398,9 +1398,7 @@ mod tests {
     // 4096 samples or more, so the radix sort runs.
     #[test]
     fn authored_water_solve_matches_the_dense_reference_bitwise() {
-        let config = WorldConfig::new(1600.0, 1600.0, 1600.0, 10.0)
-            .with_terrain_resolution(10.0)
-            .with_chunking(160.0, 0.0);
+        let config = WorldConfig::new(1280.0, 1280.0, 1280.0, 10.0).with_terrain_resolution(8.0);
         let mut core = SimCore {
             treasury: CityTreasury::new(0.0),
             terrain_dirty: false,
@@ -1414,7 +1412,7 @@ mod tests {
                 let (fx, fz) = (x as f32, z as f32);
                 // A wide basin with a pillar at its centre, a small basin east of it behind a
                 // strait, and a low corner on the world edge. Sample (g, h) is world
-                // (10 g - 800, 10 h - 800).
+                // (8 g - 640, 8 h - 640).
                 let big = ((fx - 64.0).powi(2) + (fz - 80.0).powi(2)).sqrt();
                 let small = ((fx - 136.0).powi(2) + (fz - 80.0).powi(2)).sqrt();
                 let mut ground = 200.0f32;
@@ -1446,23 +1444,23 @@ mod tests {
             config: core.config,
             terrain: core.heightmap.clone(),
             lake_fills: vec![
-                lake(-160.0, 72.0),
-                lake(-260.0, 66.0),
-                lake(560.0, 58.0),
+                lake(-128.0, 72.0),
+                lake(-208.0, 66.0),
+                lake(448.0, 58.0),
                 AuthoredLakeFill {
-                    world_x: -790.0,
-                    world_z: -790.0,
+                    world_x: -632.0,
+                    world_z: -632.0,
                     surface_elevation_m: 30.0,
                 },
             ],
             open_water_fills: vec![
                 AuthoredOpenWaterFill {
-                    world_x: -790.0,
-                    world_z: -790.0,
+                    world_x: -632.0,
+                    world_z: -632.0,
                     surface_elevation_m: 18.0,
                 },
                 AuthoredOpenWaterFill {
-                    world_x: 560.0,
+                    world_x: 448.0,
                     world_z: 0.0,
                     surface_elevation_m: 65.0,
                 },
@@ -1473,7 +1471,7 @@ mod tests {
             loaded,
             crate::simulation::vegetation::VegetationConfig::default(),
         );
-        core.begin_world_lake_fill_preview_internal(Vector2::new(-200.0, 0.0), 75.0)
+        core.begin_world_lake_fill_preview_internal(Vector2::new(-160.0, 0.0), 75.0)
             .expect("preview should start");
         let check = |core: &SimCore, step: &str| {
             let (depth, debug) = dense_reference_solve(core);
@@ -1507,9 +1505,9 @@ mod tests {
         );
         let mut depths = vec![loaded];
         for (step, (x, z), radius, strength) in [
-            ("cut shore", (-690.0, 0.0), 30.0, -6.0),
-            ("dam strait", (420.0, 0.0), 20.0, 30.0),
-            ("raise island", (-160.0, 0.0), 40.0, 25.0),
+            ("cut shore", (-552.0, 0.0), 24.0, -6.0),
+            ("dam strait", (336.0, 0.0), 16.0, 30.0),
+            ("raise island", (-128.0, 0.0), 32.0, 25.0),
         ] {
             core.sculpt_terrain_internal(Vector2::new(x, z), radius, strength);
             depths.push(check(&core, step));
