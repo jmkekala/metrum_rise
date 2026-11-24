@@ -18,6 +18,9 @@ extends Node3D
 
 # Temporary render clients must restore their saved resources before a patch is changed/recycled.
 signal patch_render_will_change(key: Vector2i)
+# A built patch's node was shown or hidden (`RENDER-75`): the water reflection keeps its proxies in
+# step from these and the signal above, not by walking the built patches.
+signal patch_visibility_changed(key: Vector2i)
 signal patches_will_reset
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
@@ -1204,10 +1207,16 @@ func _apply_patch_visibility_for_residency(
 	patch: Dictionary,
 	patch_data: Dictionary
 ) -> void:
-	var visible_for_residency := resident_patch_lookup.has(key)
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 	if patch_node != null:
-		patch_node.visible = visible_for_residency
+		_set_patch_node_visible(key, patch_node, resident_patch_lookup.has(key))
+
+# Shows or hides built patch `key`'s node, telling the listeners of patch_visibility_changed.
+func _set_patch_node_visible(key: Vector2i, patch_node: MeshInstance3D, shown: bool) -> void:
+	if patch_node.visible == shown:
+		return
+	patch_node.visible = shown
+	patch_visibility_changed.emit(key)
 
 # The streaming core's units (`RENDER-32-M`, `stream/layers/terrain.rs`): the StreamNode decides
 # residency, levels of detail and prewarm after the camera moved and calls these, one unit at a
@@ -1268,7 +1277,7 @@ func stream_deactivate(key: Vector2i) -> void:
 	resident_patch_lookup.erase(key)
 	if patches.has(key):
 		var patch_node: MeshInstance3D = patches[key]["node"]
-		patch_node.visible = false
+		_set_patch_node_visible(key, patch_node, false)
 		if graded_tiles != null:
 			graded_tiles.release_patch(key, patch_node)
 	_graded_patch_changed(key)
@@ -1281,7 +1290,7 @@ func stream_build(key: Vector2i, step: int) -> int:
 		_create_patch(key, step)
 	if not patches.has(key):
 		return -2
-	(patches[key]["node"] as MeshInstance3D).visible = false
+	_set_patch_node_visible(key, patches[key]["node"] as MeshInstance3D, false)
 	return get_patch_surface_generation(key)
 
 ## Gives resident `key` the mesh of step `step`.

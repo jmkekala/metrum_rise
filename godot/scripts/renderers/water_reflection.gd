@@ -51,8 +51,8 @@ const VOTE_ROWS := 12
 const VOTE_MAX_DISTANCE_M := 3000.0
 # Screen share added around the water's rectangle for rays the ripples bend out of it.
 const CROP_MARGIN := 0.03
-# Frames between syncs of the reflection world with the scene's resident patches. Residency
-# changes slowly; a patch a few frames late only shows late in the reflection.
+# Frames over which the scaffold batches' proxies are checked round robin
+# (water_reflection_sources.gd); a batch a few frames late only shows late in the reflection.
 const PROXY_SYNC_FRAMES := 10
 
 var _simulation: Node
@@ -84,11 +84,12 @@ var _vote_us := 0
 var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
 var _ray_directions := PackedVector3Array()
-# The terrain patches the reflection world mirrors, by instance id, to [proxy instance RID,
+# The terrain patches the reflection world mirrors, by patch key, to [proxy instance RID,
 # base RID, transform, material, custom AABB, extra cull margin]. Meshes are shared; terrain uses a
 # cached clip-material variant.
 var _proxies := {}
-var _proxy_frame := 0
+# Patch keys the last sync looked at, for the perf channel (`RENDER-75`).
+var _proxy_visits := 0
 var _terrain: Node
 # Reflection variants of terrain materials, by source.
 var _grid_materials := {}
@@ -97,6 +98,8 @@ var _grid_materials := {}
 static var _proxy_shaders := {}
 # Per source shader, its material parameters' names, which a refresh compares.
 var _shader_parameters := {}
+# Patch keys whose proxy may be out of step since the last sync, to whether the copy of their
+# material must be refreshed (a render change) or not (only shown or hidden).
 var _dirty_terrain_patches := {}
 # The vegetation renderer: the stream node draws its tree impostors in this pass's world too
 # (`RENDER-32-E`), from the frame they install in the scene.
@@ -116,7 +119,11 @@ func setup(
 		_vegetation = water.get_node_or_null("../Vegetation")
 	if _terrain != null:
 		_terrain.patch_render_will_change.connect(_on_terrain_patch_will_change)
+		_terrain.patch_visibility_changed.connect(_on_terrain_patch_visibility_changed)
 		_terrain.patches_will_reset.connect(_on_terrain_reset)
+		_terrain.visibility_changed.connect(_on_terrain_visibility_changed)
+		# Patches shown before these connections sent their events.
+		_on_terrain_visibility_changed()
 	_sun = sun
 	_main_environment = environment
 	_link_vegetation()
@@ -193,11 +200,13 @@ func _exit_tree() -> void:
 func _update_before_draw() -> void:
 	var start_us := Time.get_ticks_usec()
 	_vote_us = 0
+	_proxy_visits = 0
 	_update_mirrors()
 	if PerfDebug.is_enabled():
 		PerfDebug.record("water_reflection", float(Time.get_ticks_usec() - start_us) / 1000.0, {
 			"vote_ms": float(_vote_us) / 1000.0,
-			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3])})
+			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3]),
+			"proxy_visits": _proxy_visits})
 
 func _update_mirrors() -> void:
 	_building_proxies.sync()
@@ -228,7 +237,6 @@ func _update_mirrors() -> void:
 			synced = true
 			_sync_environment()
 			_sync_key_light()
-			_proxy_frame += 1
 			_sync_proxies()
 		# Mirrored left to right: see _place_camera.
 		_place_camera(mirror, index, main_camera, main_viewport,
@@ -317,7 +325,9 @@ func _place_camera(
 # Screen rectangle, in [0, 1], covering the water: the union of the resident water patches laid
 # on the plane at `plane_y`, each clipped to the space in front of the camera.
 # Patch bounds are coarse, so the rectangle can include land, never exclude water. Empty when
-# no such patch is in front of the camera. O(resident water patches) per frame.
+# no such patch is in front of the camera. O(resident water patches) per frame: a water patch is
+# drawn only while resident, and the built ones that left are only hidden, so a walk over every
+# built patch grew with the distance travelled (`RENDER-75`).
 func _water_screen_rect(camera: Camera3D, plane_y: float) -> Rect2:
 	if _water == null:
 		return Rect2(0.0, 0.0, 1.0, 1.0)
@@ -327,8 +337,8 @@ func _water_screen_rect(camera: Camera3D, plane_y: float) -> Rect2:
 	var near_m := camera.near * 1.5
 	var lo := Vector2(INF, INF)
 	var hi := Vector2(-INF, -INF)
-	for patch in _water.patches.values():
-		var node: MeshInstance3D = patch.get("node")
+	for key: Vector2i in _water.resident_patch_lookup:
+		var node: MeshInstance3D = (_water.patches.get(key, {}) as Dictionary).get("node")
 		if node == null or not node.visible:
 			continue
 		# The mesh is flat; its height comes from the shader, so its bounds say nothing of level.
@@ -481,13 +491,25 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 # by the stream node, building batches by Rust with their batches, scaffolds by their events
 # (water_reflection_sources.gd).
 # Agents, grass, props, understory, near tree meshes, hedges, lots and roads are left out; a
-# bridge would need its own geometry first. Each frame handles
-# one PROXY_SYNC_FRAMES-th of the patches and of the proxies, round robin, so no frame pays for
-# the whole scan: done every tenth frame at once it was the frame-time p95.
-# O(resident patches) checks and O(changed patches + resident patches / PROXY_SYNC_FRAMES)
-# uploads per frame. Terrain changes bypass the round robin so shore geometry never trails.
+# bridge would need its own geometry first.
+# A proxy follows its patch's node: the events terrain.gd sends when it changes what a patch
+# draws (patch_render_will_change: a restage, a level change, a removal) or shows or hides it
+# (patch_visibility_changed), the reset, and the terrain node's own visibility mark the patch, and
+# the next sync brings exactly the marked patches' proxies in step. A round robin over every built
+# patch (hidden ones included, which only grow with the distance travelled) cost 2 us a built
+# patch a frame: 12 ms at 5,459 on a 60 km map (`RENDER-75`).
 func _on_terrain_patch_will_change(key: Vector2i) -> void:
 	_dirty_terrain_patches[key] = true
+
+func _on_terrain_patch_visibility_changed(key: Vector2i) -> void:
+	if not _dirty_terrain_patches.has(key):
+		_dirty_terrain_patches[key] = false
+
+# Hiding or showing the terrain node shows or hides every patch with it. O(built patches), once a
+# toggle (a debug view or a benchmark variant), never a frame.
+func _on_terrain_visibility_changed() -> void:
+	for key: Vector2i in _terrain.patches:
+		_on_terrain_patch_visibility_changed(key)
 
 func _on_terrain_reset() -> void:
 	for proxy in _proxies.values():
@@ -500,48 +522,41 @@ func _on_terrain_reset() -> void:
 	_vote_sources.clear()
 	_ray_levels.clear()
 
+# Brings the marked patches' proxies in step with their nodes: a drawn patch gets its proxy, made
+# or updated; a hidden, removed or meshless one loses it. O(patches marked since the last sync)
+# a sync, independent of the built and the drawn patches; marks wait while no mirror draws, at
+# most one a patch. The proxy book after a sync is one proxy per drawn patch, holding its mesh,
+# transform, material copy, culling box and margin.
 func _sync_proxies() -> void:
 	var scenario := _world.scenario
-	var slice := _proxy_frame % PROXY_SYNC_FRAMES
-	var index := 0
-	if _terrain != null:
-		for key in _terrain.patches:
-			var dirty := _dirty_terrain_patches.has(key)
-			index += 1
-			if not dirty and index % PROXY_SYNC_FRAMES != slice:
-				continue
-			var patch: Dictionary = _terrain.patches[key]
-			var node := patch.get("node") as MeshInstance3D
-			if node == null or not node.visible or node.mesh == null:
-				continue
-			var material := node.material_override as ShaderMaterial
-			# Share the exact displayed mesh: a coarser grid (or a heightmap substitute for
-			# baked ground) crosses the lake plane at a different shore and masks its reflection.
-			if material != null:
-				material = _proxy_material(material, dirty)
-			_sync_proxy(_proxies, node, node.mesh.get_rid(), material, scenario)
-	# A signalled patch removal/hide must drop its old occluder before this draw too.
-	# Check all existing proxies on change frames; ordinary frames retain the round robin.
-	for id in _proxies.keys():
-		if _dirty_terrain_patches.is_empty() and id % PROXY_SYNC_FRAMES != slice:
+	_proxy_visits = _dirty_terrain_patches.size()
+	for key: Vector2i in _dirty_terrain_patches:
+		var patch: Dictionary = _terrain.patches.get(key, {}) if _terrain != null else {}
+		var node := patch.get("node") as MeshInstance3D
+		if node == null or not node.is_visible_in_tree() or node.mesh == null:
+			var proxy: Array = _proxies.get(key, [])
+			if not proxy.is_empty():
+				RenderingServer.free_rid(proxy[0])
+				_proxies.erase(key)
 			continue
-		var source := instance_from_id(id) as GeometryInstance3D
-		if source == null or not source.is_visible_in_tree():
-			RenderingServer.free_rid(_proxies[id][0])
-			_proxies.erase(id)
+		var material := node.material_override as ShaderMaterial
+		# Share the exact displayed mesh: a coarser grid (or a heightmap substitute for
+		# baked ground) crosses the lake plane at a different shore and masks its reflection.
+		if material != null:
+			material = _proxy_material(material, _dirty_terrain_patches[key])
+		_sync_proxy(key, node, node.mesh.get_rid(), material, scenario)
 	_dirty_terrain_patches.clear()
 
 func _sync_proxy(
-	proxies: Dictionary, source: GeometryInstance3D, base: RID, material: Material, scenario: RID
+	key: Vector2i, source: GeometryInstance3D, base: RID, material: Material, scenario: RID
 ) -> void:
-	var id := source.get_instance_id()
-	var proxy: Array = proxies.get(id, [])
+	var proxy: Array = _proxies.get(key, [])
 	if proxy.is_empty():
 		var instance := RenderingServer.instance_create2(base, scenario)
 		RenderingServer.instance_geometry_set_cast_shadows_setting(
 			instance, RenderingServer.SHADOW_CASTING_SETTING_OFF)
 		proxy = [instance, base]
-		proxies[id] = proxy
+		_proxies[key] = proxy
 	elif proxy[1] != base:
 		# A level change gives the patch a new mesh: the instance takes it as its base and keeps
 		# its scenario, transform, material and bounds, where a new instance (freed and created

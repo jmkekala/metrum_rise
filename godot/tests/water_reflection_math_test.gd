@@ -8,6 +8,34 @@ const Reflection := preload("res://scripts/renderers/water_reflection.gd")
 class TerrainSource extends Node3D:
 	var patches := {}
 
+class CountedTerrain extends Node3D:
+	var patches: CountedPatches
+
+# Counts the visits a walk over the built patches makes (`RENDER-75`): iterating it (`for key in
+# patches`) or reading it by key. The reflection's sync must touch only the patches marked since it
+# last ran.
+class CountedPatches extends RefCounted:
+	var book := {}
+	var reads := 0
+
+	func _iter_init(iter: Array) -> bool:
+		iter[0] = 0
+		return book.size() > 0
+
+	func _iter_next(iter: Array) -> bool:
+		iter[0] += 1
+		return iter[0] < book.size()
+
+	func _iter_get(iter: Variant) -> Variant:
+		reads += 1
+		return book.keys()[iter]
+
+	# Called as the sync calls a Dictionary's get(key, default): a script method takes precedence.
+	@warning_ignore("native_method_override")
+	func get(key: Variant, default: Variant = null) -> Variant:
+		reads += 1
+		return book.get(key, default)
+
 class VoteSource extends Node:
 	var sources := PackedInt64Array([0, 0, 1])
 	var marches := 0
@@ -53,7 +81,10 @@ func _clip_coverage(distance_m: float, pixel_span_m: float) -> float:
 func _run() -> void:
 	_test_vote_cache()
 	_test_fixed_target()
-	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader")
+	_test_proxy_events()
+	# The mirror clip lives in the surface include the terrain shader pulls in.
+	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader") \
+		+ FileAccess.get_file_as_string("res://scripts/shaders/terrain_surface.gdshaderinc")
 	_expect(terrain_code.contains("alpha_to_coverage_and_one, depth_draw_always"),
 		"mirror coverage must write depth on surviving MSAA samples")
 	_expect(not terrain_code.contains("ALPHA_SCISSOR_THRESHOLD")
@@ -81,14 +112,13 @@ func _run() -> void:
 	terrain.patches[Vector2i.ZERO] = {"node": source}
 	renderer._terrain = terrain
 	renderer._world = World3D.new()
-	renderer._proxy_frame = 1
+	renderer._on_terrain_patch_visibility_changed(Vector2i.ZERO)
 	renderer._sync_proxies()
-	var id := source.get_instance_id()
+	var id := Vector2i.ZERO
 	_expect(renderer._proxies[id][1] == source.mesh.get_rid(), "mirror must share the displayed terrain geometry")
 	var copy: ShaderMaterial = renderer._grid_materials[material]
 	var instance: RID = renderer._proxies[id][0]
-	# A texture/material upload must bypass the round robin and refresh the copy.
-	renderer._proxy_frame = 2
+	# A texture/material upload must refresh the copy in the same frame.
 	source.mesh = PlaneMesh.new()
 	material.set_shader_parameter("site_concrete_brightness", 12.0)
 	material.set_shader_parameter("heightmap", ImageTexture.create_from_image(
@@ -115,8 +145,7 @@ func _run() -> void:
 	for boundary in range(1, 6):
 		_expect(absf(_sample_ramp(0.0, boundary - 0.00001) - _sample_ramp(0.0, boundary + 0.00001)) < 0.0001,
 			"mip filtering must remain continuous at LOD %d" % boundary)
-	# Remove a patch outside its cleanup slice: the signal must drop it in this frame.
-	renderer._proxy_frame = (id + 1) % Reflection.PROXY_SYNC_FRAMES
+	# A removed patch: the signal must drop its proxy in this frame.
 	terrain.patches.erase(Vector2i.ZERO)
 	source.visible = false
 	renderer._on_terrain_patch_will_change(Vector2i.ZERO)
@@ -128,6 +157,77 @@ func _run() -> void:
 	print("water_reflection_math_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
 
+
+# The proxies follow the terrain's events (`RENDER-75`): a sync visits only the patches marked since
+# the last one, however many are built, and leaves one proxy per drawn patch in the same frame.
+func _test_proxy_events() -> void:
+	const BUILT := 2000
+	const SIDE := 50
+	var renderer := Reflection.new()
+	var terrain := CountedTerrain.new()
+	root.add_child(terrain)
+	var book := CountedPatches.new()
+	terrain.patches = book
+	var mesh := PlaneMesh.new()
+	var drawn: Array[Vector2i] = []
+	for index in BUILT:
+		var key := Vector2i(index % SIDE, index / SIDE)
+		var node := MeshInstance3D.new()
+		node.mesh = mesh
+		node.position = Vector3(key.x * 256.0, 0.0, key.y * 256.0)
+		# 64 drawn; every other built patch is hidden, as after a long flight.
+		node.visible = key.x < 8 and key.y < 8
+		terrain.add_child(node)
+		book.book[key] = {"node": node}
+		if node.visible:
+			drawn.append(key)
+	renderer._terrain = terrain
+	renderer._world = World3D.new()
+	for key in drawn:
+		renderer._on_terrain_patch_visibility_changed(key)
+	book.reads = 0
+	renderer._sync_proxies()
+	_expect(renderer._proxies.size() == drawn.size() and renderer._proxy_visits == drawn.size(),
+		"the first sync must mirror the %d drawn patches, visiting only them (visited %d, %d proxies)"
+			% [drawn.size(), renderer._proxy_visits, renderer._proxies.size()])
+	_expect(book.reads <= drawn.size(), "the first sync read %d built patches" % book.reads)
+	# A frame with no event touches no patch.
+	book.reads = 0
+	for frame in 20:
+		renderer._sync_proxies()
+	_expect(book.reads == 0 and renderer._proxy_visits == 0,
+		"syncs without events must visit no built patch (read %d)" % book.reads)
+	# Shown and hidden in one frame: both proxies follow in that frame.
+	var shown := Vector2i(20, 20)
+	var hidden := drawn[5]
+	(book.book[shown]["node"] as MeshInstance3D).visible = true
+	renderer._on_terrain_patch_visibility_changed(shown)
+	(book.book[hidden]["node"] as MeshInstance3D).visible = false
+	renderer._on_terrain_patch_visibility_changed(hidden)
+	book.reads = 0
+	renderer._sync_proxies()
+	_expect(renderer._proxies.has(shown) and not renderer._proxies.has(hidden),
+		"a shown patch must gain and a hidden one lose its proxy in the same frame")
+	_expect(book.reads == 2 and renderer._proxy_visits == 2,
+		"two events must cost two visits (read %d)" % book.reads)
+	var node: MeshInstance3D = book.book[shown]["node"]
+	var proxy: Array = renderer._proxies[shown]
+	_expect(proxy[1] == mesh.get_rid() and proxy[2] == node.global_transform
+		and proxy[4] == node.custom_aabb and proxy[5] == node.extra_cull_margin,
+		"a shown patch's proxy must hold its mesh, transform, box and margin")
+	# Hiding the terrain node hides every patch's proxy; showing it brings them back.
+	terrain.visible = false
+	renderer._on_terrain_visibility_changed()
+	renderer._sync_proxies()
+	_expect(renderer._proxies.is_empty(), "a hidden terrain must leave no proxy")
+	terrain.visible = true
+	renderer._on_terrain_visibility_changed()
+	renderer._sync_proxies()
+	_expect(renderer._proxies.size() == drawn.size(), "a shown terrain must mirror its drawn patches again")
+	renderer._on_terrain_reset()
+	_expect(renderer._proxies.is_empty(), "a reset must free every proxy")
+	renderer.free()
+	terrain.free()
 
 # The mirror's target keeps one size across crops (`RENDER-27` WR1a), and every texel of the
 # crop's block, its top left, sees the ray it saw in a target of the crop's own size.
