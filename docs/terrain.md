@@ -20516,6 +20516,91 @@ cover and water map marks did show side-systematic water pixels (47,635 on the s
 after is therefore not shown, and cannot be with this tool; the proxy book's equality at the
 settled points is the exact comparison.
 
+### The water reflection's screen rectangle follows the water patches' events (`RENDER-76`, round R76, 2026-11-24)
+
+**What the rectangle is for.** Each mirror crops its frustum to the screen rectangle the resident
+water patches cover once laid on its plane (`_water_screen_rect` in `water_reflection.gd`): the
+crop sets the off-axis frustum and the block of the fixed-size target the water samples
+(`_place_camera`, `water_reflection_rect`), and an empty one turns the mirror off. It is not a
+scissor over a picture drawn anyway: a different crop moves every texel of the reflection, so it
+must equal the old rectangle exactly. The old rectangle projected every resident water patch's
+bounds (a dry patch's bounds are its centre, a wet one's its mesh box), each clipped to the half
+space in front of the camera (1.5 times the near plane), then added a 3 % margin and clamped to
+the screen plus that margin. Each mirrored frame it walked every resident water patch in GDScript:
+4.3-7.5 ms a frame on the 60 km flight (2.3 us a patch, 2,809-3,380 resident).
+
+**What keeps it now.** `water.gd` sends `patch_bounds_changed(key)` where a patch's part can
+change: it becomes resident or leaves, is shown or hidden, takes another mesh (its box) or moves,
+or is freed; `patches_cleared` on a reset. The reflection marks the key and, each frame, brings a
+Rust book (`WaterScreenHull`, `nodes/sim/render/water_screen_hull.rs`) to the marked patches: the
+resident, shown patches' bounds on the ground, the multiset of their corners and the corners'
+convex hull with collinear boundary corners kept. An event costs `O(log corners)`; the hull is
+rebuilt (`O(corners)`, a monotone chain over the already sorted corners, no allocation once grown)
+only when a corner that came or went was not strictly inside it. A mirror reuses its last
+rectangle while no event came and its plane, the screen and the camera (transform, camera
+transform, projection, near) are unchanged: `O(1)`.
+
+**Why the hull gives the same rectangle.** A perspective is a projective map on the half-plane in
+front of the camera (its divisor, the depth, is positive there), so each screen coordinate is
+monotone along every segment there and takes its extremes over a convex region at the region's
+vertices. Every point the walk projects (patch corners in front, and where patch edges cross the
+clipping line) lies in the hull cut to that half-plane, whose vertices are the hull's corners in
+front, each a patch corner the walk projects with the same arithmetic, and the at most two points
+where the hull's boundary crosses the clipping line. When the near plane does not cut the hull,
+the hull's corners give every side. When it does, a side is settled when the corners' extreme is
+beyond what the two crossings give (the walk's own point attains it), or when a point of the
+walk's own set reaches past the screen edge on that side (the walk's side is then clamped to the
+same margin). For points of the walk's own set the reflection looks at the patches in the 3 x 3
+patch keys about the crossings, the camera's foot and the ground under the middles of the screen's
+edges, through the walk's own per-patch code. A side none of these settles falls back to the walk
+for that rectangle, counted (`rect_walks` in the perf record). Ties: a side whose extreme lies
+along a hull edge takes the same float from any corner on it, because the collinear corners are
+kept.
+
+**Bound** (stated at the code): `O(1)` a mirror on a frame with no water patch event and no camera
+change; otherwise `O(h)` projections, `h` the hull's boundary corners (the resident set's outline,
+60-76 a frame on the 60 km flight, not growing with the patches inside it), plus, where the near
+plane cuts the hull, at most 63 patches; the walk, `O(resident water patches)`, only for a
+rectangle those leave open (none on the final scripts' rows below). Events: `O(patches marked)` a
+frame, plus `O(corners)` when the hull changes.
+
+**Exactness check.** `METRUM_WATER_RECT_CHECK=1` (untimed) makes every rectangle the old way too
+and counts the unequal ones; the stream benchmark records the running counts per row
+(`rect_check`: checked, unequal, walks). Over `flight_low`, `flight_high` and `flight_jump`:
+8,442 rectangles
+checked on the 60 km copy and 5,473 on the shipped Kuopio, none unequal and none walked (one run
+each with the final scripts). The round's first build, without the screen edges' ground, was equal
+on 7,845 and 5,792 rectangles too, but fell back to the walk for 6 of the 60 km ones (5 in
+`flight_high`'s motion, 1 in `flight_jump`'s).
+
+**Measured** (`flight_high`, 60 km Kuopio, R75's command: `tools/stream_benchmark.py run --phases
+flight_high --settle-timeout 900 --detail --drawn --cpus` the eight P-cores, 8 workers; both sides
+this round's release library, before = the scripts of `dev` `43ab183a8`; one diagnostic run a
+side, back to back, load average 2.5-5.5; not acceptance timing):
+
+| Leg | hook ms a mirrored frame | rectangle ms | main thread on-CPU ms a frame | frame p50 ms | builds a frame, missing max |
+|---|---|---|---|---|---|
+| start's settle | 5.54 / 1.23 | 4.47 / 0.15 | 17.84 / 13.48 | 18.2 / 13.9 | 2.76 / 2.76, 1,951 / 1,951 |
+| flight, 2,400 m/s | 8.29 / 1.88 | 6.75 / 0.22 | 16.74 / 12.53 | 19.5 / 13.5 | 1.81 / 1.90, 570 / 237 |
+| turn, 1 s | 8.81 / 1.99 | 7.54 / 0.22 | 15.14 / 13.75 | 13.5 / 13.8 | 2.49 / 2.46, 981 / 711 |
+| settle after it | 7.91 / 0.98 | 6.62 / 0.14 | 22.46 / 14.47 | 22.5 / 15.1 | 1.88 / 1.48, 954 / 618 |
+
+After, a mirrored frame projects 60-76 points on average (at most 153) and walks no patch; the
+rectangle's 0.14-0.22 ms includes the events' book updates. What is left in the hook is the proxy
+sync (0.8-1.6 ms, `TERRAIN-41`'s shared materials). The installs a frame are unchanged (the flight
+built 1,192 patches after against 867 before in its 8.4 s, as its frames ran faster); missing
+falls with the faster frames. A first pair the same way (`a-high`, before's row lost to a
+benchmark script error) gave the same after-side numbers within 0.1 ms.
+
+**Test.** `water_reflection_math_test` (`_test_rect_kept`, in `run.sh`'s main Godot chain): 2,377
+resident patches in a disc, dry and wet; over seven poses (high and low obliques along and across
+the grid, straight down, level, outside the disc) and two planes, every rectangle equals the
+walk's, no walk falls back, a camera move reads at most 60 patches and projects fewer points than
+a quarter of the resident count, ten repeated frames read and project nothing, and residency and
+mesh events keep it equal. Against the old script (adapted only to its two-argument call) it fails
+28 checks: a camera move read 4,754 patch records and ten idle frames 47,540. The Rust book has
+its own unit tests (hull against a brute-force boundary through events, shared corners).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
