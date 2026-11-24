@@ -194,6 +194,11 @@ var _probe_heights := Vector2.ZERO
 # The open settle wait's frames (`RENDER-43`): what the last sample was, its frame count, worst
 # frame and its compilations, the counters at its start and its last frame's end.
 var _wait := {}
+# METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run: it walks every built terrain patch
+# after each draw): the water reflection's terrain proxies against the patches the frame drew,
+# recorded per row as `proxies` (see _on_proxy_check_post_draw).
+var _proxy_checking := false
+var _proxy_check := []
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -332,6 +337,9 @@ func run(bench: Node) -> void:
 	if _probe != null:
 		_probe_heights = _terrain_heights(bench.simulation_node, world)
 		RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
+	_proxy_checking = OS.get_environment("METRUM_STREAM_PROXY_CHECK") == "1" and _reflection != null
+	if _proxy_checking:
+		RenderingServer.frame_post_draw.connect(_on_proxy_check_post_draw)
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
 	if phases.has("census") and not await _census(bench, base):
@@ -447,6 +455,8 @@ func run(bench: Node) -> void:
 	if _probe != null:
 		RenderingServer.frame_post_draw.disconnect(_on_probe_post_draw)
 		_report.drawn_probe = _probe.report()
+	if _proxy_checking:
+		RenderingServer.frame_post_draw.disconnect(_on_proxy_check_post_draw)
 	if OS.get_environment("METRUM_STREAM_INVENTORY") == "1":
 		_report["inventory"] = PipelineInventory.collect(main)
 	if _scripts:
@@ -1253,6 +1263,8 @@ func _row(index: int) -> Dictionary:
 		# The probe's last drawn frame (`TERRAIN-41`); a library without `backlog` records none.
 		if _probe.has_method("backlog"):
 			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water"))}
+	if _proxy_checking:
+		row["proxies"] = _proxy_check
 	_previous_streams = streams
 	_last_us = now_us
 	return row
@@ -1279,6 +1291,37 @@ static func _terrain_heights(simulation: Node, world: Vector2) -> Vector2:
 			low = minf(low, height)
 			high = maxf(high, height)
 	return Vector2(low, high)
+
+# The water reflection's terrain proxies against the terrain patches the frame just drew
+# (`RENDER-75`): [a mirror drew, patches drawn, of them with a proxy, with a proxy holding the
+# patch's mesh, transform, material copy, culling box and margin as drawn, proxies in all, an
+# order-free hash of the drawn keys]. A proxy book in step has drawn = held = matching = proxies.
+# Reads the reflection's private book, keyed by patch key or (before `RENDER-75`) by node id.
+func _on_proxy_check_post_draw() -> void:
+	var proxies: Dictionary = _reflection.get("_proxies")
+	var copies: Dictionary = _reflection.get("_grid_materials")
+	var mirrors: Array = _reflection.get("_mirrors")
+	var drawn := 0
+	var held := 0
+	var matching := 0
+	var keys_hash := 0
+	for key: Vector2i in _terrain.patches:
+		var node := (_terrain.patches[key] as Dictionary).get("node") as MeshInstance3D
+		if node == null or not node.is_visible_in_tree() or node.mesh == null:
+			continue
+		drawn += 1
+		keys_hash = (keys_hash + hash(key)) & 0x7fffffff
+		var proxy: Array = proxies.get(key, proxies.get(node.get_instance_id(), []))
+		if proxy.is_empty():
+			continue
+		held += 1
+		if (proxy.size() >= 6 and proxy[1] == node.mesh.get_rid()
+				and proxy[2] == node.global_transform
+				and proxy[3] == copies.get(node.material_override)
+				and proxy[4] == node.custom_aabb and proxy[5] == node.extra_cull_margin):
+			matching += 1
+	var active := mirrors.any(func(mirror: Array) -> bool: return mirror[3])
+	_proxy_check = [active, drawn, held, matching, proxies.size(), keys_hash]
 
 func _on_pre_draw() -> void:
 	_pre_draw_us = Time.get_ticks_usec()
