@@ -20454,8 +20454,9 @@ or while the patch is hidden; what the round robin alone caught was a patch show
 **What drives it now.** `terrain.gd` sends `patch_visibility_changed(key)` where a built patch's
 node is shown or hidden (`stream_activate` and a restage through
 `_apply_patch_visibility_for_residency`, `stream_deactivate`, `stream_build`). The reflection marks
-the key (with whether its material copy must be refreshed, as before only on
-`patch_render_will_change`) and its sync visits exactly the marked keys: a drawn patch gets its
+the key (with whether its material copy must be refreshed: on `patch_render_will_change`, which
+`terrain.gd` now also sends when a patch's material takes another land cover or water map) and
+its sync visits exactly the marked keys: a drawn patch gets its
 proxy made or updated, any other loses it. The proxies are keyed by patch key, the terrain node's
 own visibility and the reset mark every patch once (an event, never a frame), and the patches
 shown before the reflection's setup are marked at setup. While the world has water the sync runs
@@ -20476,25 +20477,44 @@ load average 1.6-6.3; diagnostic, not acceptance timing; before = the scripts of
 
 | Leg | built | hook ms a mirrored frame, before / after | main thread on-CPU ms a frame | frame p50 ms | builds a frame, missing max |
 |---|---|---|---|---|---|
-| start's settle | 1,521 to 3,472 | 6.99 / 5.37 | 19.50 / 17.28 | 19.5 / 17.7 | 2.75 / 2.80, 1,951 / 1,951 |
-| flight, 2,400 m/s | 3,472 to 4,269-4,440 | 10.54 / 7.99 | 18.13 / 15.76 | 21.7 / 18.8 | 1.81 / 1.91, 643 / 486 |
-| turn, 1 s | 4,272-4,637 | 18.3 / 9.2 (max frame 41.5 / 30.4) | 14.99 / 15.27 | 13.3 / 14.0 | 2.33 / 2.97, 1,056 / 852 |
-| settle after it | to 5,459 | 11.98 / 7.89 | 27.26 / 22.31 | 27.7 / 22.6 | 1.91 / 1.67, 1,028 / 820 |
+| start's settle | 1,521 to 3,472 | 6.99 / 5.50 | 19.50 / 17.71 | 19.5 / 18.2 | 2.75 / 2.81, 1,951 / 1,951 |
+| flight, 2,400 m/s | 3,472 to 4,269 / 4,394 | 10.54 / 8.15 | 18.13 / 16.19 | 21.7 / 19.2 | 1.81 / 1.87, 643 / 520 |
+| turn, 1 s | 4,272-4,555 | 18.3 / 8.9 (max frame 41.5 / 31.3) | 14.99 / 15.61 | 13.3 / 14.2 | 2.33 / 2.47, 1,056 / 926 |
+| settle after it | to 5,459 | 11.98 / 7.96 | 27.26 / 22.62 | 27.7 / 22.6 | 1.91 / 1.79, 1,028 / 903 |
 
-After, the hook is the water rectangle (4.3-6.8 ms a frame, about 2.3 us a resident water patch,
-2,809-3,170 resident) and the proxy sync (0.9-1.5 ms for 4-7 patches a frame, at most 71; most of
-it the material copy and its refresh); at the settle's end, 5,459 built and nothing changing, the
-sync is 0.0 ms and the hook 6.5 ms against 10.9 before, flat in the built count. The installs a
-frame are unchanged (1.7-3.0); missing falls with the faster frames. The intermediate build that
-synced only while a mirror drew had the same means but a 131 ms frame in the turn.
+After, the hook is the water rectangle (4.3-6.7 ms a frame, about 2.3 us a resident water patch,
+2,809-3,380 resident) and the proxy sync (1.1-1.5 ms for 8-12 marked patches a frame, at most 74;
+most of it the material copy and its refresh); over the settle's last 100 frames, 5,459 built and
+little changing, the sync is 0.09 ms and the hook 6.5 ms against 10.9 before, flat in the built
+count. The installs a frame are unchanged (1.8-2.8); missing falls with the faster frames. Two
+intermediate builds of the round, measured the same way: syncing only while a mirror drew had the
+same means but a 131 ms frame in the turn; without the land cover and water map marks the sync
+was 0.2 ms cheaper and its copies stale (below).
 
 **Proxy book.** With `METRUM_STREAM_PROXY_CHECK=1` (one untimed run a side): before, the book was
 out of step with the drawn patches in 661 of 700 frames of the start's settle, 476 of 567 of the
 settle after the turn and every frame of the turn (up to 311 drawn patches missing a proxy, 365
-proxies for hidden ones); after, in step in all 1,707 frames of the four legs. At both settled
+proxies for hidden ones); after, in step on every frame of the four legs (two runs, 1,707 and
+1,694 frames). At both settled
 points both sides hold one proxy per drawn patch with its mesh, transform, material copy, box and
-margin (2,809 of 2,809), over the same drawn set (equal key hashes), so the reflection draws the
-same proxies.
+margin (2,809 of 2,809), over the same drawn set (equal key hashes). The copies' parameters
+(`proxy_stale`, at each leg's end) were not the same: before, 668-1,257 drawn patches' copies held
+an older water map than their patch (`watermap` and its three layout parameters: the water
+texture sync lands after the copy is made and sent no event), so the reflected shore of those
+patches drew without its water map; marked as a change now, no copy is stale on any leg. This is
+the one intended difference in the reflection's picture: where the old copy was stale.
+
+**Stills** (`stills capture`, poses `overview`, `mid`, `close`, the shipped Kuopio and the 60 km
+copy, two captures a side, C B B C; gamescope headless, 1080p, the T41a library). Not byte-stable
+on either side: control against control 0-104,489 px differ on the shipped Kuopio and 0-281,091 on
+the 60 km copy, on the water and the clouds, which animate (as the stills of `RENDER-32` found).
+`stills systematic` finds no pixel that differs by side beyond run-to-run speckle on any of the six
+stills (by side 0-39,948 against tolerances 0-24,860 from the mixed pairings; verdict "none"); the
+overviews are byte-identical or 10 px apart on both sides. An intermediate build without the land
+cover and water map marks did show side-systematic water pixels (47,635 on the shipped Kuopio's
+`mid`, 79,030 on the 60 km `close`), its stale copies. Zero differing pixels between before and
+after is therefore not shown, and cannot be with this tool; the proxy book's equality at the
+settled points is the exact comparison.
 
 ## Implemented Runtime Contract
 
