@@ -16,7 +16,9 @@
 ##   get_agriculture_field_overlay_revision()
 extends Node3D
 
-# Temporary render clients must restore their saved resources before a patch is changed/recycled.
+# Temporary render clients must restore their saved resources before a patch is changed/recycled;
+# also sent when a patch's material takes another land cover or water map, which the water
+# reflection's copy of it must follow (`RENDER-75`).
 signal patch_render_will_change(key: Vector2i)
 # A built patch's node was shown or hidden (`RENDER-75`): the water reflection keeps its proxies in
 # step from these and the signal above, not by walking the built patches.
@@ -1591,6 +1593,7 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	_graded_material_changed(patch.get("key"))
 	if stage == patch.get("land_cover", {}):
 		return
+	patch_render_will_change.emit(patch["key"])
 	patch["spare_land_cover"] = patch.get("land_cover", {})
 	patch["land_cover"] = stage
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
@@ -2484,6 +2487,11 @@ func _ensure_grass_textures() -> void:
 
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
 	_graded_material_changed(patch.get("key"))
+	if (patch.get("water_texture", null) != empty_water_texture
+			or int(patch.get("water_texture_width", 0)) != 2 or int(patch.get("water_texture_height", 0)) != 2
+			or int(patch.get("water_inner_offset_x", 0)) != 0 or int(patch.get("water_inner_offset_z", 0)) != 0
+			or int(patch.get("water_sample_width", 0)) != 2 or int(patch.get("water_sample_height", 0)) != 2):
+		patch_render_will_change.emit(patch["key"])
 	if patch.get("water_texture", null) != empty_water_texture:
 		material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
@@ -2702,6 +2710,8 @@ func _bind_water_texture_from_binding(
 		or int(patch.get("water_sample_width", 0)) != sample_width
 		or int(patch.get("water_sample_height", 0)) != sample_height
 	)
+	if texture_changed or texture_layout_changed:
+		patch_render_will_change.emit(patch["key"])
 	if texture_changed:
 		material.set_shader_parameter("watermap", water_texture)
 	if texture_layout_changed:

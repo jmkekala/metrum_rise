@@ -1325,6 +1325,30 @@ func _on_proxy_check_post_draw() -> void:
 	var active := mirrors.any(func(mirror: Array) -> bool: return mirror[3])
 	_proxy_check = [active, drawn, held, matching, proxies.size(), keys_hash]
 
+# At a sample's end (`RENDER-75`): per material parameter, the drawn patches whose reflection copy
+# holds another value than the patch's material, and the patches with any such parameter.
+func _proxy_stale() -> Dictionary:
+	var copies: Dictionary = _reflection.get("_grid_materials")
+	var by_parameter := {}
+	var patches := 0
+	for key: Vector2i in _terrain.patches:
+		var node := (_terrain.patches[key] as Dictionary).get("node") as MeshInstance3D
+		if node == null or not node.is_visible_in_tree() or node.mesh == null:
+			continue
+		var source := node.material_override as ShaderMaterial
+		var copy := copies.get(source) as ShaderMaterial
+		if source == null or copy == null:
+			continue
+		var stale := false
+		for entry: Dictionary in source.shader.get_shader_uniform_list():
+			var held: Variant = copy.get_shader_parameter(entry["name"])
+			var value: Variant = source.get_shader_parameter(entry["name"])
+			if typeof(held) != typeof(value) or held != value:
+				by_parameter[entry["name"]] = int(by_parameter.get(entry["name"], 0)) + 1
+				stale = true
+		patches += 1 if stale else 0
+	return {"patches": patches, "parameters": by_parameter}
+
 func _on_pre_draw() -> void:
 	_pre_draw_us = Time.get_ticks_usec()
 
@@ -1375,6 +1399,8 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		over.over_33_3 += 1 if value > 33.3 else 0
 	var sample := {"label": label, "duration_s": duration_s, "frames": rows.size(),
 		"frame_ms": stats(times), "rows": rows, "memory": _memory()}
+	if _proxy_checking:
+		sample["proxy_stale"] = _proxy_stale()
 	sample.merge(over)
 	if _gpu_profile:
 		var passes := {}
