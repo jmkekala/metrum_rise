@@ -65,6 +65,25 @@ pub(crate) enum Vector {
     Int4([i32; 4]),
 }
 
+/// A 2D texture's texel format (`TERRAIN-41` D1: the backdrop's channels).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextureFormat {
+    /// One 32-bit float a texel (`Image.FORMAT_RF`).
+    R32F,
+    /// One byte a texel (`Image.FORMAT_R8`).
+    R8,
+}
+
+impl TextureFormat {
+    /// Bytes a texel.
+    pub(crate) fn texel_bytes(self) -> usize {
+        match self {
+            Self::R32F => 4,
+            Self::R8 => 1,
+        }
+    }
+}
+
 /// The `RenderingServer` calls the streaming layers need. Meshes, materials and instance shader
 /// parameters are indices into what the backend was given at registration.
 pub(crate) trait RenderBackend {
@@ -164,6 +183,30 @@ pub(crate) trait RenderBackend {
     }
     /// Sets an instance shader parameter (a catalogue index) to a boolean.
     fn instance_set_flag_parameter(&mut self, _instance: Handle, _parameter: u32, _value: bool) {}
+    // The backdrop's block textures (`TERRAIN-41` D1). A texture is made from its bytes and never
+    // written in place afterwards: an update in place makes every later draw that binds it dearer
+    // (round B1b). A backend that serves no such layer keeps the defaults: nothing is made.
+    /// A 2D texture of `size` texels in `format`, without mipmaps, holding the bytes `fill`
+    /// writes (`size[0] * size[1] * format.texel_bytes()`, row-major), owned by the caller
+    /// (freed with [`Self::free`]).
+    fn texture_2d_create(
+        &mut self,
+        _size: [u32; 2],
+        _format: TextureFormat,
+        _fill: &mut dyn FnMut(&mut [u8]),
+    ) -> Handle {
+        0
+    }
+    /// Replaces `texture` by a new texture made as [`Self::texture_2d_create`] makes one, under
+    /// the same handle, so whatever binds it reads the new texels.
+    fn texture_2d_replace(
+        &mut self,
+        _texture: Handle,
+        _size: [u32; 2],
+        _format: TextureFormat,
+        _fill: &mut dyn FnMut(&mut [u8]),
+    ) {
+    }
 }
 
 /// Where a layer's entries start in a shared catalogue ([`GodotBackend::add_catalogue`]): its
@@ -909,6 +952,26 @@ mod godot_backend {
                 .texture_2d_update(Rid::new(texture), &*image, layer as i32);
         }
 
+        // An image of the bytes `fill` writes, for a texture made from it. The array and the
+        // image are made for the call and dropped after it, so nothing of them stays in system
+        // memory (the backdrop's uploads are a few a load or an edit, never a frame's loop).
+        fn image_2d(
+            &mut self,
+            size: [u32; 2],
+            format: TextureFormat,
+            fill: &mut dyn FnMut(&mut [u8]),
+        ) -> Gd<Image> {
+            let mut data = PackedByteArray::new();
+            data.resize(size[0] as usize * size[1] as usize * format.texel_bytes());
+            fill(data.as_mut_slice());
+            let image_format = match format {
+                TextureFormat::R32F => Format::RF,
+                TextureFormat::R8 => Format::R8,
+            };
+            Image::create_from_data(size[0] as i32, size[1] as i32, false, image_format, &data)
+                .expect("an image of the texture's own size and format")
+        }
+
         /// Registers the meshes, materials and instance parameter names by index.
         pub(crate) fn set_catalogue(
             &mut self,
@@ -1255,6 +1318,29 @@ mod godot_backend {
                 self.server_write(to, layer, size, &data);
                 self.keep(to, layer, data);
             }
+        }
+
+        fn texture_2d_create(
+            &mut self,
+            size: [u32; 2],
+            format: TextureFormat,
+            fill: &mut dyn FnMut(&mut [u8]),
+        ) -> Handle {
+            let image = self.image_2d(size, format, fill);
+            self.server.texture_2d_create(&image).to_u64()
+        }
+
+        fn texture_2d_replace(
+            &mut self,
+            texture: Handle,
+            size: [u32; 2],
+            format: TextureFormat,
+            fill: &mut dyn FnMut(&mut [u8]),
+        ) {
+            let image = self.image_2d(size, format, fill);
+            // The engine moves the new texture under the old handle and frees the new handle.
+            let replacement = self.server.texture_2d_create(&image);
+            self.server.texture_replace(Rid::new(texture), replacement);
         }
 
         fn texture_forget(&mut self, texture: Handle) {

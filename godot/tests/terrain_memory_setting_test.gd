@@ -119,6 +119,15 @@ func _test_run_time_change() -> void:
 	main.get_node("Terrain").set_load_settling(false)
 	var grid := int(whole.get("terrain_built", 0))
 	_expect(grid > 0 and int(whole.get("fill_left", -1)) == 0, "every patch fits: the fill builds the map: %s" % whole)
+	# The backdrop's data (`TERRAIN-41` D1): built after the load and every block's three textures
+	# uploaded (40 x 40 patches: 3 x 3 blocks of 199,177 bytes), nothing drawn; a block's land
+	# cover is uploaded again as its patches' payloads land, so 27 uploads at least.
+	var backdrop: Dictionary = await _backdrop_ready(camera, stream)
+	_expect(bool(backdrop.get("ready", false)) and int(backdrop.get("blocks", 0)) == 9
+		and int(backdrop.get("product_bytes", 0)) == 9 * 199177
+		and int(backdrop.get("texture_bytes", 0)) == 9 * 199177
+		and int(backdrop.get("pending", -1)) == 0
+		and int(backdrop.get("uploads", 0)) >= 27, "the backdrop is built and uploaded: %s" % backdrop)
 	stream.set_terrain_budget_mb(SMALL_BUDGET_MB)
 	var small: Dictionary = await _settle(camera, stream, "%.0f MB" % SMALL_BUDGET_MB)
 	var places := int(small.get("places", 0))
@@ -167,6 +176,17 @@ func _settle(camera: Node, stream: Node, what: String, ledger := true) -> Dictio
 	if ledger:
 		_expect(worst <= float(status.get("ledger_budget_us", 2000.0)),
 			"%s: no frame's predicted ledger over its budget (%.0f us)" % [what, worst])
+	return status
+
+# Frames until the backdrop reports ready (or the settle timeout); answers its last status.
+func _backdrop_ready(camera: Node, stream: Node) -> Dictionary:
+	var start := Time.get_ticks_msec()
+	var status: Dictionary = stream.get_backdrop()
+	while not bool(status.get("ready", false)) and Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
+		camera.advance_motion(1.0 / 60.0)
+		await process_frame
+		status = stream.get_backdrop()
+	print("[terrain_memory_setting] backdrop: %s" % status)
 	return status
 
 func _terrain_settled(stream: Node) -> bool:

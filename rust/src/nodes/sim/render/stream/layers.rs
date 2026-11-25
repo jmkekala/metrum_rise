@@ -8,6 +8,9 @@
 //! `RENDER-32-M`) decide here and install through the scripts' pooled nodes; so do a load's road
 //! chunks ([`roads`], `RENDER-32-P`), through the road tool's own commit.
 
+/// The backdrop's data: the whole map at the 64 m lattice, heights, water and land cover
+/// (`TERRAIN-41` D1).
+pub(crate) mod backdrop;
 /// The moving agents' shadow-only twins within the shadow range's reach (`RENDER-15`, R47).
 pub(crate) mod agent_casters;
 /// Building LOD batches drawn through the backend's pools (`RENDER-32-L`).

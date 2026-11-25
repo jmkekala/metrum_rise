@@ -186,6 +186,29 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         }
     }
 
+    /// Appends to `out` the `(chunk_x, chunk_y)` of every chunk whose storage is not shared with
+    /// `older`, an earlier clone of this grid: stored in one and not the other, or stored in both
+    /// with different payload pointers. A chunk that differs in value is always listed; a listed
+    /// chunk may hold equal values (written back unchanged). `O(stored chunks)` pointer
+    /// comparisons, no cell read. The order of `out` is unspecified.
+    pub(crate) fn diverged_chunks_since(&self, older: &Self, out: &mut Vec<(usize, usize)>) {
+        debug_assert!(self.layout_matches(older));
+        for (&key, chunk) in &self.chunks {
+            if !older
+                .chunks
+                .get(&key)
+                .is_some_and(|before| Arc::ptr_eq(chunk, before))
+            {
+                out.push(Self::decode_chunk_key(key));
+            }
+        }
+        for &key in older.chunks.keys() {
+            if !self.chunks.contains_key(&key) {
+                out.push(Self::decode_chunk_key(key));
+            }
+        }
+    }
+
     /// One stored chunk's cells, row-major with the chunk size as stride; `None` for a chunk
     /// that holds only the default value. O(1).
     pub(crate) fn chunk_slice(&self, chunk_x: usize, chunk_y: usize) -> Option<&[T]> {
