@@ -900,7 +900,11 @@ def trip_numbers(report):
         out.update({"installs": installs, "wait_mean": total("wait_frames_sum") / max(1, installs),
                     "wait_max": max(c["wait_frames_max"] for c in counts), "over_bar": total("waited_over_bar"),
                     "stalled": total("stalled_passes"), "us_measured": total("measured_us") / max(1, installs),
-                    "us_predicted": total("predicted_us") / max(1, installs)})
+                    "us_predicted": total("predicted_us") / max(1, installs),
+                    # The hold's own (after the zoom): waits, past the bar, stalled passes, and the
+                    # installs of drawn patches' replacements (upgrade classes) over both samples.
+                    "hold": (counts[1]["wait_frames_max"], counts[1]["waited_over_bar"], counts[1]["stalled_passes"]),
+                    "replacements": total("upgrade_in_view") + total("upgrade")})
     # keys: [x, y, z, wanted, ready, drawn, left, distance to the pivot]; the wanted at the end.
     keys = [k for k in (report.get("trip") or {}).get("keys", []) if k[6] < 0]
     drawn = [k for k in keys if k[5] >= 0 and k[4] >= 0]
@@ -934,16 +938,17 @@ def trip_lines(name, report):
             f"{fmt(n.get('last_drawn_ms'))} | {fmt(n['done_ms'])} | {fmt(n['settle_ms'])} | "
             f"{'-' if rd is None else f'{rd[0]:.0f} / {rd[1]:.0f}'} | "
             f"{fmt(n.get('wait_mean'), '{:.1f}')} / {fmt(n.get('wait_max'))} ({fmt(n.get('over_bar'))}) | "
-            f"{fmt(n.get('stalled'))} | {fmt(n.get('installs'))} | "
+            f"{fmt(n.get('stalled'))} | {'-' if not n.get('hold') else '{} ({}) / {}'.format(*n['hold'])} | "
+            f"{fmt(n.get('installs'))} ({fmt(n.get('replacements'))}) | "
             f"{fmt(n.get('us_measured'), '{:.1f}')} / {fmt(n.get('us_predicted'), '{:.1f}')} | "
             f"{n['frame_p50']:.1f} / {n['frame_max']:.1f} | {'pass' if not misses else 'MISS ' + ','.join(misses)} |")
 
 
 def trip(args):
     print("| run | last ready | near ring drawn (frames) | last drawn | done | settled | ready to drawn p50 / max | "
-          "wait frames mean / max (over 5) | stalled passes | installs | us an install measured / predicted | "
-          "frame p50 / max | bars |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+          "wait frames mean / max (over 5) | stalled passes | after the zoom: wait max (over 5) / stalled | "
+          "installs (replacements) | us an install measured / predicted | frame p50 / max | bars |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     lines = [trip_lines(Path(path).name.removesuffix(".metrics.json"), json.loads(Path(path).read_text()))
              for path in args.metrics]
     print("\n".join(lines))

@@ -668,11 +668,12 @@ class TripTests(unittest.TestCase):
 
     def test_the_numbers_count_from_the_zoom_end_and_the_bars_read_them(self):
         waits = {"installs": 4, "wait_frames_sum": 8, "wait_frames_max": 3, "waited_over_bar": 0,
-                 "stalled_passes": 0, "measured_us": 100.0, "predicted_us": 80.0}
+                 "stalled_passes": 0, "measured_us": 100.0, "predicted_us": 80.0, "upgrade_in_view": 1, "upgrade": 0}
         numbers = sb.trip_numbers(self.report(1540.0, 1700.0, waits))
         self.assertEqual((numbers["near_ms"], numbers["near_frames"], numbers["done_ms"]), (40.0, 4, 200.0))
         self.assertEqual((numbers["installs"], numbers["wait_mean"], numbers["wait_max"]), (4, 2.0, 3))
         self.assertEqual(numbers["us_measured"], 25.0)
+        self.assertEqual((numbers["hold"], numbers["replacements"]), ((0, 0, 0), 2))
         # The patch that left is not counted; ready to drawn 140 and 150 ms.
         self.assertEqual((numbers["keys"], numbers["last_drawn_ms"], numbers["ready_drawn_ms"]), (2, 100.0, (150.0, 150.0)))
         self.assertTrue(sb.trip_lines("x", self.report(1540.0, 1700.0, waits)).endswith("| pass |"))
