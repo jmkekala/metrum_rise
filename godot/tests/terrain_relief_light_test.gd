@@ -2,19 +2,24 @@
 
 ## Rendered (compatibility): the ground's relief light (`RENDER-78`). The terrain shader is drawn
 ## on a sloped patch and on a flat one under a low sun, beside a copy whose light() uses the plain
-## term, mix(0.82, 1, N.L), written out. Pinned: the shipped default is (2, ratio); strength 0
+## term, mix(0.82, 1, N.L), written out. Pinned: the shipped default is (1, add); strength 0
 ## draws the plain term's bytes in every form, so the light from before stays reachable; at the
-## default the slope facing away darkens, but never below its sky light (the ratio's extrapolated
-## factor is floored at 0), and flat ground keeps the plain light.
+## default and at the console's ratio 2 the slope facing away darkens, but never below its sky
+## light (the ratio's extrapolated factor is floored at 0), and flat ground keeps the plain light.
+## The Graphics setting drives the same global: each stored preset, applied, draws what the global
+## set directly to it draws (a headless run cannot read the global back).
 extends SceneTree
 
+const Settings := preload("res://scripts/core/game_settings.gd")
 const SURFACE := "res://scripts/shaders/terrain_surface.gdshaderinc"
 const WRAPPER := "res://assets/materials/terrain.gdshader"
 const RELIEF_CALL := "terrain_relief_facing(mix(0.82, 1.0, facing), facing, LIGHT, INV_VIEW_MATRIX)"
 const PLAIN_TERM := "mix(0.82, 1.0, facing)"
 const GLOBAL := "terrain_relief_light"
-# The user's pick, 2026-11-25: ratio form, strength 2, sun and moon.
-const SHIPPED := Vector2(2.0, 1.0)
+# The user's pick, 2026-11-25: add form, strength 1, sun and moon.
+const SHIPPED := Vector2(1.0, 0.0)
+# Ratio past strength 1, reachable from the console: its factor must not go negative.
+const RATIO_2 := Vector2(2.0, 1.0)
 
 var _failures := 0
 
@@ -76,7 +81,7 @@ func _run() -> void:
 		quit(2)
 		return
 	var default: Variant = ProjectSettings.get_setting("shader_globals/%s" % GLOBAL, {}).get("value")
-	_expect(default == SHIPPED, "the relief light's project default must be %s (ratio at 2, sun and moon): %s" % [SHIPPED, default])
+	_expect(default == SHIPPED, "the relief light's project default must be %s (add at 1, sun and moon): %s" % [SHIPPED, default])
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(64, 64)
 	viewport.own_world_3d = true
@@ -113,9 +118,31 @@ func _run() -> void:
 		shots["%s/no sun" % ground] = await _capture(viewport)
 		sun.visible = true
 		mesh.material_override = _material(relief, heightmap)
-		for setting in [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 3.0), Vector2(1.0, 0.0), SHIPPED]:
+		for setting in [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 3.0), SHIPPED, RATIO_2]:
 			RenderingServer.global_shader_parameter_set(GLOBAL, setting)
 			shots["%s/%s" % [ground, setting]] = await _capture(viewport)
+	# Each stored preset, applied as the game applies it, against the global set directly.
+	var heightmap_slope := _heightmap(4.0)
+	mesh.material_override = _material(relief, heightmap_slope)
+	var had_config := FileAccess.file_exists(Settings.CFG_PATH)
+	var original := FileAccess.get_file_as_bytes(Settings.CFG_PATH) if had_config else PackedByteArray()
+	Settings.terrain_relief_override = null
+	for preset: float in Settings.TERRAIN_RELIEF_CHOICES:
+		RenderingServer.global_shader_parameter_set(GLOBAL, Vector2(preset, 0.0))
+		var direct := await _capture(viewport)
+		RenderingServer.global_shader_parameter_set(GLOBAL, Vector2(9.0, 1.0))
+		var config := Settings.load_config()
+		config.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_TERRAIN_RELIEF, preset)
+		Settings.save_config(config)
+		Settings.apply_terrain_relief()
+		var applied := await _capture(viewport)
+		_expect(applied.get_data() == direct.get_data(), "the stored preset %s must draw what the global at it draws" % preset)
+	if had_config:
+		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
+		file.store_buffer(original)
+		file.close()
+	else:
+		DirAccess.remove_absolute(Settings.CFG_PATH)
 	RenderingServer.global_shader_parameter_set(GLOBAL, SHIPPED)
 	for ground in ["slope", "flat"]:
 		var plain_bytes: PackedByteArray = shots["%s/plain" % ground].get_data()
@@ -124,7 +151,7 @@ func _run() -> void:
 				"%s ground at relief %s must draw the plain term's bytes" % [ground, setting])
 		var centre_plain: Color = shots["%s/plain" % ground].get_pixel(32, 32)
 		var centre_no_sun: Color = shots["%s/no sun" % ground].get_pixel(32, 32)
-		for setting in [Vector2(1.0, 0.0), SHIPPED]:
+		for setting in [SHIPPED, RATIO_2]:
 			var centre: Color = shots["%s/%s" % [ground, setting]].get_pixel(32, 32)
 			print("terrain_relief %s %s plain=%s relief=%s no_sun=%s" % [ground, setting, centre_plain, centre, centre_no_sun])
 			if ground == "slope":

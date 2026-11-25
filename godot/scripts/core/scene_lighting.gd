@@ -279,6 +279,8 @@ func _ready() -> void:
 	)
 	add_child(water_reflection)
 	add_to_group("graphics_settings")
+	# The stored relief light, or the console's session override (`RENDER-78`).
+	GameSettings.apply_terrain_relief()
 	_distance_fade_terrain = scene_root.get_node_or_null("Terrain")
 	# Before the first frame is drawn, so nothing renders against the project-default palette.
 	_apply_day_cycle()
@@ -671,6 +673,7 @@ func _configure_sun(scene_root: Node) -> void:
 func apply_graphics_settings() -> void:
 	if is_instance_valid(_sun):
 		_apply_shadow_quality(_sun)
+	GameSettings.apply_terrain_relief()
 
 func _apply_shadow_quality(sun: DirectionalLight3D) -> void:
 	apply_shadow_quality(sun, GameSettings.get_shadow_quality())

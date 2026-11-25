@@ -21979,27 +21979,39 @@ Current deterministic rules:
   azimuth and altitude. It is a readability device: swinging it with the cycle would double the
   directional light's own shading and would snap 180 degrees at the sun-to-moon swap
 - natural ground (base and graded grass), site ground and the water reflection's terrain copies
-  light their directional term (sun or moon) with `mix(0.82, 1, N.L)` on the interpolated vertex
-  normal, so slope moves a pixel by at most 18 % of the key light. `RENDER-78` puts a stronger
-  relief term behind the shader global `terrain_relief_light` (`terrain_relief_light.gdshaderinc`,
-  one call in each `light()`): x is the strength `k`, y the form, `0` add (today's term plus
-  `k (N.L - flat N.L)`, floored at 0), `1` ratio (today's term times
-  `mix(1, clamp(N.L / max(flat N.L, 0.05), 0, 2), k)`), plus `2` for the sun only (while the sun
-  is below the horizon the moonlit ground keeps today's term). Flat ground keeps today's light in
-  every form. The default `(0, 0)` is today's picture: `terrain_relief_light_test` (rendered,
-  compatibility) draws the terrain shader beside a copy with today's term written out and
-  requires equal bytes at strength 0 in every form, a darker slope and an unchanged flat patch at
-  strength 1. The console's `relief` command and `METRUM_TERRAIN_RELIEF` switch it live
-  ([debug.md](debug.md#tabs-and-commands)); no strength, form or moon rule is chosen yet. Trial
-  stills (2026-11-25, shipped Kuopio, six poses, clear weather, suns 10, 30 and 45 degrees, the
-  game's highest, and night; the 30k city), share of pixels whose light moves more than 2 % / 5 %:
-  add 0.5 3-46 % / 0-24 %, add 1 12-57 % / 2-43 %, ratio 17-70 % / 5-63 %, most at a low sun; the
-  city 0-2 % / 0 % at add 1, on graded road-edge slopes. Add 1 leaves no pixel below 0.71 of
-  today's light; ratio reaches 0.46 at a 10 degree sun. No terracing, no added shimmer (two stills
-  half a metre apart differ in 30-38 % of pixels at every strength), no seam at graded tiles or
-  at detail steps (checked against the `lod` debug view at 2-12 km). GPU time per pose unchanged
-  within 0.02 ms; about eight shader instructions in `light()`. `editor_ground.gdshader` keeps
-  the plain term: its plane is flat
+  light their directional term (sun or moon) from the interpolated vertex normal. The plain term,
+  `mix(0.82, 1, N.L)`, moves a slope by at most 18 % of the key light; `RENDER-78` adds a relief
+  term relative to flat ground behind the shader global `terrain_relief_light`
+  (`terrain_relief_light.gdshaderinc`, one call in each `light()`): x is the strength `k`, y the
+  form, `0` add (plain term plus `k (N.L - flat N.L)`, floored at 0), `1` ratio (plain term times
+  `max(mix(1, clamp(N.L / max(flat N.L, 0.05), 0, 2), k), 0)`, at most `1 + k` times the plain
+  term), plus `2` for the sun only (moonlit ground keeps the plain term). Flat ground keeps the
+  plain light in the add form; in the ratio form only while flat `N.L` is above 0.05. **Shipped:
+  the add form at `k = 1`, sun and moon** (the user's choice, 2026-11-25, after trying ratio at
+  `k = 2` live). It is a look change of all natural ground and graded grass. The Graphics option
+  `Terrain relief shading` stores 0 / 0.5 / 1 / 1.5 (Off / Low / Normal / High, add form;
+  [ui.md](ui.md)); `GameSettings.apply_terrain_relief()` writes the global from it in
+  `SceneLighting`'s start and on Apply. The console's `relief` command and `METRUM_TERRAIN_RELIEF`
+  override it for the session with any strength and either form
+  ([debug.md](debug.md#tabs-and-commands)); benchmarks ignore the stored option and run at the
+  project default `(1, 0)`. The ratio's mix extrapolates past `k = 1` (`2r - 1` at `k = 2`) and
+  went negative on slopes facing away, taking light off them (a dark blue-black at a 10 degree sun);
+  its factor is floored at 0. `terrain_relief_light_test` (rendered, compatibility) pins the
+  default, equal bytes to the plain term at `k = 0` in every form, a darker slope that never drops
+  below its sky light at the default and at ratio 2, an unchanged flat patch, and that each stored
+  preset draws what the global set to it draws; `terrain_relief_setting_test` holds the option's
+  round trip and the override's precedence. Stills (2026-11-25, shipped Kuopio, six poses, clear
+  weather, suns 10, 30 and 45 degrees, the game's highest, and night; the 30k city), share of
+  pixels whose light moves more than 2 % / 5 % against `k = 0`: the default 27-57 % / 9-40 % at
+  10 degrees, 23-56 % / 10-43 % at 30, 12-36 % / 2-23 % at 45, 17-49 % / 8-35 % by moonlight; the
+  city 1-2 % / 0 % (graded road-edge slopes; flat lawns unchanged; lamp light untouched). Light
+  factor against `k = 0` over lit pixels, 0.1st to 99.9th percentile: 0.72-0.91 to 1.07-1.26 at the
+  default, 0.58-0.87 to 1.11-1.37 at High; no pixel clips at either. High floors the sun term of a
+  slope facing fully away from a 45 degree sun (`0.82 - 1.5 sin 45` is below 0). No terracing, no
+  added shimmer (two stills half a metre apart differ in 30-38 % of pixels at every strength), no
+  seam at graded tiles or at detail steps (checked against the `lod` debug view at 2-12 km). GPU
+  time per pose unchanged within 0.02 ms; about eight shader instructions in `light()`.
+  `editor_ground.gdshader` keeps the plain term: its plane is flat
 - the sky shader places its own sun and moon disks from explicit uniforms rather than from
   `LIGHT0`, so disk brightness and key-light energy can disagree. A sun on the horizon has to stay
   visible after it has stopped being a useful key light, and the moon is not a Godot light

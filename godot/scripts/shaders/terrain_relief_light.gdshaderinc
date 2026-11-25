@@ -3,15 +3,17 @@
 // The ground's relief light (`RENDER-78`): a stronger relief term in the sun and moon light, on
 // the normal light() already reads. The plain term, mix(0.82, 1, N.L), moves a slope by at most
 // 18 % of the key light; this works relative to flat ground, so level ground keeps the plain
-// light (while flat N.L stays above the ratio's 0.05 floor, a sun above about 2.9 degrees). One
+// light (in the ratio form only while flat N.L stays above its 0.05 floor, a key light above
+// about 2.9 degrees). One
 // global for the terrain and the site ground, so the two stay matched at their seams: x is the
 // strength k, y the form. 0: plain term + k (N.L - flat N.L), floored at 0 (the "add" form).
 // 1: plain term times max(mix(1, clamp(N.L / max(flat N.L, 0.05), 0, 2), k), 0) (the "ratio"
 // form; at most 1 + k times the plain term). Adding 2 to y lights the sun's relief only (while the
 // sun is below the horizon the moonlit ground keeps the plain term). k = 0 is the plain light in
-// every form. The shipped default, (2, 1), is ratio at k = 2 for sun and moon (the user's pick,
-// 2026-11-25). Set live by the console's `relief` command or METRUM_TERRAIN_RELIEF at launch
-// (debug_console.gd).
+// every form. The shipped default, (1, 0), is the add form at k = 1 for sun and moon (the user's
+// pick, 2026-11-25). Written by GameSettings.apply_terrain_relief(): the Graphics option
+// "Terrain relief shading" (add form, 0 / 0.5 / 1 / 1.5), or the console's `relief` command or
+// METRUM_TERRAIN_RELIEF as a session override (any strength, either form).
 #ifndef TERRAIN_RELIEF_LIGHT_INCLUDED
 #define TERRAIN_RELIEF_LIGHT_INCLUDED
 

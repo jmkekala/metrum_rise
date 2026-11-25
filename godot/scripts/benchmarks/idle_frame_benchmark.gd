@@ -57,9 +57,10 @@ const SLOW_FRAME_MS := 33.3
 # strength and form (x strength, y form: 0 add, 1 ratio); `relief_0` is the light before it.
 # Every other variant draws the project's default.
 const RELIEF_VARIANTS := {"relief_0": Vector2(0.0, 0.0), "relief_05": Vector2(0.5, 0.0),
-	"relief_10": Vector2(1.0, 0.0), "relief_ratio": Vector2(1.0, 1.0), "relief_ratio2": Vector2(2.0, 1.0)}
+	"relief_10": Vector2(1.0, 0.0), "relief_15": Vector2(1.5, 0.0), "relief_ratio": Vector2(1.0, 1.0),
+	"relief_ratio2": Vector2(2.0, 1.0)}
 const RELIEF_GLOBAL := "terrain_relief_light"
-const VARIANTS := ["full", "relief_0", "relief_05", "relief_10", "relief_ratio", "relief_ratio2", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
+const VARIANTS := ["full", "relief_0", "relief_05", "relief_10", "relief_15", "relief_ratio", "relief_ratio2", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
 const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
 # This matrix's names for the shared shadow variants; any other variant keeps full shadows.
 const SHADOW_VARIANTS := {"no_shadows": "none", "minimal": "none", "no_blend_splits": "no_blend"}
