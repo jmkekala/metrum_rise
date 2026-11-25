@@ -671,13 +671,14 @@ impl StreamNode {
                 }
             }
             "terrain_map" => {
-                // Every patch of the map, wanted or not (`TERRAIN-41` D2): drawn as a patch, or
-                // covered by its backdrop cell; in view and neither is bare (sky).
+                // Every patch of the map, wanted or not (`TERRAIN-41` D2): drawn as a patch
+                // (resident and drawing something, D3), or covered by its backdrop cell; in view
+                // and neither is bare (sky).
                 if let Some(grid) = self.terrain.grid() {
                     for z in 0..grid.rows {
                         for x in 0..grid.cols {
                             let [left, top, width, depth] = grid.rect([x, z]);
-                            let flags = if self.terrain.is_resident([x, z]) { probe::DRAWN } else { 0 }
+                            let flags = if self.backdrop_layer.patch_draws([x, z]) { probe::DRAWN } else { 0 }
                                 | if self.backdrop_layer.cell_shown([x, z]) { probe::COVERED } else { 0 };
                             probe::push_chunk(&mut out, [x, z, 0], flags, [left, top, left + width, top + depth]);
                         }
@@ -878,7 +879,8 @@ impl StreamNode {
     // lays the cells' materials out with (`block_patches`, `height_step_cells`,
     // `cover_step_cells`), the cells `cells_listed` (patches not drawn as patches), `cells_drawn`
     // and `cell_blocks` (blocks drawing), and the map's patches in the camera's view by what draws
-    // them: `in_view_patches` (`terrain` drawn as a patch), `in_view_cells` (a backdrop cell) and
+    // them: `in_view_patches` (drawn as a patch: resident and drawing something, `TERRAIN-41`
+    // D3), `in_view_cells` (a backdrop cell) and
     // `in_view_bare` (nothing: sky). `O(patches)`: a status read, not a frame's.
     fn backdrop_cells_status(&self, out: &mut VarDictionary) {
         out.set("block_patches", BLOCK_PATCHES as i64);
@@ -900,7 +902,7 @@ impl StreamNode {
                 if !box_in_view(&planes, low, high) {
                     continue;
                 }
-                let at = if self.terrain.is_resident([x, z]) {
+                let at = if self.backdrop_layer.patch_draws([x, z]) {
                     0
                 } else if self.backdrop_layer.cell_shown([x, z]) {
                     1
@@ -1860,7 +1862,16 @@ impl StreamNode {
         if let (Some(book), Some(grid)) = (self.graded.as_mut(), self.terrain.grid()) {
             let mut book = book.bind_mut();
             for (key, follow) in self.terrain.take_follow() {
+                let arrives = matches!(
+                    follow,
+                    crate::nodes::sim::render::stream::layers::terrain::Follow::Resident { .. }
+                );
                 book.follow_terrain(key, follow, grid.rect(key));
+                // A patch that arrives without its graded list draws nothing until the list
+                // comes (T53 (a)), from this pass on: its backdrop cell stays (`TERRAIN-41` D3).
+                if arrives {
+                    book.blank_until_drawn(key);
+                }
             }
         }
         for (key, generation) in self.terrain.take_generations() {
@@ -1906,6 +1917,14 @@ impl StreamNode {
     // passes) and its cell reach the same frame. Nothing without a change; `O(changed blocks x
     // 256)` rows otherwise.
     fn backdrop_pass(&mut self, residency: bool) {
+        // The resident patches that started or stopped drawing nothing (the graded book's draw
+        // states, applied in the terrain renderer's frame or at a residency in this pass): a
+        // cell draws exactly while its patch draws nothing (`TERRAIN-41` D3). `O(news)`.
+        if let Some(book) = self.graded.as_mut() {
+            for (key, blank) in book.bind_mut().take_blank_news() {
+                self.backdrop_layer.set_blank([key.0, key.1], blank);
+            }
+        }
         let Some(backend) = self.backdrop_backend.as_mut() else {
             return;
         };
