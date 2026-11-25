@@ -20719,8 +20719,9 @@ spread. The jumps' maxima stay at 10-12 ms (L1 with L2 read 17).
   moves), and four patches' vegetation band flags at Kuopio's second far-to-ground settle (equal
   to an earlier `dev` run's). On the 30k pond (16 points) terrain and water residency and steps
   equal except at the first far-to-ground settle, where the two `dev` runs differ from each other
-  too (one patch's step, a third value in the round); graded tiles differ only where the `dev` runs
-  differ between them, each such tile equal to one of them (`TERRAIN-27`).
+  too (one patch's step; one run of the round gave a third value, a second run the second `dev`
+  run's); graded tiles differ only where the `dev` runs differ between them, each such tile
+  equal to one of them (`TERRAIN-27`).
 - The water mesh check: 0 mismatches at every settle point of every map on both sides (1,004 to
   1,947 wet resident patches on the 60 km world, 927-1,028 on Kuopio, 3 on the pond).
 - The drag probe's display rule passes.
