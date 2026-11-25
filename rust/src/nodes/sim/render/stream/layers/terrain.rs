@@ -296,12 +296,16 @@ pub(crate) struct UnitCosts {
 /// Terrain's unit costs. A build (a height image and texture, a mask layer, the land cover from
 /// its payload and the patch's own material parameters in `terrain.gd`) is new resources for
 /// half of it while no patch is released (`TERRAIN-41`); a shown patch is a node shown, its
-/// level and the graded hand-over's bookkeeping, 11-23 us at the mean; a hide 6-8; a level change
-/// 12-14 (11 at the median in `RENDER-32-Q`).
+/// level and the graded hand-over's bookkeeping, 11-23 us at the mean; a hide 6-8. A level change
+/// is the new mesh, 12-14 us at the mean (11 at the median in `RENDER-32-Q`), and on a world with
+/// water the reflection's proxy taking that mesh and step inside the same unit (`TERRAIN-41` L1b:
+/// 6-7 us; the reflection's later whole refresh of the copy, 34 us a patch, ran after the ledger,
+/// so a frame of 116 level changes spent 4.5 ms past it): 18.7 us at the mean on the shipped
+/// Kuopio's turns, pan, zoom and jump (one diagnostic run, 2026-11-25).
 pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
     activate_us: 20.0,
     build_us: 200.0,
-    lod_us: 12.0,
+    lod_us: 19.0,
     free_us: 8.0,
     release_us: 160.0,
 };

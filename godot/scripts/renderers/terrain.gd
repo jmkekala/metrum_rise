@@ -16,16 +16,29 @@
 ##   get_agriculture_field_overlay_revision()
 extends Node3D
 
-# Temporary render clients must restore their saved resources before a patch is changed/recycled;
-# also sent when a patch's material takes another land cover or water map, which the water
-# reflection's copy of it must follow (`RENDER-75`).
+# Temporary render clients must restore their saved resources before a patch is changed/recycled
+# (a restage, a removal); the water reflection then refreshes its whole copy (`RENDER-75`).
 signal patch_render_will_change(key: Vector2i)
+# A built patch's material changed in exactly `names` (a level of detail step also gave its node
+# another mesh): its render clients follow those alone (`TERRAIN-41` L1b). The water reflection's
+# copy takes them at once, inside the unit that changed them, where a whole refresh compared every
+# parameter (34 us a patch, three times a level change).
+signal patch_parameters_changed(key: Vector2i, names: Array[StringName])
 # A built patch's node was shown or hidden (`RENDER-75`): the water reflection keeps its proxies in
 # step from these and the signal above, not by walking the built patches.
 signal patch_visibility_changed(key: Vector2i)
 signal patches_will_reset
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
+# What patch_parameters_changed names for a level of detail step, a water map and a land cover.
+const LOD_STEP_PARAMETERS: Array[StringName] = [&"terrain_debug_lod_step"]
+const WATERMAP_PARAMETERS: Array[StringName] = [
+	&"watermap",
+	&"watermap_texture_size",
+	&"watermap_inner_sample_offset_texels",
+	&"watermap_inner_sample_size_texels",
+]
+const LAND_COVER_PARAMETERS: Array[StringName] = [&"land_cover_texture", &"land_cover_world_bounds"]
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -531,12 +544,12 @@ func _graded_material_changed(key: Variant) -> void:
 	if graded_tiles != null and key is Vector2i:
 		_graded_materials_changed[key] = true
 
-# A built patch's material takes another land cover or water map: its render clients (the water
-# reflection's copy) must follow. A patch record without a key (a test's) has none.
-func _patch_material_will_change(patch: Dictionary) -> void:
+# A built patch's material took new values of `names` (a land cover, a water map): its render
+# clients (the water reflection's copy) follow. A patch record without a key (a test's) has none.
+func _patch_parameters_changed(patch: Dictionary, names: Array[StringName]) -> void:
 	var key: Variant = patch.get("key")
 	if key is Vector2i:
-		patch_render_will_change.emit(key)
+		patch_parameters_changed.emit(key, names)
 
 # Lends the graded tiles patch `key`'s node, material and culling box after its residency,
 # payload or LOD step changed; a patch that is not resident or has no payload lends none.
@@ -1350,7 +1363,6 @@ func _set_patch_mesh_lod(key: Vector2i, step: int) -> void:
 	var patch_data: Dictionary = patch.get("last_patch_data", {})
 	if patch_data.is_empty():
 		return
-	patch_render_will_change.emit(key)
 	patch["lod_step"] = step
 	_graded_patch_changed(key)
 	var material: ShaderMaterial = patch["material"]
@@ -1360,6 +1372,7 @@ func _set_patch_mesh_lod(key: Vector2i, step: int) -> void:
 		step,
 		int(patch.get("subdivision_factor", 1))
 	)
+	patch_parameters_changed.emit(key, LOD_STEP_PARAMETERS)
 
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
@@ -1681,13 +1694,13 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	_graded_material_changed(patch.get("key"))
 	if stage == patch.get("land_cover", {}):
 		return
-	_patch_material_will_change(patch)
 	patch["spare_land_cover"] = patch.get("land_cover", {})
 	patch["land_cover"] = stage
 	_note_spares(patch)
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
 	material.set_shader_parameter("land_cover_texture", stage["texture"])
 	material.set_shader_parameter("land_cover_world_bounds", stage["world_bounds"])
+	_patch_parameters_changed(patch, LAND_COVER_PARAMETERS)
 
 func _sync_land_cover() -> void:
 	# O(1) while no revision moved: the epoch advances with either stream. When it moved, one walk
@@ -2599,11 +2612,10 @@ func _ensure_grass_textures() -> void:
 
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
 	_graded_material_changed(patch.get("key"))
-	if (patch.get("water_texture", null) != empty_water_texture
+	var changed: bool = (patch.get("water_texture", null) != empty_water_texture
 			or int(patch.get("water_texture_width", 0)) != 2 or int(patch.get("water_texture_height", 0)) != 2
 			or int(patch.get("water_inner_offset_x", 0)) != 0 or int(patch.get("water_inner_offset_z", 0)) != 0
-			or int(patch.get("water_sample_width", 0)) != 2 or int(patch.get("water_sample_height", 0)) != 2):
-		_patch_material_will_change(patch)
+			or int(patch.get("water_sample_width", 0)) != 2 or int(patch.get("water_sample_height", 0)) != 2)
 	if patch.get("water_texture", null) != empty_water_texture:
 		material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
@@ -2617,6 +2629,8 @@ func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> v
 	patch["water_sample_width"] = 2
 	patch["water_sample_height"] = 2
 	patch["water_depth_nonzero_count"] = 0
+	if changed:
+		_patch_parameters_changed(patch, WATERMAP_PARAMETERS)
 
 func _queue_all_water_patch_texture_syncs() -> void:
 	for key_variant in resident_patch_lookup.keys():
@@ -2834,8 +2848,6 @@ func _bind_water_texture_from_binding(
 		or int(patch.get("water_sample_width", 0)) != sample_width
 		or int(patch.get("water_sample_height", 0)) != sample_height
 	)
-	if texture_changed or texture_layout_changed:
-		_patch_material_will_change(patch)
 	if texture_changed:
 		material.set_shader_parameter("watermap", water_texture)
 	if texture_layout_changed:
@@ -2855,6 +2867,8 @@ func _bind_water_texture_from_binding(
 	patch["water_inner_offset_z"] = inner_offset_z
 	patch["water_sample_width"] = sample_width
 	patch["water_sample_height"] = sample_height
+	if texture_changed or texture_layout_changed:
+		_patch_parameters_changed(patch, WATERMAP_PARAMETERS)
 
 func _sculpt_at_mouse(delta: float) -> void:
 	var mouse_pos := get_viewport().get_mouse_position()

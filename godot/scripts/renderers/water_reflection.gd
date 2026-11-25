@@ -157,6 +157,7 @@ func setup(
 	if _terrain != null:
 		_terrain.patch_render_will_change.connect(_on_terrain_patch_will_change)
 		_terrain.patch_visibility_changed.connect(_on_terrain_patch_visibility_changed)
+		_terrain.patch_parameters_changed.connect(_on_terrain_patch_parameters_changed)
 		_terrain.patches_will_reset.connect(_on_terrain_reset)
 		_terrain.visibility_changed.connect(_on_terrain_visibility_changed)
 		# Patches shown before these connections sent their events.
@@ -274,7 +275,7 @@ func _update_mirrors() -> void:
 	# so a mirror that turns on finds them in step: synced only then, a 1 s turn's marks came due
 	# at once (1,015 patches, 131 ms in one frame, `RENDER-75`). A dry world keeps its marks, one
 	# a patch, and pays nothing.
-	if _vote_sources.size() > 2 and _vote_sources[2] != 0:
+	if _proxies_follow():
 		var proxy_start := Time.get_ticks_usec()
 		_sync_proxies()
 		_proxy_us = Time.get_ticks_usec() - proxy_start
@@ -739,7 +740,7 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 # Agents, grass, props, understory, near tree meshes, hedges, lots and roads are left out; a
 # bridge would need its own geometry first.
 # A proxy follows its patch's node: the events terrain.gd sends when it changes what a patch
-# draws (patch_render_will_change: a restage, a level change, a removal) or shows or hides it
+# draws (patch_render_will_change: a restage, a removal) or shows or hides it
 # (patch_visibility_changed), the reset, and the terrain node's own visibility mark the patch, and
 # the next sync brings exactly the marked patches' proxies in step. A round robin over every built
 # patch (hidden ones included, which only grow with the distance travelled) cost 2 us a built
@@ -750,6 +751,32 @@ func _on_terrain_patch_will_change(key: Vector2i) -> void:
 func _on_terrain_patch_visibility_changed(key: Vector2i) -> void:
 	if not _dirty_terrain_patches.has(key):
 		_dirty_terrain_patches[key] = false
+
+# A patch's material changed in exactly `names` (a level of detail step, a water map, a land
+# cover; a step also gave the node a new mesh). While the proxies follow (a wet world), a proxy
+# whose copy is in step takes the new mesh and those values here, inside the unit that changed
+# them (a level change, the water texture sync, a land cover commit), which measures it as its own
+# (`TERRAIN-41` L1b). A whole refresh at the next sync compared every parameter, 34 us a patch on
+# the shipped Kuopio: a camera jump's frame of 116 steps spent 4.5 ms on it after the 2.0 ms
+# install ledger. A patch with a refresh pending or without a proxy is marked for the refresh.
+# O(names).
+func _on_terrain_patch_parameters_changed(key: Vector2i, names: Array[StringName]) -> void:
+	if _dirty_terrain_patches.get(key, false):
+		return
+	var proxy: Array = _proxies.get(key, [])
+	if _proxies_follow() and proxy.size() >= 6 and _terrain != null:
+		var node := (_terrain.patches.get(key, {}) as Dictionary).get("node") as MeshInstance3D
+		var source: ShaderMaterial = null
+		if node != null:
+			source = node.material_override as ShaderMaterial
+		if node != null and node.mesh != null and source != null and proxy[3] == _grid_materials.get(source):
+			var base := node.mesh.get_rid()
+			if proxy[1] != base:
+				RenderingServer.instance_set_base(proxy[0], base)
+				proxy[1] = base
+			_copy_parameters(proxy[3] as ShaderMaterial, source, names)
+			return
+	_dirty_terrain_patches[key] = true
 
 # Hiding or showing the terrain node shows or hides every patch with it. O(built patches), once a
 # toggle (a debug view or a benchmark variant), never a frame.
@@ -841,6 +868,20 @@ func _proxy_material(source: ShaderMaterial, refresh: bool = false) -> ShaderMat
 		# keeps the previous patch's shore after streaming, edits or LOD changes.
 		_refresh_proxy_material(copy, source)
 	return copy
+
+# Brings `copy`'s `names` to the values `source` holds now. O(names).
+func _copy_parameters(copy: ShaderMaterial, source: ShaderMaterial, names: Array[StringName]) -> void:
+	for parameter: StringName in names:
+		var value: Variant = source.get_shader_parameter(parameter)
+		var held: Variant = copy.get_shader_parameter(parameter)
+		# Unlike values of two types do not compare in GDScript: the type first.
+		if typeof(held) != typeof(value) or held != value:
+			copy.set_shader_parameter(parameter, value)
+
+# Whether the proxies follow the terrain's events every frame: while the world has water (see
+# _update_mirrors). A dry world keeps its marks, one a patch, and pays nothing.
+func _proxies_follow() -> bool:
+	return _vote_sources.size() > 2 and _vote_sources[2] != 0
 
 # Brings `copy` to the parameters `source` holds now, in place: what a new duplicate would hold,
 # without the new material whose new resource and uniform set cost the camera turn's frames
