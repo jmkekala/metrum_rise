@@ -894,6 +894,29 @@ impl StreamNode {
         out.set("in_view_bare", counts[2]);
     }
 
+    /// Builds the backdrop's product now and uploads it (`TERRAIN-41` D2; `terrain.gd` at a world's
+    /// setup, after `set_backdrop_drawing`), so the cells draw from the load's first frame: the
+    /// build on the background pool's workers, waited for here (about 1 ms on the shipped map, 4 ms
+    /// at 59,904 m), the textures made at once (27 on the shipped map). Nothing when the sources
+    /// cannot be read now (a busy core or a running job: the frame's own check builds it then).
+    /// Returns whether the product of this world exists.
+    #[func]
+    pub fn build_backdrop(&mut self) -> bool {
+        let Some(spawner) = self.backdrop.as_ref() else {
+            return false;
+        };
+        let built = async_backdrop::run_now(spawner);
+        if let (true, Some(backend)) = (built, self.backdrop_backend.as_mut())
+            && let Ok(mut state) = spawner.shared.state.try_lock()
+        {
+            let world = spawner.shared.world();
+            let product = state.product.as_mut().filter(|product| product.world == world);
+            self.backdrop_layer
+                .upload(product, backend, &mut self.budget, &self.clock, true);
+        }
+        built
+    }
+
     /// Hands over what draws the backdrop's cells (`TERRAIN-41` D2, `terrain.gd` at a world's
     /// setup): `scenario`, the main world's; `mesh`, the cell's mesh (lattice indices in `x`/`z`,
     /// `y` -1 on the skirt); and `materials`, one material of the terrain shader's backdrop variant

@@ -92,6 +92,27 @@ pub(crate) fn check(spawner: &BackdropSpawner) {
     spawner.async_jobs.spawn(move || run(&next));
 }
 
+/// Runs the job now on the calling thread (a world's setup, `TERRAIN-41` D2: the load shows the
+/// backdrop from its first frame instead of after a job queued behind the load's payload jobs):
+/// the build samples the blocks on the background pool's workers and returns when it is
+/// installed. Nothing when a job is running or the core is busy. Returns whether this world's
+/// product exists afterwards. `O(blocks x 129^2)` reads, about 1 ms on the shipped map.
+pub(crate) fn run_now(spawner: &BackdropSpawner) -> bool {
+    {
+        let Ok(mut state) = spawner.shared.state.try_lock() else {
+            return false;
+        };
+        if state.running {
+            return false;
+        }
+        state.running = true;
+    }
+    run(spawner);
+    let world = spawner.shared.world();
+    let state = spawner.shared.state.lock().unwrap();
+    state.product.as_ref().is_some_and(|product| product.world == world)
+}
+
 // The sources a job read, with their key.
 struct Taken {
     key: SourceKey,

@@ -301,6 +301,11 @@ func run(bench: Node) -> void:
 	bench.input_manager.set_simulation_speed(float(_report.simulation_speed))
 	main.menu_set_time_of_day(10.0)
 	if phases.has("post_load"):
+		# The drawn probe from the load's first frame on (`TERRAIN-41` D2: what a slow machine
+		# shows while the patches arrive).
+		if _probe != null:
+			_probe_heights = _terrain_heights(bench.simulation_node, bench.simulation_node.get_terrain_world_size())
+			RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
 		var after_load := await _capture_until_settled(bench, "post_load", POST_LOAD_MAX_FRAMES, Callable())
 		_report.samples.append(after_load)
 		if not bool(after_load.settled):
@@ -354,7 +359,7 @@ func run(bench: Node) -> void:
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
 			sun.directional_shadow_max_distance),
 	}
-	if _probe != null:
+	if _probe != null and not RenderingServer.frame_post_draw.is_connected(_on_probe_post_draw):
 		_probe_heights = _terrain_heights(bench.simulation_node, world)
 		RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
 	_proxy_checking = OS.get_environment("METRUM_STREAM_PROXY_CHECK") == "1" and _reflection != null

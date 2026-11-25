@@ -359,6 +359,8 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_border_visuals()
 	_backdrop.setup(_stream, get_world_3d().scenario, terrain_world_size, patch_cols, patch_rows,
 		patch_interval_cells, terrain_cell_m, _configure_backdrop_material)
+	# The backdrop's product and textures now, so the load's first frame shows ground everywhere.
+	_stream.build_backdrop()
 	_prewarm_terrain_patch_resource_pool()
 	graded_tiles = TerrainGradedTiles.new()
 	graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
