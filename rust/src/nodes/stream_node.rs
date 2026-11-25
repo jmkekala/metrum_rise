@@ -1491,6 +1491,13 @@ impl StreamNode {
             .terrain_budget
             .is_some_and(|budget| self.counted_bytes() > budget);
         self.terrain.set_over_budget(over);
+        // A hole build takes a donor only while one more place would not fit (`TERRAIN-41` B1c).
+        let [terrain_place, water_place] = place_bytes(&grid);
+        let full = self.terrain_budget.is_some_and(|budget| {
+            self.counted_bytes() + terrain_place + water_place > budget
+        });
+        self.terrain.set_budget_full(full);
+        self.water.set_budget_full(full);
         if let Some(scripts) = self.water_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {

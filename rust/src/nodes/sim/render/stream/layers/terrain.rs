@@ -490,6 +490,9 @@ pub(crate) struct PatchStream {
     // over the budget (its extras grew), when releases run in the room the holes left.
     releases_held: bool,
     over_budget: bool,
+    // One more place would not fit the budget: a hole build takes a donor (`TERRAIN-41` B1c).
+    // True until the stream node says (a layer without a node behaves as round B1's).
+    budget_full: bool,
     // The wanted square (terrain) and the prewarm square.
     square: Option<[i32; 4]>,
     halo: Option<[i32; 4]>,
@@ -549,6 +552,7 @@ impl PatchStream {
             release_busy: Vec::new(),
             releases_held: false,
             over_budget: false,
+            budget_full: true,
             square: None,
             halo: None,
             prewarm_dirty: false,
@@ -664,6 +668,14 @@ impl PatchStream {
     /// hole could have had.
     pub(crate) fn set_over_budget(&mut self, over: bool) {
         self.over_budget = over;
+    }
+
+    /// One more place would not fit the budget (`TERRAIN-41` B1c): only then does a hole build
+    /// release a kept patch as its donor. With room left it builds fresh resources and the
+    /// candidates wait for the releases of a frame nothing waits in, so a flight's holes and
+    /// hides do not pay for releases the budget does not need yet.
+    pub(crate) fn set_budget_full(&mut self, full: bool) {
+        self.budget_full = full;
     }
 
     /// The grid, once a world is set.
@@ -1245,10 +1257,15 @@ impl PatchStream {
                 held = true;
                 continue;
             }
-            if kind == UnitKind::Build && !release_blocked && !self.releasable.is_empty() {
-                // The donor rule (`TERRAIN-41` B1): a build first releases the farthest kept
-                // patch outside the release rectangle, inside the build's price, so its
-                // resources are built into at once and a burst releases as fast as it builds.
+            if kind == UnitKind::Build
+                && self.budget_full
+                && !release_blocked
+                && !self.releasable.is_empty()
+            {
+                // The donor rule (`TERRAIN-41` B1): while the budget is full a build first
+                // releases the farthest kept patch outside the release rectangle, inside the
+                // build's price, so its resources are built into at once and a burst releases as
+                // fast as it builds.
                 self.sort_releasable(grid, &distance_sq);
                 match self.release_one(grid, budget, clock, 0.0, exec, &mut busy) {
                     Some(true) => self.work.donors += 1,

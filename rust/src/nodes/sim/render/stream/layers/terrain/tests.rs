@@ -814,6 +814,23 @@ fn over_the_budget_releases_run_while_holes_wait_for_their_payloads() {
 }
 
 #[test]
+fn a_build_takes_a_donor_only_while_the_budget_is_full() {
+    // A jump at a small budget: its holes pair with donors while one more place would not fit;
+    // with room left they build without one (`TERRAIN-41` B1c).
+    for full in [false, true] {
+        let mut layer = wide_layer(Some(3500));
+        let mut scripts = Scripts::default();
+        settle(&mut layer, &mut scripts, [-12000.0, 800.0, -3000.0], f64::INFINITY);
+        layer.set_budget_full(full);
+        let mut donors = 0;
+        for _ in 0..200 {
+            donors += wide_frame(&mut layer, &mut scripts, [12000.0, 800.0, 12000.0], f64::INFINITY).donors;
+        }
+        assert_eq!(donors > 0, full, "full: {full}");
+    }
+}
+
+#[test]
 fn releases_wait_while_the_other_layer_has_work() {
     // Settled after a jump's holes were built: the old square's patches are candidates. While the
     // other layer has work a settled view waits for, they wait; then they go.
