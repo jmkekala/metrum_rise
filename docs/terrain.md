@@ -22358,6 +22358,12 @@ Current repository state:
   terrain record costs `O(chunks)` pointers to take and `O(edited chunks)` memory as later brush
   writes copy the chunks they touch (`Arc::make_mut`), a water record one `Arc`; the restore and
   its whole-world resets (lanes, roadbed, payload generations, height reset) are unchanged
+- the authored water follows an undone terrain edit (`TERRAIN-37`, 2026-11-25): a brush record
+  holds no water, and the restore of its terrain runs the edit's own water update
+  (`refresh_authored_water_after_terrain_change`, the one entry every terrain change takes), so
+  after the undo the depth and the debug cache equal a fresh solve on the restored ground
+  (`undoing_a_shore_cut_leaves_the_water_a_fresh_solve`, which fails on `dev` `f959970ab`). The
+  simulation has no redo, and a load clears the undo history, so no undo crosses a save or load
 
 Required direction:
 

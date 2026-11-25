@@ -766,6 +766,11 @@ impl SimCore {
                 (!fronting_stale).then_some(fronting.as_slice()),
             );
         }
+        // The authored water follows the restored ground through the edit's own update
+        // (`TERRAIN-37`).
+        if restored_dense_terrain {
+            self.refresh_authored_water_after_terrain_change();
+        }
         if charged > 0.0 {
             self.treasury.refund_build_cost(charged);
         }

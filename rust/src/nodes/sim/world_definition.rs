@@ -626,6 +626,21 @@ impl SimCore {
             .position(|water| water.world_x == world_x && water.world_z == world_z)
     }
 
+    /// Brings the authored water up to date with the terrain after anything wrote it: a brush
+    /// edit or stroke, and the undo that restores the terrain from its record (`TERRAIN-37`).
+    /// The one water update every terrain change goes through.
+    pub(crate) fn refresh_authored_water_after_terrain_change(&mut self) {
+        if self.has_authored_water_internal()
+            && let Err(err) = self.rebuild_authored_water_preview_internal()
+        {
+            debug_log!(
+                "world-editor",
+                "rebuild_authored_water_after_terrain_change failed: {}",
+                err
+            );
+        }
+    }
+
     pub(crate) fn has_authored_water_internal(&self) -> bool {
         !self.world_lake_fills.is_empty()
             || !self.world_open_water_fills.is_empty()
@@ -993,6 +1008,56 @@ mod tests {
             publication.view.water.clone_baseline_depth_dense(),
             second_depths
         );
+    }
+
+    // `TERRAIN-37`: undoing a terrain edit leaves the water (depth bits and the debug cache)
+    // equal to a fresh solve on the restored ground. A cut through the basin's rim lets the
+    // lake reach the world edge, so the cut drains it and the undo must bring it back.
+    #[test]
+    fn undoing_a_shore_cut_leaves_the_water_a_fresh_solve() {
+        let mut core = test_core_with_small_world();
+        carve_closed_basin(&mut core);
+        let loaded = LoadedWorldDefinition {
+            name: "terrain-37".to_owned(),
+            config: core.config,
+            terrain: core.heightmap.clone(),
+            lake_fills: vec![AuthoredLakeFill {
+                world_x: 0.0,
+                world_z: 0.0,
+                surface_elevation_m: 60.0,
+            }],
+            open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&core.config),
+        };
+        core.apply_loaded_world_definition(
+            loaded,
+            crate::simulation::vegetation::VegetationConfig::default(),
+        );
+        let products = |core: &SimCore| {
+            let depth: Vec<u32> = core
+                .watermap
+                .clone_baseline_depth_dense()
+                .iter()
+                .map(|depth| depth.to_bits())
+                .collect();
+            let debug: std::collections::BTreeMap<_, _> = core
+                .authored_water_patch_fill_debug_cache
+                .iter()
+                .map(|(key, contributors)| (*key, format!("{contributors:?}")))
+                .collect();
+            (depth, debug)
+        };
+        let before = products(&core);
+        assert!(before.0.iter().any(|&bits| f32::from_bits(bits) > 0.0));
+        // The rim sample (6, 8), world (-16, 0): a brush of half a cell lowers it alone.
+        core.sculpt_terrain_internal(Vector2::new(-16.0, 0.0), 4.0, -190.0);
+        assert_ne!(products(&core), before, "the cut drains the lake");
+        assert!(core.undo_action_internal());
+        let undone = products(&core);
+        core.rebuild_authored_water_preview_internal()
+            .expect("fresh solve");
+        assert_eq!(undone, products(&core), "undo leaves a fresh solve's water");
+        assert_eq!(undone, before);
     }
 
     #[test]
