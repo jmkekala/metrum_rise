@@ -115,6 +115,16 @@ const PATCH_RESOURCE_POOL_MAX := 256
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
+# A world load's preload (`TERRAIN-59`, the stream node's phases): none, the view's own patches
+# first with the fill held, the fill. While it runs the payload poll takes up to what the layers
+# request a frame (the stream node's PRELOAD_REQUESTS) and the water texture syncs run under a
+# slice like the patch units' (the load shows nothing to keep smooth; the window stays responsive).
+const PRELOAD_OFF := 0
+const PRELOAD_VIEW := 1
+const PRELOAD_FILL := 2
+const PRELOAD_PAYLOAD_POLL_BUDGET := 256
+const PRELOAD_WATER_TEXTURE_SYNC_BUDGET := 4096
+const PRELOAD_WATER_TEXTURE_SYNC_BUDGET_MS := 25.0
 # A dirty patch's stage (height and mask images, its land cover from the payload) as the install
 # ledger predicts it, microseconds; the first of a frame always stages.
 const DIRTY_STAGE_US := 300.0
@@ -421,7 +431,9 @@ func _process(delta: float) -> void:
 	_build_perf = perf_enabled
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
 	var payload_poll_start_us := Time.get_ticks_usec()
-	var payload_poll_count := _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	var preloading: bool = _stream.is_terrain_preloading()
+	var payload_poll_count := _poll_ready_terrain_patch_payloads(
+		PRELOAD_PAYLOAD_POLL_BUDGET if preloading else PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	_report_extras()
 	if not _land_cover_asked.is_empty():
 		_poll_land_covers()
@@ -450,8 +462,9 @@ func _process(delta: float) -> void:
 
 	var water_sync_start_us := Time.get_ticks_usec()
 	water_sync_perf_stats = _process_water_patch_texture_sync_queue(
-		PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME,
-		perf_enabled
+		PRELOAD_WATER_TEXTURE_SYNC_BUDGET if preloading else PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME,
+		perf_enabled,
+		PRELOAD_WATER_TEXTURE_SYNC_BUDGET_MS if preloading else PATCH_WATER_TEXTURE_SYNC_BUDGET_MS
 	)
 	water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 
@@ -668,6 +681,28 @@ func set_load_settling(settling: bool) -> void:
 	_stream.set_terrain_load_settling(settling)
 	if graded_tiles != null:
 		graded_tiles.unbudgeted = settling
+
+## Asks for the preload of the base terrain within the terrain memory target before the load
+## hands the game over (`TERRAIN-59`, a player's load): called after set_load_settling(true);
+## the hold's end (set_load_settling(false)) ends it.
+func begin_load_preload() -> void:
+	_stream.set_terrain_preload(PRELOAD_VIEW)
+
+## The load's preload (`TERRAIN-59`), once a frame while the load holds the game: the stream
+## node's status (`phase`, `built`, `left`, `done`; empty when no preload runs) and `pending`,
+## whether gameplay must still wait (the fill or the view has work, the backdrop is not ready, or
+## a kept patch's water texture sync waits). It moves the preload from its view phase to the fill
+## once the view's own patches, their water meshes and syncs are in step, so the places the fill
+## follows are counted from the drawn patches' final extras. O(keep rectangle).
+func advance_preload() -> Dictionary:
+	if not _stream.is_terrain_preloading():
+		return {}
+	var status: Dictionary = _stream.get_terrain_preload()
+	if int(status["phase"]) == PRELOAD_VIEW and not has_pending_render_work(false) \
+			and (water_node == null or not water_node.has_pending_render_work(false)):
+		_stream.set_terrain_preload(PRELOAD_FILL)
+	status["pending"] = not bool(status["done"]) or not water_texture_sync_background.is_empty()
+	return status
 
 func get_visibility_cull_far_m(camera: Camera3D) -> float:
 	if camera == null:
@@ -2740,7 +2775,8 @@ func _queue_water_patch_texture_sync(key: Vector2i) -> void:
 
 func _process_water_patch_texture_sync_queue(
 	budget: int,
-	collect_perf_stats: bool = false
+	collect_perf_stats: bool = false,
+	budget_ms: float = PATCH_WATER_TEXTURE_SYNC_BUDGET_MS
 ) -> Dictionary:
 	var perf_stats := _new_water_sync_perf_stats() if collect_perf_stats else {}
 	var sync_start_us := Time.get_ticks_usec()
@@ -2751,7 +2787,7 @@ func _process_water_patch_texture_sync_queue(
 	var remaining_budget := budget
 	# The drawn queue first, then the background's, under one count and time budget.
 	while remaining_budget > 0 and not (water_texture_sync_queue.is_empty() and water_texture_sync_background.is_empty()):
-		if _time_budget_exhausted(sync_start_us, PATCH_WATER_TEXTURE_SYNC_BUDGET_MS, processed_count):
+		if _time_budget_exhausted(sync_start_us, budget_ms, processed_count):
 			break
 		var drawn := not water_texture_sync_queue.is_empty()
 		var key: Vector2i = water_texture_sync_queue.pop_front() if drawn else water_texture_sync_background.pop_front()
