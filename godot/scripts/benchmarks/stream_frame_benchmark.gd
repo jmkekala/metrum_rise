@@ -89,7 +89,9 @@
 ## with the payload ready, in-view holes); the end of every leg but the turn records what a built
 ## terrain patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
 ## frame back) saves the view at a quarter, half and three quarters of each motion and after its
-## turn. Every sample records the process's memory at its end (`memory`).
+## turn, and of every sample that waits for the view to settle (a jump, a load's settle) its first
+## frame, its first frame at 0.5 s and its settled frame (`TERRAIN-41` D2). Every sample records
+## the process's memory at its end (`memory`).
 ## METRUM_TERRAIN_BUDGET_MB (read by terrain.gd, `TERRAIN-41` B1) sets the base terrain's memory
 ## budget (unset: the Terrain memory setting's default, Automatic, `TERRAIN-41` B2; 0: every patch
 ## fits); each sample records the budget's state (`terrain_budget`), and
@@ -299,6 +301,11 @@ func run(bench: Node) -> void:
 	bench.input_manager.set_simulation_speed(float(_report.simulation_speed))
 	main.menu_set_time_of_day(10.0)
 	if phases.has("post_load"):
+		# The drawn probe from the load's first frame on (`TERRAIN-41` D2: what a slow machine
+		# shows while the patches arrive).
+		if _probe != null:
+			_probe_heights = _terrain_heights(bench.simulation_node, bench.simulation_node.get_terrain_world_size())
+			RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
 		var after_load := await _capture_until_settled(bench, "post_load", POST_LOAD_MAX_FRAMES, Callable())
 		_report.samples.append(after_load)
 		if not bool(after_load.settled):
@@ -352,7 +359,7 @@ func run(bench: Node) -> void:
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
 			sun.directional_shadow_max_distance),
 	}
-	if _probe != null:
+	if _probe != null and not RenderingServer.frame_post_draw.is_connected(_on_probe_post_draw):
 		_probe_heights = _terrain_heights(bench.simulation_node, world)
 		RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
 	_proxy_checking = OS.get_environment("METRUM_STREAM_PROXY_CHECK") == "1" and _reflection != null
@@ -1255,9 +1262,17 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 	var settle_frames := -1
 	# The hand-over (`TERRAIN-15`): the first frame the input manager reports the world ready.
 	var ready_ms := -1.0
+	var half_second_shot := false
 	while rows.size() < max_frames and stable < SETTLED_FRAMES:
 		await bench.get_tree().process_frame
 		rows.append(_row(rows.size()))
+		# METRUM_STREAM_SHOTS (`TERRAIN-41` D2): the first frame drawn after the move and the
+		# first at 0.5 s; the settled frame below.
+		if rows.size() == 1:
+			_save_shot(label + "_first")
+		elif not half_second_shot and bench._elapsed_ms(start_us) >= 500.0:
+			half_second_shot = true
+			_save_shot(label + "_0500ms")
 		if ready_ms < 0.0 and bench.input_manager.is_world_ready():
 			ready_ms = bench._elapsed_ms(start_us)
 		if _is_settled(bench):
@@ -1272,6 +1287,7 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 		"ready_ms": ready_ms})
 	if stable >= SETTLED_FRAMES:
 		_record_digest(label)
+		_save_shot(label + "_settled")
 	return sample
 
 func _row(index: int) -> Dictionary:
@@ -1321,7 +1337,10 @@ func _row(index: int) -> Dictionary:
 		row["parked_drawn"] = _stream.get_parked_drawn().size()
 		# The probe's last drawn frame (`TERRAIN-41`); a library without `backlog` records none.
 		if _probe.has_method("backlog"):
-			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water"))}
+			# `terrain_map`: every patch of the map (`TERRAIN-41` D2); its [3] is the in-view patches
+			# not drawn as patches, [4] those nothing drew over (sky).
+			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water")),
+				"terrain_map": Array(_probe.backlog("terrain_map"))}
 	if _proxy_checking:
 		row["proxies"] = _proxy_check
 	# A reflection from before `RENDER-76` has no such property (null).
@@ -1338,7 +1357,7 @@ func _on_probe_post_draw() -> void:
 	_probe.begin_frame(_camera.get_frustum())
 	var low := _probe_heights.x - PROBE_GROUND_M
 	var ground := _probe_heights.y + PROBE_GROUND_M
-	for layer: String in ["terrain", "water", "graded", "graded_tiles"]:
+	for layer: String in ["terrain", "terrain_map", "water", "graded", "graded_tiles"]:
 		_probe.observe(layer, _stream.probe_stream_layer(layer), low, ground)
 	for layer: String in ["vegetation_coarse", "vegetation_fine"]:
 		_probe.observe(layer, _stream.probe_stream_layer(layer), low, _probe_heights.y + PROBE_PLANTS_M)

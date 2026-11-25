@@ -430,7 +430,8 @@ func _parking_command() -> void:
 ## bytes by kind, the places and keep ring, the wanted square and what is drawn of it, built and
 ## kept-hidden patches, the fill still to come, the releases since the load, the last frame's
 ## install ledger, and beside them what the target does not count (the mask pages, nodes,
-## materials, the driver's own) with the engine's memory monitors.
+## materials, the driver's own) with the engine's memory monitors; then the backdrop's product,
+## cells and the patches in view by what draws them (`TERRAIN-41` D2).
 func _terrain_command() -> void:
 	var scene := get_tree().current_scene
 	var stream: Node = scene.get_node_or_null("StreamNode") if scene != null else null
@@ -475,9 +476,32 @@ func _terrain_command() -> void:
 			Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED) / 1048576.0,
 			Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0],
 	])
+	if stream.has_method("get_backdrop"):
+		lines.append_array(_backdrop_lines(stream.get_backdrop()))
 	var text := "\n".join(lines)
 	_view.set_status(text)
 	MetrumDebug.log("events", text)
+
+# The backdrop's lines of the `terrain` report (`TERRAIN-41` D1, D2): its product and textures,
+# its cells, and the map's patches in view by what draws them (patch, backdrop cell, nothing).
+func _backdrop_lines(backdrop: Dictionary) -> PackedStringArray:
+	if not bool(backdrop.get("built", false)):
+		return PackedStringArray(["Backdrop: not built yet"])
+	return PackedStringArray([
+		"Backdrop: %d blocks, %s; %.2f MB, textures %.2f MB, %d channels waiting; %d uploads; build %.1f ms" % [
+			int(backdrop.get("blocks", 0)), "ready" if bool(backdrop.get("ready", false)) else "not ready",
+			float(backdrop.get("product_bytes", 0)) / 1e6, float(backdrop.get("texture_bytes", 0)) / 1e6,
+			int(backdrop.get("pending", 0)), int(backdrop.get("uploads", 0)), float(backdrop.get("build_ms", 0.0))],
+		"  refreshes %d (last %.2f ms, %d points changed); land cover notes %d" % [
+			int(backdrop.get("refreshes", 0)), float(backdrop.get("refresh_ms", 0.0)),
+			int(backdrop.get("refresh_changed", 0)), int(backdrop.get("covers", 0))],
+		"  cells: %d patches not drawn as patches, %d drawn in %d blocks" % [
+			int(backdrop.get("cells_listed", 0)), int(backdrop.get("cells_drawn", 0)),
+			int(backdrop.get("cell_blocks", 0))],
+		"In view: %d patches drawn, %d covered by the backdrop, %d bare (sky)" % [
+			int(backdrop.get("in_view_patches", 0)), int(backdrop.get("in_view_cells", 0)),
+			int(backdrop.get("in_view_bare", 0))],
+	])
 
 func _copy_visible() -> void:
 	var text := PackedStringArray()

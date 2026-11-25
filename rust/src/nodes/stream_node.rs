@@ -33,7 +33,9 @@
 use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::agent_frame::SharedCasterFeed;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow, slot_census};
-use crate::nodes::sim::render::stream::layers::backdrop::BackdropLayer;
+use crate::nodes::sim::render::stream::layers::backdrop::{
+    BLOCK_PATCHES, BackdropLayer, COVER_STEP_CELLS, HEIGHT_STEP_CELLS,
+};
 use crate::nodes::sim::render::stream::layers::agent_casters::{
     AgentCasterLayer, AgentKind, CasterView, SLOT_LIMIT as AGENT_SLOT_LIMIT,
     SPARE_LIMIT as AGENT_SPARE_LIMIT,
@@ -164,6 +166,10 @@ pub struct StreamNode {
     // and its textures.
     backdrop: Option<BackdropSpawner>,
     backdrop_layer: BackdropLayer,
+    // The backdrop's own backend (`TERRAIN-41` D2): its textures, its cells and the one-mesh,
+    // three-parameter catalogue they draw with, apart from the vegetation's catalogue (which
+    // `set_vegetation_catalogue` replaces whole). Made by `set_backdrop_drawing`.
+    backdrop_backend: Option<GodotBackend>,
 }
 
 // The agents' twins with their own backend (their own mesh and material catalogue), the feed
@@ -245,6 +251,7 @@ impl INode for StreamNode {
             graded: None,
             backdrop: None,
             backdrop_layer: BackdropLayer::default(),
+            backdrop_backend: None,
         }
     }
 
@@ -265,8 +272,9 @@ impl INode for StreamNode {
         if let Some(draw) = self.agents.as_mut() {
             draw.layer.reset(&mut draw.backend);
         }
-        if let Some(backend) = self.backend.as_mut() {
+        if let Some(backend) = self.backdrop_backend.as_mut() {
             self.backdrop_layer.clear(backend);
+            self.backdrop_layer.free_cells(backend);
         }
     }
 
@@ -623,8 +631,10 @@ impl StreamNode {
 
     /// The stream benchmark's drawn probe (`RENDER-32-N`): layer `name`'s installed set this
     /// frame as `stream::probe` records (`terrain`, `water`, `vegetation_coarse`, `vegetation_fine`,
-    /// and through the attached book `graded` and `graded_tiles`); empty for another name.
-    /// Benchmark only, `O(the layer's set)` (the terrain's and water's `O(grid)`).
+    /// `terrain_map` (every patch of the map, `TERRAIN-41` D2), and through the attached book
+    /// `graded` and `graded_tiles`); empty for another name. A terrain patch under its backdrop
+    /// cell is covered. Benchmark only, `O(the layer's set)` (the terrain's and water's
+    /// `O(grid)`).
     #[func]
     pub fn probe_stream_layer(&self, name: GString) -> PackedFloat32Array {
         let mut out = Vec::new();
@@ -634,8 +644,26 @@ impl StreamNode {
                 if let Some(grid) = stream.grid() {
                     for (key, resident, ready) in stream.probe_wanted() {
                         let [x, z, width, depth] = grid.rect(key);
-                        let flags = if resident { probe::DRAWN } else { 0 } | if ready { probe::READY } else { 0 };
+                        // A terrain hole under a backdrop cell is covered (`TERRAIN-41` D2).
+                        let covered = layer == "terrain" && self.backdrop_layer.cell_shown(key);
+                        let flags = if resident { probe::DRAWN } else { 0 }
+                            | if ready { probe::READY } else { 0 }
+                            | if covered { probe::COVERED } else { 0 };
                         probe::push_chunk(&mut out, [key[0], key[1], 0], flags, [x, z, x + width, z + depth]);
+                    }
+                }
+            }
+            "terrain_map" => {
+                // Every patch of the map, wanted or not (`TERRAIN-41` D2): drawn as a patch, or
+                // covered by its backdrop cell; in view and neither is bare (sky).
+                if let Some(grid) = self.terrain.grid() {
+                    for z in 0..grid.rows {
+                        for x in 0..grid.cols {
+                            let [left, top, width, depth] = grid.rect([x, z]);
+                            let flags = if self.terrain.is_resident([x, z]) { probe::DRAWN } else { 0 }
+                                | if self.backdrop_layer.cell_shown([x, z]) { probe::COVERED } else { 0 };
+                            probe::push_chunk(&mut out, [x, z, 0], flags, [left, top, left + width, top + depth]);
+                        }
                     }
                 }
             }
@@ -820,7 +848,95 @@ impl StreamNode {
         out.set("refresh_changed", stats.refresh_changed as i64);
         out.set("covers", stats.covers as i64);
         out.set("busy", stats.busy as i64);
+        drop(state);
+        self.backdrop_cells_status(&mut out);
         out
+    }
+
+    // The backdrop's cells (`TERRAIN-41` D2) for `get_backdrop`: the product's constants a script
+    // lays the cells' materials out with (`block_patches`, `height_step_cells`,
+    // `cover_step_cells`), the cells `cells_listed` (patches not drawn as patches), `cells_drawn`
+    // and `cell_blocks` (blocks drawing), and the map's patches in the camera's view by what draws
+    // them: `in_view_patches` (`terrain` drawn as a patch), `in_view_cells` (a backdrop cell) and
+    // `in_view_bare` (nothing: sky). `O(patches)`: a status read, not a frame's.
+    fn backdrop_cells_status(&self, out: &mut VarDictionary) {
+        out.set("block_patches", BLOCK_PATCHES as i64);
+        out.set("height_step_cells", HEIGHT_STEP_CELLS as i64);
+        out.set("cover_step_cells", COVER_STEP_CELLS as i64);
+        let [listed, drawn, blocks] = self.backdrop_layer.cell_counts();
+        out.set("cells_listed", listed as i64);
+        out.set("cells_drawn", drawn as i64);
+        out.set("cell_blocks", blocks as i64);
+        let (Some(grid), Some(planes)) = (self.terrain.grid(), self.camera_frustum()) else {
+            return;
+        };
+        let mut counts = [0i64; 3];
+        for z in 0..grid.rows {
+            for x in 0..grid.cols {
+                let [left, top, width, depth] = grid.rect([x, z]);
+                let low = [left, PATCH_LOW_M, top];
+                let high = [left + width, PATCH_HIGH_M, top + depth];
+                if !box_in_view(&planes, low, high) {
+                    continue;
+                }
+                let at = if self.terrain.is_resident([x, z]) {
+                    0
+                } else if self.backdrop_layer.cell_shown([x, z]) {
+                    1
+                } else {
+                    2
+                };
+                counts[at] += 1;
+            }
+        }
+        out.set("in_view_patches", counts[0]);
+        out.set("in_view_cells", counts[1]);
+        out.set("in_view_bare", counts[2]);
+    }
+
+    /// Builds the backdrop's product now and uploads it (`TERRAIN-41` D2; `terrain.gd` at a world's
+    /// setup, after `set_backdrop_drawing`), so the cells draw from the load's first frame: the
+    /// build on the background pool's workers, waited for here (about 1 ms on the shipped map, 4 ms
+    /// at 59,904 m), the textures made at once (27 on the shipped map). Nothing when the sources
+    /// cannot be read now (a busy core or a running job: the frame's own check builds it then).
+    /// Returns whether the product of this world exists.
+    #[func]
+    pub fn build_backdrop(&mut self) -> bool {
+        let Some(spawner) = self.backdrop.as_ref() else {
+            return false;
+        };
+        let built = async_backdrop::run_now(spawner);
+        if let (true, Some(backend)) = (built, self.backdrop_backend.as_mut())
+            && let Ok(mut state) = spawner.shared.state.try_lock()
+        {
+            let world = spawner.shared.world();
+            let product = state.product.as_mut().filter(|product| product.world == world);
+            self.backdrop_layer
+                .upload(product, backend, &mut self.budget, &self.clock, true);
+        }
+        built
+    }
+
+    /// Hands over what draws the backdrop's cells (`TERRAIN-41` D2, `terrain.gd` at a world's
+    /// setup): `scenario`, the main world's; `mesh`, the cell's mesh (lattice indices in `x`/`z`,
+    /// `y` -1 on the skirt); and `materials`, one material of the terrain shader's backdrop variant
+    /// a block of the product (row-major, `get_backdrop()`'s `block_patches`), which take the
+    /// blocks' textures as `heightmap`, `watermap` and `land_cover_texture`. The script keeps the
+    /// materials alive. The backdrop's textures are made from the first call on. `O(blocks)`.
+    #[func]
+    pub fn set_backdrop_drawing(&mut self, scenario: Rid, mesh: Rid, materials: Array<Rid>) {
+        if !scenario.is_valid() || !mesh.is_valid() {
+            godot_error!("StreamNode.set_backdrop_drawing: no scenario or mesh");
+            return;
+        }
+        let backend = self
+            .backdrop_backend
+            .get_or_insert_with(|| GodotBackend::new(scenario));
+        // Its own catalogue: the cell mesh (0) and the channels' parameters (0, 1, 2).
+        let names = ["heightmap", "watermap", "land_cover_texture"].map(StringName::from);
+        backend.set_catalogue(vec![mesh], Vec::new(), names.to_vec());
+        let materials = materials.iter_shared().map(|rid| rid.to_u64()).collect();
+        self.backdrop_layer.set_drawing(0, 0, materials, backend);
     }
 
     /// Starts the terrain and water patches over on a world's patch grid (`terrain.gd`'s layout:
@@ -847,6 +963,10 @@ impl StreamNode {
         });
         self.terrain.reset(grid);
         self.water.reset(grid);
+        // Nothing is resident: every patch of the map draws its backdrop cell once its block's
+        // textures exist (`TERRAIN-41` D2).
+        self.backdrop_layer
+            .reset_cells(grid, self.backdrop_backend.as_mut());
         self.releases_total = [0; 2];
         self.post_load_window = grid.is_some();
         self.post_load_s = 0.0;
@@ -1725,6 +1845,8 @@ impl StreamNode {
         for (key, resident) in self.terrain.take_changes() {
             self.water.set_wanted(key, resident);
             self.residency.set_resident(key, resident);
+            // The patch's backdrop cell goes or comes in the same pass (`TERRAIN-41` D2).
+            self.backdrop_layer.set_resident(key, resident);
             changed = true;
         }
         if changed {
@@ -1738,7 +1860,43 @@ impl StreamNode {
         let start = std::time::Instant::now();
         self.open_ledger();
         self.run_units(residency, start);
+        self.backdrop_pass(residency);
         self.close_ledger();
+    }
+
+    // The backdrop's part of a pass (`TERRAIN-41` D1, D2), after the vegetation's installs: in
+    // the frame's first pass a sampling job when the sources moved, then the waiting uploads in
+    // the room the vegetation left (all of them in the load's hold); in both passes the cells'
+    // changed blocks, so a patch made resident or hidden in this pass (or by a script between the
+    // passes) and its cell reach the same frame. Nothing without a change; `O(changed blocks x
+    // 256)` rows otherwise.
+    fn backdrop_pass(&mut self, residency: bool) {
+        let Some(backend) = self.backdrop_backend.as_mut() else {
+            return;
+        };
+        let start = std::time::Instant::now();
+        if residency && let Some(spawner) = self.backdrop.as_ref() {
+            async_backdrop::check(spawner);
+            if let Ok(mut state) = spawner.shared.state.try_lock() {
+                let world = spawner.shared.world();
+                let product = state.product.as_mut().filter(|product| product.world == world);
+                self.backdrop_layer.upload(
+                    product,
+                    backend,
+                    &mut self.budget,
+                    &self.clock,
+                    self.load_settling,
+                );
+            }
+        }
+        self.backdrop_layer
+            .flush(backend, [PATCH_LOW_M, PATCH_HIGH_M]);
+        // A world change frees the old textures: their frees narrow the installs' room.
+        let free_us = backend.take_free_us();
+        self.budget.add_spent(free_us);
+        self.frame_free_pass_us += free_us;
+        self.frame_free_us += free_us;
+        self.frame_us += start.elapsed().as_secs_f64() * 1e6;
     }
 
     // This pass's account: the frame's ledger as the owners before it left it, with the node's
@@ -1840,22 +1998,6 @@ impl StreamNode {
             self.vegetation
                 .install(backend, &mut self.budget, &self.clock, &test, false);
         self.residency.take_installs(&mut self.vegetation, backend);
-        if residency && let Some(spawner) = self.backdrop.as_ref() {
-            // The backdrop (`TERRAIN-41` D1): a sampling job when the sources moved, then its
-            // waiting uploads in the room the vegetation left (all of them in the load's hold).
-            async_backdrop::check(spawner);
-            if let Ok(mut state) = spawner.shared.state.try_lock() {
-                let world = spawner.shared.world();
-                let product = state.product.as_mut().filter(|product| product.world == world);
-                self.backdrop_layer.upload(
-                    product,
-                    backend,
-                    &mut self.budget,
-                    &self.clock,
-                    self.load_settling,
-                );
-            }
-        }
         self.frame_copy_us += backend.take_copy_us();
         let free_us = backend.take_free_us();
         self.budget.add_spent(free_us);

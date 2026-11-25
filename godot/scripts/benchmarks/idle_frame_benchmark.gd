@@ -239,6 +239,10 @@ func run(bench: Node) -> void:
 			var activity_after := _activity_counters()
 			sample.merge({"pose": pose.name, "variant": variant, "settle_ms": settle.elapsed_ms,
 				"cell_builds": builds, "graded_activity": _counter_delta(activity_before, activity_after)})
+			# The backdrop's cells and the map's patches in view by what draws them (`TERRAIN-41` D2).
+			var stream: Node = bench.get_tree().current_scene.get_node_or_null("StreamNode")
+			if stream != null and stream.has_method("get_backdrop"):
+				sample["backdrop"] = stream.get_backdrop()
 			# Optional visual baseline: the last captured frame, for before/after image diffs.
 			var screenshot_dir := OS.get_environment("METRUM_IDLE_BENCH_SCREENSHOT_DIR")
 			if not screenshot_dir.is_empty():

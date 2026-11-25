@@ -76,6 +76,8 @@ pub(crate) struct EpochStats {
     pub(crate) left_undrawn: u32,
     /// In-view runs of frames a chunk was not drawn, by length.
     pub(crate) holes: Vec<u32>,
+    /// The most in-view chunks over which nothing drew in one frame (`TERRAIN-41` D2: sky).
+    pub(crate) bare_max: u32,
     /// In-view runs of frames nothing drew over a chunk's area, by length.
     pub(crate) bare: Vec<u32>,
     /// Chunk frames in view not drawn.
@@ -92,8 +94,9 @@ pub(crate) struct LayerTracker {
     started: bool,
     stats: Vec<EpochStats>,
     // The last frame's backlog (`TERRAIN-41`): chunks waiting to draw, the oldest wait (frames),
-    // the waiting chunks whose product is ready, and the in-view holes.
-    backlog: [u32; 4],
+    // the waiting chunks whose product is ready, the in-view holes, the in-view chunks over which
+    // nothing drew (bare: sky, `TERRAIN-41` D2), and the chunks in view.
+    backlog: [u32; 6],
 }
 
 impl LayerTracker {
@@ -115,7 +118,9 @@ impl LayerTracker {
         let baseline = !self.started;
         self.started = true;
         let mut in_view_holes = 0;
-        let mut backlog = [0; 4];
+        let mut in_view_bare = 0;
+        let mut in_view_count = 0;
+        let mut backlog = [0; 6];
         for record in data.as_chunks::<LANES>().0 {
             let key = [record[0] as i32, record[1] as i32, record[2] as i32];
             let flags = record[3] as u32;
@@ -205,12 +210,17 @@ impl LayerTracker {
                 in_view_holes += 1;
                 self.stats(epoch).hole_frames += 1;
             }
+            in_view_bare += u32::from(bare);
+            in_view_count += u32::from(in_view);
             self.chunks.insert(key, chunk);
         }
         backlog[3] = in_view_holes;
+        backlog[4] = in_view_bare;
+        backlog[5] = in_view_count;
         self.backlog = backlog;
         let stats = self.stats(epoch);
         stats.holes_max = stats.holes_max.max(in_view_holes);
+        stats.bare_max = stats.bare_max.max(in_view_bare);
         // Chunks that left the set: an unfinished wait is dropped and counted, an open run ends.
         let stats = &mut self.stats;
         self.chunks.retain(|_, chunk| {
@@ -364,20 +374,22 @@ impl StreamDrawnProbe {
     }
 
     /// Layer `name`'s backlog at its last observed frame (`TERRAIN-41`): `[waiting, oldest wait
-    /// in frames, waiting with the product ready, in-view holes]`; zeros for an unknown layer.
+    /// in frames, waiting with the product ready, in-view holes, in-view bare, in view]` (bare:
+    /// nothing, not even a stand-in, drew over the chunk); zeros for an unknown layer.
     #[func]
     pub fn backlog(&self, name: GString) -> PackedInt32Array {
         let backlog = self
             .layers
             .iter()
             .find(|(known, _)| *known == name)
-            .map_or([0; 4], |(_, layer)| layer.backlog);
+            .map_or([0; 6], |(_, layer)| layer.backlog);
         PackedInt32Array::from_iter(backlog.iter().map(|&value| value as i32))
     }
 
     /// The counts: per epoch label, per layer `entered`, `waits`, `waits_visible`,
     /// `ready_frames`, `open` (still waiting: their waits so far), `left_undrawn`, `holes`,
-    /// `bare`, `hole_frames`, `holes_max`; `frames` the frames observed.
+    /// `bare`, `hole_frames`, `holes_max`, `bare_max` (most in-view bare chunks in one frame);
+    /// `frames` the frames observed.
     #[func]
     pub fn report(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -401,6 +413,7 @@ impl StreamDrawnProbe {
                 entry.set("bare", packed(&stats.bare));
                 entry.set("hole_frames", stats.hole_frames);
                 entry.set("holes_max", stats.holes_max);
+                entry.set("bare_max", stats.bare_max);
                 by_layer.set(name.clone(), entry);
                 out.set(label, by_layer);
             }

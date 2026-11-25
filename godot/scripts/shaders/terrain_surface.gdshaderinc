@@ -160,6 +160,15 @@ varying vec2 var_centered_uv;
 varying vec2 var_water_uv;
 varying vec3 var_world_pos;
 varying float var_view_distance_m;
+#ifdef TERRAIN_BACKDROP
+// The backdrop (`TERRAIN-41` D2, terrain_backdrop.gdshader): 1 where the vertex's lattice point is
+// under water (its water surface above its ground), interpolated across the cell.
+varying float var_backdrop_wet;
+// The skirt's drop below a cell's edge, metres: it hides the seam against a finer neighbour.
+const float BACKDROP_SKIRT_M = 48.0;
+// The backdrop's flat water (linear albedo): no reflection, waves or second pass.
+const vec3 BACKDROP_WATER_ALBEDO = vec3(0.020, 0.070, 0.120);
+#endif
 // Share of direct sunlight the clouds let through, from fragment() to light().
 varying float var_cloud_sun;
 
@@ -518,6 +527,50 @@ vec3 cliff_masks(vec2 uv) {
 #include "res://scripts/shaders/ground_paving.gdshaderinc"
 
 void vertex() {
+#ifdef TERRAIN_BACKDROP
+	// A backdrop cell's vertex. The cell is one patch on the backdrop's lattice, instanced by block:
+	// VERTEX.xz is the vertex's lattice index in the patch (0..n), VERTEX.y 0 on the surface and -1
+	// on the skirt; INSTANCE_CUSTOM holds the patch's column and row in its block and its size in
+	// metres; the instance transform moves it to the patch's corner. The block's textures are bound
+	// as heightmap (ground, R32F), watermap (water surface, R32F) and land_cover_texture, one texel a
+	// lattice point shared with the neighbour block; terrain_cell_m is the lattice spacing (64 m) and
+	// patch_world_size_m the patch's full size. Heights are fetched exactly: the lattice samples a
+	// detail step 8 patch draws at the same vertices.
+	float lattice_m = max(terrain_cell_m, 0.001);
+	int per_patch = int(round(patch_world_size_m.x / lattice_m));
+	ivec2 k = ivec2(round(VERTEX.xz));
+	ivec2 last = textureSize(heightmap, 0) - ivec2(1);
+	ivec2 at = clamp(ivec2(round(INSTANCE_CUSTOM.xy)) * per_patch + k, ivec2(0), last);
+	float ground = texelFetch(heightmap, at, 0).r;
+	float surface = texelFetch(watermap, at, 0).r;
+	// Central differences inside the block, one-sided on its edge.
+	ivec2 low = max(at - ivec2(1), ivec2(0));
+	ivec2 high = min(at + ivec2(1), last);
+	float dx = texelFetch(heightmap, ivec2(high.x, at.y), 0).r
+		- texelFetch(heightmap, ivec2(low.x, at.y), 0).r;
+	float dz = texelFetch(heightmap, ivec2(at.x, high.y), 0).r
+		- texelFetch(heightmap, ivec2(at.x, low.y), 0).r;
+	vec2 gradient = vec2(dx / (float(max(high.x - low.x, 1)) * lattice_m),
+		dz / (float(max(high.y - low.y, 1)) * lattice_m));
+	NORMAL = normalize(vec3(-gradient.x, 1.0, -gradient.y));
+	bool wet = surface > ground;
+	var_backdrop_wet = wet ? 1.0 : 0.0;
+	// A patch shorter than its full size (the map's last) ends at its own edge: the lattice
+	// points past it hold the edge sample.
+	vec2 local_m = min(vec2(k) * lattice_m, INSTANCE_CUSTOM.zw);
+	float skirt = VERTEX.y < -0.5 ? BACKDROP_SKIRT_M : 0.0;
+	VERTEX = vec3(local_m.x, (wet ? surface : ground) - skirt, local_m.y);
+	h = ground;
+	var_centered_uv = (vec2(at) + 0.5) / vec2(last + ivec2(1));
+	var_water_uv = var_centered_uv;
+	UV = vec2(k) / float(max(per_patch, 1));
+	var_cell = ivec2(-1, -1);
+	var_cell_delta = 0.0;
+	var_cell_local_m = vec2(0.0);
+	var_cell_normal = NORMAL;
+	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	var_view_distance_m = length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz);
+#else
 #ifdef TERRAIN_GRADED
 	bool cells = true;
 #else
@@ -591,6 +644,7 @@ void vertex() {
 	NORMAL = terrain_normal;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	var_view_distance_m = length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz);
+#endif
 }
 
 varying float paved_surface;
@@ -796,6 +850,10 @@ void fragment() {
 		// The slope-aware weighting reads the rendered normal, grading included.
 		normal = normalize(var_cell_normal);
 #endif
+#ifdef TERRAIN_BACKDROP
+		// The backdrop's lattice normal (its block texture's edge would halve a texture gradient).
+		normal = normalize(var_cell_normal);
+#endif
 		float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
 		float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
 		ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
@@ -810,7 +868,13 @@ void fragment() {
 		rock_mask = max(rock_mask, cliff_face * 0.92);
 		vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
 		color = mix(color, rock_color, rock_mask);
+#ifdef TERRAIN_BACKDROP
+		// The backdrop's watermap holds the water surface, not wetness: its shore is the wet
+		// lattice points' reach, as the patches' shore is their wet texels'.
+		float shore_mask = smoothstep(0.02, 0.22, var_backdrop_wet);
+#else
 		float shore_mask = shoreline_mask(var_water_uv);
+#endif
 		float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
 		vec3 shore_color = mix(vec3(0.28, 0.39, 0.23), vec3(0.18, 0.32, 0.18), ruggedness);
 		color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
@@ -1065,6 +1129,15 @@ void fragment() {
 				* scene_ambient_light.rgb;
 			ROUGHNESS = ground_roughness;
 			SPECULAR = 0.08;
+#ifdef TERRAIN_BACKDROP
+			// Flat water where the cell lies under it (half way between a wet and a dry lattice
+			// point), lit as the ground is.
+			if (var_backdrop_wet > 0.5) {
+				ALBEDO = BACKDROP_WATER_ALBEDO;
+				EMISSION = ALBEDO * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
+				ROUGHNESS = 0.2;
+			}
+#endif
 		}
 	}
 #ifdef TERRAIN_GRADED
