@@ -21869,8 +21869,8 @@ install order, then the replacement, and a refusal closes it. The existing order
 (`installs_take_class_then_distance_then_key_order_within_the_budget`) and the scripted sequence's
 command digest hold as written; the terrain layer's tests and both golden replays unchanged (30k 3,144
 frames / 85 checks, Kuopio 10,036 / 87, every mismatch 0, nothing re-recorded). Settle digests on the
-shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points): equal to two `dev` control runs in every family
-at every point.
+shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points, before `dev`'s round D3 was merged): equal to
+two `dev` control runs in every family at every point.
 
 Where the 60 km trip's wait went, after R1 (one `--detail` run of the final library against `dev`'s
 of R0, per 0.25 s from the jump; the zoom ends at 1.5 s): the products land from 0.5 s on and install
@@ -21882,6 +21882,60 @@ changes, and no level change runs on the budget while the terrain's far holes (o
 9.5 km) are held back, so they install when those finish, 1.05 s after the zoom (`dev`'s whole
 vegetation: +1.90-1.97 s). The terrain and water are complete 1.03 s after the zoom against `dev`'s
 1.07 s.
+
+**R1's rows** (`dev` `ec433f946`'s release library and scripts against the round's tree with `dev`
+merged in, 512 MB, the eight P-cores, perf off; two C B B C sessions, the second because the first
+read worse; 26 s a 60 km `trip` row, 47-48 s a shipped Kuopio row with the trip, which adds about 3
+s to that row). The 60 km `trip` row, ms after the zoom's end, `dev` against the round:
+
+| | `dev` (4 runs) | R1 (4 runs) |
+|---|---|---|
+| near ring (800 m) drawn | not counted (+1,466 in R0's instrumented run of `dev`) | -265 … -275 (before the zoom ends) |
+| vegetation complete (nothing pending) | +1,157 … +1,289 | +638 … +789 |
+| settled | +1,214 … +1,319 | +1,856 … +2,017 |
+| terrain and water complete | +454 … +555 | +628 … +772 |
+| install waits, frames: mean / max (installs past 5) | (R0's run: 192 / 231 (455)) | 5.1-5.7 / 140-161 (61-142) |
+| after the zoom: wait max (past 5) / stalled passes | (R0's run: 231 (455) / 305) | 140-161 (23-24) / 0 |
+| stalled passes, whole trip | (R0's run: 508) | 112-134 |
+| frame p50, pooled | | `trip_in` level (+0.40 / 0.42 ms), `trip_hold` worse (+0.37 / 0.20 ms); maxima level |
+
+The shipped Kuopio with the trip: the first session read four medians worse (`turn_out` 0.5 s
++0.08 / 0.04, `pan_out` +0.12 / 0.09, `jump_back` +0.52 / 0.12, `trip_hold` +0.09 / 0.05 ms), the
+second none; **pooled over both, all 18 phases level at the median and at the maximum** (the jump's
+maximum, `VEG-33`'s frame, level). Load to settled level (report only). On that map the vegetation
+is complete 3 ms after the zoom on both sides, the near ring drawn 0.45 s before it, and after the
+zoom no product waits. A vegetation install measured 8-15 us against its predicted 20-28 us on both
+maps.
+
+Settle digests: the shipped Kuopio (14 points) equal to the control in every family at every point
+but point 9's terrain and water steps, where three `dev` runs gave three values (`TERRAIN-45`; the
+round's value is one an earlier `dev` run gave); the 30k pond (16 points) equal but point 8's terrain
+and water steps (`TERRAIN-45`: the control and the round swap the two values `dev` gives) and the
+graded tile at equal level and token from point 8 on (`TERRAIN-27`); water mesh check 0.
+
+The terrain's own bars on the 60 km `flight_high` (report only, two untimed instrumented pairs, one
+before and one after `dev` was merged): the vegetation keeps up during the flight (6.6 installs a
+frame against 3.5, at most 62-94 waiting against 428-432), and the terrain pays for it: missing at
+most 115-152 against 87-104, in-view holes at most 114-132 against 87-101, wanted-to-drawn p95 level
+(42-70 against 24-47 frames), frame p50 +0.35 ms, the settle after the start +0.4 s and after the turn
++1.4 s. The later settles on both 60 km rows have one cause, read from the rows: once the
+vegetation's holes no longer wait, the holes' reserve is off sooner, the terrain's and water's level
+changes take the room and the hides of patches that left the square come after them, and many of
+those level changes are for the leaving patches themselves (`TERRAIN-50`: 962-1,226 a 0.25 s window
+on the trip before the hides run); on `dev` the reserve held for the stalled vegetation kept the level
+changes back, so the hides ran first.
+
+**Against the bar** (`VEG-35`, the user's of 2026-11-25), on the 60 km `trip` row: the near ring by
+the zoom's end plus 5 frames: met (before it ends). No pass stalled after the zoom: met; during the
+zoom 112-134 passes end with a hole product waiting and no install (in the instrumented run 73 frames
+had such a pass, 14 of them installed nothing in either pass): out-of-view tree holes wait behind the terrain's in-view holes (the order
+the rule asks for), and products that land in the frame's second pass find the ledger spent. Ready
+to drawn at most 5 frames: met for every hole after the zoom; not met for the replacements of drawn
+patches out of view (up to 161 frames, 23-24 of them) nor for some holes during the zoom. Vegetation
+complete within 0.5 s: not met (+0.64-0.79 s): those replacements run among the level changes, and no
+level change runs on the budget while the terrain's far holes are held back. The shipped Kuopio: met
+(all phases level pooled). The terrain's last patch no more than 0.1 s later than the control's: not
+met (+0.17 s at the mean of four runs), and the settle +0.65 s later.
 
 
 ## Implemented Runtime Contract
