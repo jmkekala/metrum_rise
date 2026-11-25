@@ -12191,7 +12191,9 @@ landed library, C B B C, 30k and Kuopio.
 (`godot/scripts/benchmarks/stream_frame_benchmark.gd`) in gamescope's headless backend at 1000 Hz,
 1920x1080, in an isolated profile, pinned to the timing CPUs with eight workers, under the timing
 locks and outside the backup window (the local timing settings). The phases are those of the
-table above plus a still at night and, on request, the frames after a load (`post_load`). A row
+table above plus a still at night and, on request, the frames after a load (`post_load`), the
+flights (`TERRAIN-41`) and the trip (`trip`, `VEG-35`: a 20 km jump to a 20 km orbit and a zoom-in,
+the vegetation's arrival; `tools/stream_benchmark.py trip`). A row
 is one frame: its time from one `process_frame` to the next, render CPU and GPU, draws, every
 chunked renderer's queue and residency counters, the reflection's voted levels, and with
 `--detail` (the perf channel; shares, not times) that frame's perf records. Settled means the
@@ -21647,6 +21649,54 @@ report only; the load's frames now draw the map's cells where they drew sky, whi
 cost, not separated), the load call +40-60 ms (the backdrop's build and 27 textures at the setup).
 Video memory +158 KB (the cells' buffers and mesh; the textures are D1's), Godot's static memory
 +1.5 MB.
+
+### Trees after a far trip: the vegetation's installs in the hole order (`VEG-35`, 2026-11-25)
+
+The user's report: on the 60 km test map, after a zoom-out, a long move and a zoom-in, trees and
+bushes arrive seconds after the ground. The planning measurement (`dev` `9918253d1`, thirteen
+diagnostic rows) named the wait as install order, not workers and not memory: on a 20 km orbit, 20 km
+of travel and a 1.5 s zoom-in, every one of the 405 products of the view is ready before the zoom ends
+and none installs for 2.0 s, because the vegetation's installs run after every terrain and water unit
+of the frame (hole builds anywhere in the 19 km wanted square, then the hides) and those fill the
+2.0 ms ledger; then all 405 install in 0.13 s. The shipped Kuopio and the 30k city show at most 5
+frames of such a wait. The vegetation's waiting holes keep the ledger's hole reserve on, so the
+owners ahead of the stream node leave 1.0 ms, but the node's own terrain and water units spend it
+first.
+
+**Round R0: the trip phase and the counters (no behaviour change).** The stream node counts, for the
+vegetation's installs (`VegetationLayer`, `InstallWaits`): the process frame a product was delivered
+in and so its wait until its install, the class of the pass that installed it (hole in view, hole
+near, hole, upgrade in view, upgrade), its predicted and measured microseconds, and every pass that
+ends with a hole product waiting and no install (a stalled pass). `O(1)` an install, nothing
+allocated; they never decide. They are read since setup in `StreamNode.get_stream_status()`
+(`install_*`), for the frame in the perf channel's `vegetation` record and since the last take
+through `take_vegetation_install_waits()`, which the stream benchmark takes at every sample's start
+and end (`vegetation_installs`). `count_vegetation_drawn_near(centre, radius)` counts the wanted
+patches within a radius and those drawn (the benchmark's near ring, `O(wanted)`).
+
+The benchmark's `trip` phase (`stream_frame_benchmark.gd`): settled at a 200 m orbit at the game's
+default pitch, the camera jumps 20 km along x (at most 0.3 of the world: 5.5 km on the shipped map) to
+a 20 km orbit and zooms in to 200 m over 1.5 s (`trip_in`), then holds until settled for 30 frames
+(`trip_hold`, capped at 6 s after the zoom: a capped run fails). The rows record the near ring (800 m
+of the pivot); the hold the settle, the vegetation's last pending work and the near ring drawn; with
+`--detail` each wanted patch's wanted, ready and drawn times. `tools/stream_benchmark.py trip <metrics>`
+prints the run's table against `VEG-35`'s bars. The jump replaces the planning probe's zoom-out and
+travel because it reproduces the wait on `dev`: the last patch draws 1.5-1.6 s after the zoom's end
+(the probe's full trip: 2.1 s), so the phase is the 1.5 s zoom and the hold. With `trip` the only phase
+the base pose is the trip's start. Rows: on the 60 km map `--phases trip` alone (28 s a run, load
+included: about 2 minutes for a C B B C), and the shipped Kuopio's row carries it as one more phase
+(`--phases turns,pan,zoom,jump,trip`).
+
+`dev`'s values on the 60 km `trip` row (512 MB, one run with `--detail`, ms after the zoom-in's end):
+the last product ready at the zoom's last frame, the near ring drawn +1,466 ms (152 frames), the last
+patch drawn +1,533-1,615, the vegetation done +1,896-1,967, settled +1,961-2,039; ready to drawn 2.2
+s at the median; the 457 installs waited 192 frames at the mean and 231 at most (455 past 5 frames),
+508 stalled passes; an install measured 11.8 us against its predicted 24.6 us. Proof of no behaviour
+change: the vegetation's tests (the scripted sequence's command digest included) unchanged; settle
+digests on the shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points, one run a side) equal to `dev`
+in every family at every point but point 10's vegetation band flags (`VEG-34`: the round's value is
+the one an earlier `dev` control produced in round L1b); the terrain goldens untouched (no patch
+layer code changed).
 
 ## Implemented Runtime Contract
 
