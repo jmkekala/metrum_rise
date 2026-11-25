@@ -105,8 +105,8 @@ var last_edit_batch: Array:
 		return _book.last_edit_batch_tiles()
 ## For tests: patch key -> its cell set as the book holds it (`GradedTileBook.cell_objects`, with
 ## `set`, `variant` and `rect`), built on each read. Every resident patch gets its set (prewarmed
-## in setup, one per patch of the grid up to 1,600, made on first need past them), kept current by the per-tile updates and hidden until one
-## of its tiles shows graded.
+## in setup, one per patch of the grid up to 1,600, made on first need past them), kept current
+## by the per-tile updates and hidden until one of its tiles shows graded.
 var patch_cells: Dictionary:
 	get:
 		return _book.patch_cells_view() if _book != null else {}

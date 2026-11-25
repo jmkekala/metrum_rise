@@ -897,10 +897,10 @@ impl GradedTileBook {
         self.trace = trace;
     }
 
-    /// Setup's cell sets: `count` (the world's patches) of `per_patch` tile places, at most
-    /// 1,600 of them prewarmed and free (`TERRAIN-41` round G0). A patch
-    /// that needs a set when the pool is empty makes one (the acquire path); it returns to the
-    /// pool as every set does, so the sets made are the most patches that held one at once.
+    /// Setup's cell sets: `count` (the world's patches) of `per_patch` tile places, at most 1,600
+    /// of them prewarmed and free (`TERRAIN-41` round G0). A patch that needs a set when the pool
+    /// is empty makes one (the acquire path); it returns to the pool as every set does, so the
+    /// sets made are the most patches that held one at once.
     #[func]
     pub fn cells_setup(&mut self, per_patch: i64, count: i64) {
         let prewarmed = count.min(CELL_SETS_PREWARMED_MAX);
