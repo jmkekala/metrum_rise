@@ -4,7 +4,7 @@
 //! of the map draws exactly one of its patch and its cell, on scripted and shuffled residency
 //! sequences and on the terrain layer's own frames along a camera walk.
 
-use super::super::{BackdropLayer, Channel, Layout, Product, build_blocks};
+use super::super::{BackdropLayer, Channel, Layout, Product, Sample, build_blocks};
 use super::*;
 use crate::nodes::sim::render::stream::backend::recorder::Recorder;
 use crate::nodes::sim::render::stream::layers::terrain::{
@@ -47,6 +47,10 @@ fn all_keys() -> Vec<PatchKey> {
 
 // A layer with the product of GRID's map uploaded and one material a block.
 fn drawn_layer(recorder: &mut Recorder) -> BackdropLayer {
+    drawn_layer_and_product(recorder).0
+}
+
+fn drawn_layer_and_product(recorder: &mut Recorder) -> (BackdropLayer, Product) {
     let samples = [GRID.cols as usize * 64 + 1, GRID.rows as usize * 64 + 1];
     let layout = Layout::new([GRID.cols as usize, GRID.rows as usize], 64, samples).unwrap();
     let terrain = SparseChunkGrid::new(samples[0], samples[1], 64, 12.0);
@@ -60,7 +64,7 @@ fn drawn_layer(recorder: &mut Recorder) -> BackdropLayer {
     layer.set_drawing(MESH, PARAMETER, materials, recorder);
     let mut budget = FrameBudget::new(f64::INFINITY);
     layer.upload(Some(&mut product), recorder, &mut budget, &MonotonicClock::default(), true);
-    layer
+    (layer, product)
 }
 
 // The patches whose cell the recorder draws: every visible main instance's first `count` rows,
@@ -273,4 +277,38 @@ fn the_terrain_layers_frames_hand_over_exactly_one_of_patch_and_cell() {
     }
     // The walk saw patches outside the square (they draw cells) and settled holes inside it.
     assert!(outside > 0);
+}
+
+#[test]
+fn an_edit_under_drawn_cells_reaches_them_through_the_bound_textures() {
+    // A brush edit (heights) and a lake edit (water surface) in block 4, refreshed as D1's job
+    // refreshes: the layer replaces the block's textures under their handles, which its material
+    // still binds, and the cells keep drawing without a resend.
+    let mut recorder = Recorder::new();
+    let (mut layer, mut product) = drawn_layer_and_product(&mut recorder);
+    layer.flush(&mut recorder, HEIGHTS);
+    let bound = |recorder: &Recorder, layer: &BackdropLayer, channel: Channel| {
+        let material = layer.drawing.as_ref().unwrap().materials[4];
+        recorder.materials[&material].textures[&(PARAMETER + channel as u32)]
+    };
+    let before = [Channel::Height, Channel::Water].map(|channel| bound(&recorder, &layer, channel));
+    let bytes = |recorder: &Recorder, texture| recorder.textures_2d[&texture].2.clone();
+    let old = before.map(|texture| bytes(&recorder, texture));
+    // Block 4 is the second row's second block: lattice points from (128, 128).
+    let changed = product.apply_samples(&[
+        Sample { lattice: [140, 140], values: [31.0, 31.0] },
+        Sample { lattice: [150, 141], values: [12.0, 19.5] },
+    ]);
+    assert_eq!(changed, 2);
+    let mut budget = FrameBudget::new(f64::INFINITY);
+    let commands = recorder.commands.len();
+    layer.upload(Some(&mut product), &mut recorder, &mut budget, &MonotonicClock::default(), true);
+    layer.flush(&mut recorder, HEIGHTS);
+    let sent = &recorder.commands[commands..];
+    assert_eq!(sent.len(), 2, "two replaces, no cell resent: {sent:?}");
+    for (at, channel) in [Channel::Height, Channel::Water].into_iter().enumerate() {
+        assert_eq!(bound(&recorder, &layer, channel), before[at], "the handle stays bound");
+        assert_ne!(bytes(&recorder, before[at]), old[at], "{channel:?} holds the edit");
+    }
+    assert_eq!(drawn_cells(&recorder).len(), 740);
 }
