@@ -16,7 +16,9 @@
 //! Bounds: a tile's update `O(1)` (its four sides each find one patch); a set's build `O(the
 //! patch's tiles)`, budgeted per tile; walls `O(faces of the patch's tiles)`; a mark `O(the
 //! patches meeting a tile)`; a bind `O(the block's sets x levels)`. No allocation once the sets
-//! are prewarmed, but a set's first behind-the-road variant (the build path, as before).
+//! are prewarmed, but a set's first behind-the-road variant (the build path, as before) and a set
+//! made when the pool is empty (a world of more patches than the prewarm, `TERRAIN-41` round G0:
+//! once per set, the sets made being the most patches that held one at once).
 
 use super::ordered::OrderedMap;
 use super::state::{Effect, Entry, Graded, PatchKey, TILE_M, Tile};
@@ -1391,5 +1393,24 @@ mod tests {
             graded.cells.sets[set as usize].mask_revision > begun,
             "the built set's counts reach grass's mirrors"
         );
+    }
+
+    // `TERRAIN-41` round G0: past the prewarm a patch makes its set on first need, and the set
+    // returns to the pool, so the sets made are the most patches that held one at once.
+    #[test]
+    fn a_set_past_the_prewarm_is_made_once_and_pooled() {
+        let mut graded = world();
+        graded.cells_setup(81, 1);
+        let patch = Patch { rect: [0.0, -512.0, 512.0, 512.0], step: 1, generation: 0 };
+        graded.set_patch((1, 0), Some(patch));
+        for _ in 0..2 {
+            graded.begin_build((0, 0));
+            graded.begin_build((1, 0));
+            assert_eq!(graded.cells.sets.len(), 2, "one set made past the prewarm, then reused");
+            assert!(graded.cells.pool.is_empty());
+            graded.release_set((0, 0));
+            graded.release_set((1, 0));
+            assert_eq!(graded.cells.pool.len(), 2, "both sets return to the pool");
+        }
     }
 }

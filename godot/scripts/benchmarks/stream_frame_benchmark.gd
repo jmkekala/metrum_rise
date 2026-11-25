@@ -1539,7 +1539,10 @@ func _streams() -> Dictionary:
 	if tiles != null:
 		# One read: since `RENDER-32-K` part 7 `counters` is built by the book on each read.
 		var counters: Dictionary = tiles.counters
-		for key: String in ["uploads", "same_level_uploads", "unready_in_view", "pool_exhausted"]:
+		# `cell_sets_made`, `cell_set_made_us`: sets made past the prewarm and their objects' time
+		# (`TERRAIN-41` round G0; 0 on a control before it).
+		for key: String in ["uploads", "same_level_uploads", "unready_in_view", "pool_exhausted",
+				"cell_sets_made", "cell_set_made_us", "cell_set_made_us_max", "cell_sets_prewarmed", "cell_prewarm_ms"]:
 			graded[key] = counters.get(key, 0)
 		# A control build before RENDER-32-B keeps its levels and wanted tiles in GDScript.
 		# A control before RENDER-32-I keeps its requests in GDScript.

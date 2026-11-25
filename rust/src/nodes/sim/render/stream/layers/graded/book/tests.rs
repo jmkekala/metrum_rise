@@ -673,3 +673,14 @@ fn a_build_no_shown_tile_waits_for_waits_while_holes_wait() {
     assert_eq!(world.book.next_build(), Vector3i::new(0, 0, 0), "held behind the holes");
     assert_eq!(world.book.frame.builds_held, 1);
 }
+
+// `TERRAIN-41` round G0: setup prewarms at most the default 20 km world's 1,600 sets.
+#[test]
+fn setup_prewarms_at_most_the_default_worlds_sets() {
+    let mut book = plain_book();
+    book.cells_setup(81, 1_296);
+    assert_eq!((book.state.cells.sets.len(), book.counters.cell_sets_prewarmed), (1_296, 1_296));
+    book.cells_setup(81, 117 * 117);
+    assert_eq!((book.state.cells.sets.len(), book.counters.cell_sets_prewarmed), (1_600, 1_600));
+    assert_eq!(book.state.cells.pool.len(), 1_600);
+}

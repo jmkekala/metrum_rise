@@ -4404,7 +4404,11 @@ km.
 - **Cell sets** are pooled and prewarmed at setup, one per patch of the world's grid (every
   resident patch may hold a graded tile at once), so neither streaming nor an edit creates a
   `MultiMesh`, material or node (round 5's populated edit created 16 materials and 24
-  `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
+  `MultiMesh`es for patches newly drawing cells). Since `TERRAIN-41` round G0 setup prewarms at
+  most 1,600 sets (the default 20 km world's patches); on a larger world a patch that finds the
+  pool empty makes its set and returns it to the pool as every set does, so the sets made are the
+  most patches that held one at once ([record](#graded-cell-sets-made-on-demand-past-the-default-world-terrain-41-round-g0-2026-11-25)).
+  Each cell `MultiMesh` holds the most tiles a
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 512 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
   empty world is [T25](#terrain-07-open-questions). A prewarmed set holds the five plain cell
@@ -10380,6 +10384,10 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       1,296 sets) with the slot pools' setup; the idle wait's +37 to +130 ms is the patch settle
       beside the graded tiles' streaming ([record](#terrain-07-d-record), round 11). (b) or (c)
       would take the prewarm's part.
+    - **`TERRAIN-41` round G0 (2026-11-25).** (a) is kept up to 1,600 sets, the default 20 km
+      world's patches; a larger world makes a set when a patch first needs one (on the 60 km map
+      13,689 prewarmed sets had cost 478 MiB of buffer memory and 2.6 GiB of resident memory at the
+      load; [record](#graded-cell-sets-made-on-demand-past-the-default-world-terrain-41-round-g0-2026-11-25)).
 26. **T26. The moving camera's graded work (`TERRAIN-07-D` round 7) — recommendation taken by the
     coordinator under the user's delegation, 2026-10-26 night, for review; to build next round.**
     - **Evidence.** On the populated town's `pan_high` and `orbit_high` (the camera 400 m from the
@@ -21330,6 +21338,63 @@ branch equals round L1b's control); the water mesh check 0 mismatches at every p
 flight the two controls differ among themselves at every point (the fill), report only; its graded,
 buildings, roads, parked and vegetation families equal the fresh control's.
 
+### Graded cell sets made on demand past the default world (`TERRAIN-41` round G0, 2026-11-25)
+
+Round G0 of the item's plan, on `dev` `d9012138d`. **Before:** the graded renderer's setup prewarmed
+one cell set per patch of the world's grid (`terrain_graded_tiles.gd`, `cells_setup(..., grid.x *
+grid.y)`), so that neither streaming nor an edit creates one ([T25](#terrain-07-open-questions)): on
+the 59,904 m map 13,689 sets, each five cell `MultiMesh`es of 81 instances and the walls' of 256
+(38,208 bytes of instance buffers), four graded materials, six render instances, and the book's CPU
+records and buffers (about 36 KB). The plan's reading of the code held: the acquire path already
+made a set when the pool was empty (`Graded::acquire`, the objects made on `CellAcquired` by
+`CellObjects::ensure`), it was simply never reached, and a patch's set returns to the pool when the
+patch leaves the wanted square (`stream_deactivate` -> `release_patch`) or is freed.
+
+**Change:** the book's `cells_setup` prewarms `min(the world's patches, 1,600)` sets, 1,600 being the
+default 20 km world's 40 x 40 patches; past them a patch that finds the pool empty makes its set
+through that path (charged to the graded owner's ledger time like the build it starts), and the set
+goes back to the pool as before. The sets made are therefore the most patches that held one at
+once, each made once; nothing is ever freed during a session (as before). Every world of up to
+1,600 patches (the shipped 18,432 m Kuopio's 1,296, the benchmark cities, the default world) is
+unchanged: the same sets, ids and pool order. New counters: `cell_sets_made` (sets past the
+prewarm), `cell_set_made_us` and `cell_set_made_us_max` (their objects' time); `cell_sets_free` now
+reads the pool. The stream benchmark records them with `cell_sets_prewarmed` and `cell_prewarm_ms`
+in every frame's graded counters. Tests: `a_set_past_the_prewarm_is_made_once_and_pooled`,
+`setup_prewarms_at_most_the_default_worlds_sets`. Lazy sets (a set only for a patch with a graded
+tile) stay with `TERRAIN-42`.
+
+**The 60 km map** (report only; one `flight_high` pair at 512 MB, control `dev`'s release library and
+scripts, timed under the locks, load 1.9-2.5): prewarm 597 -> 38 ms (13,689 -> 1,600 sets); at the
+settled start, buffer memory 671 -> 193 MiB (-478 MiB, the plan's -0.46 GB inferred), video memory
+2,822 -> 2,348 MiB, Godot's static memory 3,189 -> 1,209 MiB and the process's resident memory 5,931
+-> 3,307 MiB (-2.6 GiB: the server-side objects of 12,089 sets, about 170 KB each, and their CPU
+records); load to settled 17.6 -> 11.6 s (the load call 6.1 -> 4.6 s). During the flight 345 sets
+were made (39 us a set on average, 82 us the most, at most 6 in a frame) and 415 more in the settle
+after the turn (42 us a set, 170 us the most, at most 7 in a frame): 2,360 sets at the end against
+13,689. The flight's bars on this one pair, branch against control: frame p50 13.8 / 14.3 ms,
+missing at most 104 / 148, terrain wanted-to-drawn p95 57 / 81 frames, most in-view holes 102 / 128,
+settles 7.4 / 8.3 s and 5.2 / 6.0 s (one pair: not verdicts).
+
+**The shipped maps** (the bars). The shipped Kuopio prewarms its 1,296 sets on both sides (31.6-32.4
+ms) and makes none; its memory at the first settle is equal (buffers 224-225 MiB, video 1,510-1,511).
+The 30k pond's 100 sets likewise. Settle digests (untimed, the branch against a fresh control on
+`dev`'s library): the shipped Kuopio's 12 points equal in every family but the terrain and water
+steps at point 9 (`far_to_ground`), where `dev`'s own runs give a different value in nearly every run
+(four values in five runs, `TERRAIN-45`); the 30k pond's 16 points equal in every family but the
+graded tile -29,-20 from point 8 on, the two-valued tile of `TERRAIN-27`/`TERRAIN-30`: the branch
+equals two earlier `dev` controls there, the fresh control equals another round's run. Water mesh
+check 0 mismatches. The graded golden recordings replay (30k 3,144 frames / 85 checks, Kuopio
+10,036 / 87, every mismatch 0) and `./run.sh --test`'s graded trace replays and creation-count tests
+(`graded_tile_renderer_test`'s "one cell set per patch of the 2 x 2 grid", nothing created per edit)
+pass unchanged. Timing (the shipped Kuopio, two C B B C sessions at 512 MB, perf off, against
+`dev`'s release library; render-side code only, so no level F): the first session read six
+medians worse (+0.15 to +1.01 ms against spreads of 0.06-0.74: the turns at 1 s, `zoom_in`,
+`far_zoom_out`, `far_to_ground`, `jump`), the second two other medians and one maximum worse (+0.09
+to +0.49 ms) and those six level; **pooled (four runs a side) all 16 phases are level at the median
+and the maximum**. The `jump` median leans to the branch (+0.69 ms against a spread of 1.57; 4.1-5.7
+against 3.9-4.3 ms) and `far_to_ground` (+0.38 against 0.61): the code these runs execute is the
+same as the control's (the same 1,296 sets, none made, and one comparison a cell effect), the two
+libraries differ in code layout. Load to settled 7.07-7.83 against 7.16-7.44 s (report only).
 ### The backdrop's data (`TERRAIN-41` round D1, 2026-11-25)
 
 Round D1 of the item's plan (`PLAN-TERRAIN-41` section 5): the data of a coarse whole-map terrain
