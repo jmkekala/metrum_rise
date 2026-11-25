@@ -57,6 +57,10 @@ pub(super) struct Counters {
     poll_ms_max: f64,
     pub(super) cell_sets_prewarmed: i64,
     pub(super) cell_prewarm_ms: f64,
+    // The objects of sets made past the prewarm (`TERRAIN-41` round G0): microseconds in all and
+    // the most one took.
+    pub(super) cell_set_made_us: i64,
+    pub(super) cell_set_made_us_max: i64,
     pub(super) ready_ms_max: i64,
     pub(super) ready_frames_max: i64,
     pub(super) unready_in_view: i64,
@@ -421,6 +425,8 @@ impl GradedTileBook {
             poll_ms_max,
             cell_sets_prewarmed,
             cell_prewarm_ms,
+            cell_set_made_us,
+            cell_set_made_us_max,
             ready_ms_max,
             ready_frames_max,
             unready_in_view,
@@ -445,7 +451,13 @@ impl GradedTileBook {
         );
         out.set("cell_builds", cell.get(7).unwrap_or(0));
         out.set("mask_revision_bumps", self.state.cells.mask_bumps as i64);
+        out.set("cell_sets_made", self.cell_sets_made());
         out
+    }
+
+    // Cell sets made past setup's prewarm (`TERRAIN-41` round G0). O(1).
+    fn cell_sets_made(&self) -> i64 {
+        self.state.cells.sets.len() as i64 - self.counters.cell_sets_prewarmed
     }
 
     /// [`Self::counters`] with the pools' sizes and use ([`Self::pool_counters`]), the refusals,
@@ -467,10 +479,7 @@ impl GradedTileBook {
         let with_cells = self.patches_with_cells();
         out.set("patches_with_cells", with_cells);
         out.set("cell_builds_queued", self.builds_queued());
-        out.set(
-            "cell_sets_free",
-            self.counters.cell_sets_prewarmed - with_cells,
-        );
+        out.set("cell_sets_free", self.state.cells.pool.len() as i64);
         let by_code: VarArray = self
             .state
             .levels
