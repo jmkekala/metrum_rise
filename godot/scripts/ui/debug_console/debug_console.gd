@@ -38,7 +38,15 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | parking | dump | clear"
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | relief [<strength> [add|ratio] [sun|all] | clear] | parking | dump | clear"
+# The ground's relief light (`RENDER-78`), the `terrain_relief_light` shader global
+# (terrain_relief_light.gdshaderinc): x the strength, y the form (0 add, 1 ratio, plus 2 for the
+# sun only, the moon keeping the plain light). Precedence: this command or METRUM_TERRAIN_RELIEF
+# (a session override, any strength and form, never saved) over the player's stored Graphics
+# setting (add form at 0, 0.5, 1 or 1.5; default 1), over the project default (1, 0). `relief clear`
+# drops the override. Benchmarks ignore the stored setting and run at the default.
+# METRUM_TERRAIN_RELIEF sets it at launch as the command's words joined by ":", e.g. "1:ratio:sun".
+const RELIEF_ENVIRONMENT := "METRUM_TERRAIN_RELIEF"
 # Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
 const SHADER_GLOBAL_MODES := {
 	"terrain_visual": "terrain_visual_debug_mode",
@@ -78,6 +86,9 @@ func _ready() -> void:
 	# Launch values reach the shaders here, before the game scene builds its materials.
 	for mode in SHADER_GLOBAL_MODES:
 		_apply_shader_global(mode)
+	var relief_launch := OS.get_environment(RELIEF_ENVIRONMENT)
+	if not relief_launch.is_empty():
+		_set_relief(relief_launch.split(":", false))
 	_view.channel_toggled.connect(_on_channel_toggled)
 	_view.visual_mode_selected.connect(_on_visual_mode_selected)
 	_view.chip_toggled.connect(_on_chip_toggled)
@@ -291,6 +302,8 @@ func _run_command(text: String) -> void:
 			_channel_command(words)
 		"visual", "vis":
 			_visual_command(words)
+		"relief":
+			_relief_command(words)
 		"parking", "park":
 			_parking_command()
 		"dump":
@@ -346,6 +359,36 @@ func _visual_command(words: PackedStringArray) -> void:
 		_view.set_status("Unknown value '%s'. Usage: visual %s %s" % [words[2], mode, values])
 		return
 	_view.set_status("%s = %s" % [mode, MetrumDebug.visual_mode(mode)])
+
+func _relief_command(words: PackedStringArray) -> void:
+	if words.size() == 2 and words[1].to_lower() == "clear":
+		GameSettings.terrain_relief_override = null
+		GameSettings.apply_terrain_relief()
+	elif words.size() > 1 and not _set_relief(words.slice(1)):
+		_view.set_status("Usage: relief [<strength> [add|ratio] [sun|all] | clear]")
+		return
+	var relief := GameSettings.terrain_relief_global()
+	_view.set_status("relief %s %s %s%s" % [relief.x, "ratio" if fmod(relief.y, 2.0) > 0.5 else "add",
+		"sun" if relief.y > 1.5 else "all", "" if GameSettings.terrain_relief_override != null else " (setting)"])
+
+# `values`: a strength, then optionally the form, `add` (the default) or `ratio`, and the lights,
+# `all` (the default: sun and moon) or `sun`.
+func _set_relief(values: PackedStringArray) -> bool:
+	if values.is_empty() or not values[0].is_valid_float():
+		return false
+	var ratio := false
+	var sun_only := false
+	for word in values.slice(1):
+		match word.to_lower():
+			"add", "ratio":
+				ratio = word.to_lower() == "ratio"
+			"all", "sun":
+				sun_only = word.to_lower() == "sun"
+			_:
+				return false
+	GameSettings.terrain_relief_override = Vector2(float(values[0]), (1.0 if ratio else 0.0) + (2.0 if sun_only else 0.0))
+	GameSettings.apply_terrain_relief()
+	return true
 
 ## Prints parking supply, car custody, live trip phases, why departures drove or walked, and
 ## every rejected parking spot with its building and reason.

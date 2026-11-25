@@ -598,7 +598,7 @@ godot_main_chain() {
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        selection_gesture_test inspect_lifecycle_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
+        selection_gesture_test inspect_lifecycle_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test terrain_relief_setting_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         stream_benchmark_report_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
@@ -658,13 +658,13 @@ godot_main_chain() {
         echo "Rendered Godot tests skipped on macOS: the gamescope path is Linux-only and a direct macOS renderer path is not yet validated."
         return 0
     fi
-    # Rendered tests: the terrain shaders, the debug-view shader globals and the graded page
+    # Rendered tests: the terrain shaders (the relief light's default, RENDER-78), the debug-view shader globals and the graded page
     # growth's drawn bytes (TERRAIN-22) on the compatibility renderer, the vegetation comparisons,
     # the terrain variants on tangent-less cell meshes, the graded cells' instance data under FSR 2
     # (TERRAIN-10), the menu's paced pipeline prewarm (RENDER-43) and the plot and paving
     # lighting (RENDER-13) on Forward+, which the compatibility backend does not draw. They all
     # stay in this chain, so only one gamescope runs at a time.
-    for script in terrain_overlay_shader_test graded_cells_shader_test debug_visual_modes_test graded_page_growth_test; do
+    for script in terrain_overlay_shader_test terrain_relief_light_test graded_cells_shader_test debug_visual_modes_test graded_page_growth_test; do
         echo "Running rendered $script..."
         run_rendered_godot_test 128 128 --path "$asset_test_project" \
             --rendering-method gl_compatibility --audio-driver Dummy --resolution 128x128 \

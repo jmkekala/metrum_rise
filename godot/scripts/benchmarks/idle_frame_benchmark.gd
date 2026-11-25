@@ -53,7 +53,14 @@ const PATHS := [
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
-const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
+# The relief_* variants are the full frame with the ground's relief light (`RENDER-78`) at that
+# strength and form (x strength, y form: 0 add, 1 ratio); `relief_0` is the light before it.
+# Every other variant draws the project's default.
+const RELIEF_VARIANTS := {"relief_0": Vector2(0.0, 0.0), "relief_05": Vector2(0.5, 0.0),
+	"relief_10": Vector2(1.0, 0.0), "relief_15": Vector2(1.5, 0.0), "relief_ratio": Vector2(1.0, 1.0),
+	"relief_ratio2": Vector2(2.0, 1.0)}
+const RELIEF_GLOBAL := "terrain_relief_light"
+const VARIANTS := ["full", "relief_0", "relief_05", "relief_10", "relief_15", "relief_ratio", "relief_ratio2", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
 const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
 # This matrix's names for the shared shadow variants; any other variant keeps full shadows.
 const SHADOW_VARIANTS := {"no_shadows": "none", "minimal": "none", "no_blend_splits": "no_blend"}
@@ -129,7 +136,10 @@ func run(bench: Node) -> void:
 	# A saved city keeps its agents; hold the simulation so only rendering varies.
 	bench.input_manager.set_simulation_speed(0.0)
 	# Fixed daylight so screenshots of saved cities compare like with like.
-	bench.get_parent().menu_set_time_of_day(float(bench._environment_int("METRUM_IDLE_BENCH_HOUR", 10, 0)))
+	# A fractional hour places the sun at a chosen elevation (day_cycle.gd's solar solve).
+	var hour := OS.get_environment("METRUM_IDLE_BENCH_HOUR")
+	bench.get_parent().menu_set_time_of_day(float(hour) if hour.is_valid_float() else 10.0)
+	print("[IDLE_BENCH] SUN hour=%s elevation_deg=%.3f" % [hour, _lighting.current_sample().sun_elevation_deg])
 	# Optional weather scenario index (0 clear .. 3 storm); unset keeps the world's own weather.
 	var weather: int = bench._environment_int("METRUM_IDLE_BENCH_WEATHER", -1, 0)
 	if weather >= 0:
@@ -369,6 +379,8 @@ func _apply_variant(variant: String) -> void:
 	_terrain.visible = variant != "no_terrain"
 	# The cloud pass and the receivers' cloud lookups, measured apart.
 	_lighting._cloud_effect.enabled = not (minimal or variant == "no_clouds")
+	var relief_default: Vector2 = ProjectSettings.get_setting("shader_globals/%s" % RELIEF_GLOBAL, {}).get("value", Vector2.ZERO)
+	RenderingServer.global_shader_parameter_set(RELIEF_GLOBAL, RELIEF_VARIANTS.get(variant, relief_default))
 	if minimal:
 		_lighting.cloud_shadows_allowed = false
 
