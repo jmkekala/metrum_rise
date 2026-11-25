@@ -740,6 +740,7 @@ def flight_lines(report, every_s):
         for key in ("patch_bytes", "water_patch_bytes"):
             if key in sample:
                 lines.append(f"   {key}: {sample[key]}")
+        lines.extend(_flight_budget_lines(sample, rows))
         built_parts = ["resources", "height", "node", "masks", "params", "land_cover"]
         count = sum(_flight_detail(row, "terrain", "build_count") for row in rows)
         if count:
@@ -781,7 +782,23 @@ def flight_lines(report, every_s):
     return lines
 
 
-UNIT_KINDS = ("show", "build", "hide", "step", "prewarm")
+def _flight_budget_lines(sample, rows):
+    """The base terrain's budget at the sample's end and its releases over it (`TERRAIN-41` B1);
+    nothing for a report without them."""
+    budget = sample.get("terrain_budget")
+    if not budget:
+        return []
+    total = lambda key: sum(_flight_detail(row, "terrain_stream", key) for row in rows)
+    limit = budget.get("budget_bytes", -1)
+    return [f"   budget {'every patch' if limit < 0 else f'{limit / 1e6:.0f} MB'}: built terrain "
+            f"{budget.get('terrain_built')} / water {budget.get('water_built')}, counted "
+            f"{budget.get('counted_bytes', 0) / 1e6:.1f} MB (extras {budget.get('extra_bytes', 0) / 1e6:.1f}), "
+            f"places {budget.get('places', '-')}, ring {budget.get('ring', '-')}, fill left "
+            f"{budget.get('fill_left', '-')}; released terrain {total('terrain_releases'):.0f} "
+            f"(donors {total('terrain_donors'):.0f}) / water {total('water_releases'):.0f}"]
+
+
+UNIT_KINDS = ("show", "build", "hide", "step", "prewarm", "release")
 
 
 def _flight_cause_lines(rows):

@@ -624,6 +624,17 @@ class FlightTests(unittest.TestCase):
         self.assertEqual(lines[-2], "     0.5 | 10 | 4 | 0 | 4 | 6 | 10 | 0.00 | 2")
         self.assertEqual(lines[-1], "     1.0 | 10 | 1 | 0 | 1 | 9 | 13 | 0.50 | 0")
 
+    def test_the_budget_line(self):
+        rows = [self.row(500.0, 10, 0, 6), self.row(500.0, 10, 0, 6)]
+        for row, released in zip(rows, (3, 2)):
+            row["scripts"] = {"terrain_stream": {"details": {"terrain_releases": released, "terrain_donors": 1,
+                                                             "water_releases": 4}}}
+        budget = {"budget_bytes": 256000000, "terrain_built": 3700, "water_built": 3500,
+                  "counted_bytes": 223800000, "extra_bytes": 65100000, "places": 4375, "ring": 4, "fill_left": 0}
+        lines = sb.flight_lines({"samples": [{"label": "flight_high", "rows": rows, "terrain_budget": budget}]}, 1.0)
+        self.assertIn("   budget 256 MB: built terrain 3700 / water 3500, counted 223.8 MB (extras 65.1), places 4375, "
+                      "ring 4, fill left 0; released terrain 5 (donors 2) / water 8", lines)
+
     def test_units_by_kind_and_second(self):
         def row(frame_ms, show, step, missing, queue):
             out = self.row(frame_ms, 0, missing, 0)

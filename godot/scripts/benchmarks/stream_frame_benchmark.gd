@@ -89,6 +89,9 @@
 ## terrain patch holds (`patch_bytes`). METRUM_STREAM_SHOTS=<dir> (an untimed run: it reads the
 ## frame back) saves the view at a quarter, half and three quarters of each motion and after its
 ## turn. Every sample records the process's memory at its end (`memory`).
+## METRUM_TERRAIN_BUDGET_MB (read by terrain.gd, `TERRAIN-41` B1) sets the base terrain's memory
+## budget (unset: every patch fits); each sample records the budget's state (`terrain_budget`), and
+## METRUM_STREAM_WAIT_FILL=1 makes every settle wait for the budget's fill as well.
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
 ## terrain proxies against the patches the frame drew (`proxies`).
 ## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
@@ -170,6 +173,9 @@ var _scripts := false
 var _last_us := 0
 var _previous_streams: Dictionary
 var _digests := false
+# METRUM_STREAM_WAIT_FILL=1 (`TERRAIN-41` B1): every settle also waits for the base terrain
+# budget's fill (the kept patches built hidden), so a phase starts on a filled budget.
+var _wait_fill := false
 var _settle_points := 0
 # Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so,
 # and the wanted set of the last frame.
@@ -241,6 +247,7 @@ func run(bench: Node) -> void:
 		_stream = main.get_node("StreamNode")
 		_camera = bench.camera
 	_digests = OS.get_environment("METRUM_STREAM_DIGESTS") == "1"
+	_wait_fill = OS.get_environment("METRUM_STREAM_WAIT_FILL") == "1"
 	_gpu_profile = OS.get_environment("METRUM_STREAM_GPU_PASSES") == "1"
 	var shadows: Array = Array(OS.get_environment("METRUM_STREAM_SHADOWS").split(",", false))
 	for variant: String in shadows:
@@ -774,7 +781,14 @@ static func _counter_delta(before: Array, after: Array) -> Array:
 
 func _is_settled(bench: Node) -> bool:
 	return (bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
-		and (_roads == null or not _roads.is_pending()))
+		and (_roads == null or not _roads.is_pending()) and not (_wait_fill and _fill_left() > 0))
+
+# The base terrain budget's fill still to build (`TERRAIN-41` B1; 0 without the method).
+func _fill_left() -> int:
+	var budget_node: Node = _terrain.get("_stream")
+	if budget_node == null or not budget_node.has_method("get_terrain_budget"):
+		return 0
+	return int((budget_node.get_terrain_budget() as Dictionary).get("fill_left", 0))
 
 func _wait_settled(bench: Node) -> bool:
 	_wait_begin()
@@ -1437,6 +1451,11 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		over.over_33_3 += 1 if value > 33.3 else 0
 	var sample := {"label": label, "duration_s": duration_s, "frames": rows.size(),
 		"frame_ms": stats(times), "rows": rows, "memory": _memory()}
+	# The base terrain's budget at the sample's end (`TERRAIN-41` B1): built patches of both layers,
+	# counted bytes, places, the keep ring and what the fill has left.
+	var budget_node: Node = _terrain.get("_stream")
+	if budget_node != null and budget_node.has_method("get_terrain_budget"):
+		sample["terrain_budget"] = budget_node.get_terrain_budget()
 	if _proxy_checking:
 		sample["proxy_stale"] = _proxy_stale()
 	# The patch units' measured times by layer and kind since the last sample (`TERRAIN-41` L1;
