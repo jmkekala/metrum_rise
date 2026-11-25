@@ -30,6 +30,7 @@ impl SimulationNode {
         self.building_lods.invalidate_world();
         self.clear_terrain_patch_payload_jobs();
         self.land_cover_jobs.lock().unwrap().clear();
+        self.backdrop.reset_world();
         self.lock_water_patch_payload_jobs().clear();
         self.lock_water_patch_mesh_jobs().clear();
     }

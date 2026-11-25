@@ -143,6 +143,7 @@ use std::time::Instant;
 mod agent_frame_api;
 mod agent_inspection_api;
 mod asset_api;
+pub(crate) mod async_backdrop;
 mod async_jobs;
 mod async_terrain;
 mod building_lod_api;
@@ -263,6 +264,8 @@ pub struct SimulationNode {
     vegetation_jobs: Arc<Mutex<vegetation_api::VegetationJobs>>,
     /// Stale terrain land covers rebuilt on the background pool (`RENDER-40`).
     land_cover_jobs: Arc<Mutex<vegetation_api::LandCoverJobs>>,
+    /// The backdrop's product and its sampling job's memory (`TERRAIN-41` D1).
+    backdrop: Arc<crate::nodes::sim::render::stream::layers::backdrop::BackdropShared>,
     /// The graded edit journal's latest serial (`T61 (2)`), read without the core lock.
     graded_edit_serial: Arc<std::sync::atomic::AtomicU64>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
@@ -597,6 +600,7 @@ impl INode3D for SimulationNode {
             graded_jobs: Default::default(),
             vegetation_jobs: Default::default(),
             land_cover_jobs: Default::default(),
+            backdrop: Default::default(),
             graded_edit_serial,
             water_patch_payload_jobs,
             async_jobs: Default::default(),

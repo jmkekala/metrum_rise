@@ -125,6 +125,35 @@ impl Coverage {
         ((self.samples[index].load(Ordering::Relaxed).count_ones() * 255 + 32) / 64) as u8
     }
 
+    /// The mean coverage of each `step x step` square of the patch's own texels (the `span`
+    /// it was built for, without its one-texel border), row-major, as bytes rounded like
+    /// [`Self::byte`]'s; `None` when `step` does not divide the patch. The backdrop's land cover
+    /// (`TERRAIN-41` D1). `O(texels)`.
+    pub(super) fn coarse_means(&self, span: f32, step: usize) -> Option<Vec<u8>> {
+        let own = (span / TEXEL_M).round() as usize;
+        if step == 0 || !own.is_multiple_of(step) || self.width < own + 2 || self.height < own + 2 {
+            return None;
+        }
+        // `build` starts the grid one texel before the patch's world-aligned origin.
+        let per_side = own / step;
+        let full = (step * step * SAMPLES * SAMPLES) as u32;
+        let mut means = Vec::with_capacity(per_side * per_side);
+        for coarse_z in 0..per_side {
+            for coarse_x in 0..per_side {
+                let mut filled = 0u32;
+                for z in 0..step {
+                    let row = (1 + coarse_z * step + z) * self.width + 1 + coarse_x * step;
+                    filled += self.samples[row..row + step]
+                        .iter()
+                        .map(|sample| sample.load(Ordering::Relaxed).count_ones())
+                        .sum::<u32>();
+                }
+                means.push(((filled * 255 + full / 2) / full) as u8);
+            }
+        }
+        Some(means)
+    }
+
     /// Converts the completed patch to the existing dictionary/packed-array bridge format.
     pub(super) fn payload(&self, generations: [i64; 18]) -> VarDictionary {
         let mut data = self.grid();
@@ -253,6 +282,12 @@ impl PatchLandCover {
         if let Some(inputs) = self.inputs.take() {
             self.coverage = Some(Coverage::build(&inputs, self.origin, self.span));
         }
+    }
+
+    /// The baked coverage's means over `step x step` texel squares
+    /// ([`Coverage::coarse_means`]), for the backdrop's land cover; `None` before the bake.
+    pub(crate) fn coarse_means(&self, step: usize) -> Option<Vec<u8>> {
+        self.coverage.as_ref()?.coarse_means(self.span, step)
     }
 
     /// The baked texels' bytes (tests).

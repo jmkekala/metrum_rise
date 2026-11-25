@@ -395,6 +395,8 @@ impl SimulationNode {
             let request_count = build_requests.len();
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
+            let backdrop = Arc::clone(&self.backdrop);
+            let backdrop_world = backdrop.world();
             // The worker times (`TERRAIN-41`): only while the perf channel is on.
             let spawned = crate::debug::Channel::Perf.enabled().then(|| {
                 self.lock_terrain_patch_payload_jobs().worker_perf.spawned += 1;
@@ -429,6 +431,16 @@ impl SimulationNode {
                 built
                     .par_iter_mut()
                     .for_each(TerrainPatchPayload::bake_shading_masks);
+                // The backdrop's land cover from every payload as it is built (`TERRAIN-41` D1).
+                for payload in &built {
+                    if let Some(cover) = payload.land_cover.as_ref() {
+                        let key = Vector2i::new(
+                            i32::try_from(payload.key.patch_x).unwrap_or(i32::MAX),
+                            i32::try_from(payload.key.patch_z).unwrap_or(i32::MAX),
+                        );
+                        super::async_backdrop::note_cover(&backdrop, backdrop_world, key, cover);
+                    }
+                }
                 let bake_us = bake_start.elapsed().as_secs_f64() * 1e6;
                 let mut job_state = jobs
                     .lock()

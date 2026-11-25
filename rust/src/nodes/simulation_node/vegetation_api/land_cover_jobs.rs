@@ -155,6 +155,8 @@ pub(crate) struct LandCoverSpawner {
     pub(crate) jobs: Arc<Mutex<LandCoverJobs>>,
     /// The background pool's job tracker.
     pub(crate) async_jobs: Arc<super::super::async_jobs::AsyncJobs>,
+    /// The backdrop, which takes each baked land cover's means (`TERRAIN-41` D1).
+    pub(crate) backdrop: Arc<crate::nodes::sim::render::stream::layers::backdrop::BackdropShared>,
 }
 
 /// Starts the snapshot taker when keys wait and none is out. It takes the core once under
@@ -166,8 +168,12 @@ pub(crate) fn pump(spawner: &LandCoverSpawner) {
         return;
     };
     let next = spawner.clone();
+    let backdrop_world = spawner.backdrop.world();
     spawner.async_jobs.spawn(move || {
         let taken = take_and_bake(&next.core, world, keys);
+        for (key, cover) in &taken.baked {
+            super::super::async_backdrop::note_cover(&next.backdrop, backdrop_world, *key, cover);
+        }
         if next.jobs.lock().unwrap().land(taken) {
             pump(&next);
         }

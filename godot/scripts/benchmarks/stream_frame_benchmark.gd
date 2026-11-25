@@ -1472,6 +1472,10 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 	var stream: Node = _vegetation.stream if _vegetation != null else null
 	if stream != null and stream.has_method("take_patch_unit_times"):
 		sample["patch_units"] = stream.take_patch_unit_times()
+	# The backdrop's product and uploads at the sample's end (`TERRAIN-41` D1; absent on an older
+	# library).
+	if stream != null and stream.has_method("get_backdrop"):
+		sample["backdrop"] = stream.get_backdrop()
 	sample.merge(over)
 	if _gpu_profile:
 		var passes := {}

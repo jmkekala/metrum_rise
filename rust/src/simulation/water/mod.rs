@@ -168,6 +168,13 @@ impl WaterSystem {
         Arc::clone(&self.baseline.depth)
     }
 
+    /// The address of the baseline depth grid's shared allocation: while a reader holds a
+    /// [`Self::baseline_depth_snapshot`], every later write moves the grid to a new allocation,
+    /// so an unchanged address means unchanged water (`TERRAIN-41` D1). O(1).
+    pub(crate) fn baseline_depth_address(&self) -> usize {
+        Arc::as_ptr(&self.baseline.depth) as usize
+    }
+
     /// Puts back an undo record's [`Self::baseline_depth_snapshot`] and marks every render patch
     /// dirty, as the dense replacement does. O(1) beyond the patch marks.
     pub(crate) fn replace_baseline_depth_from_snapshot(

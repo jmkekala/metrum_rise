@@ -4,7 +4,7 @@
 //! object (what an instance would draw), and a digest of the sequence, so the layers' per-frame
 //! invariants are checked without Godot.
 
-use super::{Handle, RenderBackend, Scenario, Shadow, Vector};
+use super::{Handle, RenderBackend, Scenario, Shadow, TextureFormat, Vector};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use std::collections::BTreeMap;
 
@@ -37,6 +37,8 @@ pub(crate) enum Command {
     InstanceDynamicGi(Handle, bool),
     InstanceRangeMargins(Handle, [f32; 2], [f32; 2]),
     InstanceFlagParameter(Handle, u32, bool),
+    Texture2dCreate(Handle, [u32; 2], TextureFormat, u64),
+    Texture2dReplace(Handle, [u32; 2], TextureFormat, u64),
 }
 
 /// A recorded material: its shader and its texture parameters.
@@ -92,6 +94,8 @@ pub(crate) struct Recorder {
     // Every written texture layer's bytes, by texture and layer.
     pub(crate) textures: BTreeMap<Handle, BTreeMap<u32, Vec<u8>>>,
     upload: Vec<u8>,
+    /// The 2D textures made here, live: size, format and bytes.
+    pub(crate) textures_2d: BTreeMap<Handle, ([u32; 2], TextureFormat, Vec<u8>)>,
     // Whether the reflection scenario exists.
     pub(crate) reflection: bool,
     next: Handle,
@@ -343,7 +347,7 @@ impl RenderBackend for Recorder {
 
     fn free(&mut self, handle: Handle) {
         self.commands.push(Command::Free(handle));
-        if self.materials.remove(&handle).is_some() {
+        if self.materials.remove(&handle).is_some() || self.textures_2d.remove(&handle).is_some() {
             return;
         }
         if self.instances.remove(&handle).is_none() {
@@ -428,6 +432,52 @@ impl RenderBackend for Recorder {
 
     fn texture_forget(&mut self, texture: Handle) {
         self.commands.push(Command::TextureForget(texture));
+    }
+
+    fn texture_2d_create(
+        &mut self,
+        size: [u32; 2],
+        format: TextureFormat,
+        fill: &mut dyn FnMut(&mut [u8]),
+    ) -> Handle {
+        let bytes = self.fill_2d(size, format, fill);
+        let texture = self.next;
+        self.next += 1;
+        self.commands
+            .push(Command::Texture2dCreate(texture, size, format, bytes_digest(&bytes)));
+        self.textures_2d.insert(texture, (size, format, bytes));
+        texture
+    }
+
+    fn texture_2d_replace(
+        &mut self,
+        texture: Handle,
+        size: [u32; 2],
+        format: TextureFormat,
+        fill: &mut dyn FnMut(&mut [u8]),
+    ) {
+        let bytes = self.fill_2d(size, format, fill);
+        self.commands
+            .push(Command::Texture2dReplace(texture, size, format, bytes_digest(&bytes)));
+        let entry = self
+            .textures_2d
+            .get_mut(&texture)
+            .expect("a replace of a live 2D texture");
+        *entry = (size, format, bytes);
+    }
+}
+
+impl Recorder {
+    // The bytes `fill` writes for a 2D texture of `size` in `format`.
+    fn fill_2d(
+        &mut self,
+        size: [u32; 2],
+        format: TextureFormat,
+        fill: &mut dyn FnMut(&mut [u8]),
+    ) -> Vec<u8> {
+        let mut bytes = vec![0; size[0] as usize * size[1] as usize * format.texel_bytes()];
+        fill(&mut bytes);
+        bytes
     }
 }
 

@@ -510,6 +510,7 @@ impl SimulationNode {
             core: Arc::clone(&self.core),
             jobs: Arc::clone(&self.land_cover_jobs),
             async_jobs: Arc::clone(&self.async_jobs),
+            backdrop: Arc::clone(&self.backdrop),
         }
     }
 
