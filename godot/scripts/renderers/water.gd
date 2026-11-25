@@ -51,7 +51,8 @@ const WATER_BORDER_MIN_DEPTH_M := 0.02
 const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
 const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
-const WATER_PATCH_RESOURCE_POOL_MAX := 96
+# The pool takes what a steady flight returns: the budget's releases (`TERRAIN-41` B1).
+const WATER_PATCH_RESOURCE_POOL_MAX := 256
 const WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME := 128
 const WATER_TERRAIN_BINDING_BUDGET_PER_FRAME := 128
@@ -91,6 +92,10 @@ const MESH_NEED_UPGRADE := 2
 @onready var _stream: Node = get_node_or_null("../StreamNode")
 
 var patches: Dictionary = {}
+# The budget's extras (`TERRAIN-41` B1): bytes of the meshes the built patches' nodes hold (the
+# arrays uploaded), a running sum kept at every change, and the last totals reported.
+var _mesh_bytes: int = 0
+var _extras_sent := Vector2i(-1, -1)
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
@@ -210,6 +215,7 @@ func _process(delta: float) -> void:
 	var perf_enabled := PerfDebug.is_enabled()
 	var payload_poll_start_us := frame_start_us
 	var payload_poll_count := _poll_ready_water_patch_payloads(WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	_report_extras()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
@@ -689,10 +695,31 @@ func stream_build(key: Vector2i, step: int) -> int:
 func stream_set_lod(key: Vector2i, step: int) -> void:
 	_set_patch_mesh_lod(key, step)
 
+## Releases built, hidden `key` (`TERRAIN-41` B1: beyond the budget's release rectangle): its
+## node, material and depth texture go back to the pool and its baked meshes leave the mesh
+## cache. Answers 0 released, 1 nothing built, 3 busy (still drawn).
+func stream_release(key: Vector2i) -> int:
+	if not patches.has(key):
+		return 1
+	if resident_patch_lookup.has(key):
+		return 3
+	_free_patch(key)
+	if simulation_node.has_method("clear_water_patch_mesh_cache"):
+		simulation_node.clear_water_patch_mesh_cache(PackedInt32Array([key.x, key.y]))
+	return 0
+
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
+	_free_patch(key)
+	# The streaming core wants it again while its terrain patch is resident.
+	_stream.water_patch_removed(key)
+
+# Frees built `key`'s node back to the pool. Calls the stream node nothing (a release runs
+# inside its frame).
+func _free_patch(key: Vector2i) -> void:
 	var patch: Dictionary = patches[key]
+	_set_mesh_bytes(patch, 0)
 	_release_water_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
@@ -700,8 +727,6 @@ func _remove_patch(key: Vector2i) -> void:
 	mesh_pending_lod.erase(key)
 	_queue_terrain_patch_binding(key)
 	patch_bounds_changed.emit(key)
-	# The streaming core wants it again while its terrain patch is resident.
-	_stream.water_patch_removed(key)
 	_water_debug_patch_removes += 1
 
 func _clear_patches() -> void:
@@ -709,6 +734,7 @@ func _clear_patches() -> void:
 		var patch: Dictionary = patches[key]
 		_release_water_patch_resources(patch)
 	patches.clear()
+	_mesh_bytes = 0
 	resident_patch_lookup.clear()
 	patches_cleared.emit()
 	patch_payload_requested.clear()
@@ -1265,6 +1291,20 @@ func _mesh_need(patch: Dictionary) -> int:
 func _set_empty_mesh(patch: Dictionary) -> void:
 	(patch["node"] as MeshInstance3D).mesh = _empty_water_mesh_resource()
 	patch["held_mesh"] = PackedInt64Array()
+	_set_mesh_bytes(patch, 0)
+
+# Keeps the running sum of mesh bytes as `patch`'s node takes a mesh of `bytes`. O(1).
+func _set_mesh_bytes(patch: Dictionary, bytes: int) -> void:
+	_mesh_bytes += bytes - int(patch.get("mesh_bytes", 0))
+	patch["mesh_bytes"] = bytes
+
+# Reports the extras' totals to the stream node when they changed: the mesh bytes and the
+# resource sets in the pool. O(1).
+func _report_extras() -> void:
+	var extras := Vector2i(_mesh_bytes, patch_resource_pool.size())
+	if extras != _extras_sent and _stream != null:
+		_extras_sent = extras
+		_stream.set_patch_extras(1, extras.x, extras.y)
 
 ## Queues `key`'s mesh at `lod_step` by its cause: a hole (`hole`, or its node draws no mesh of
 ## its cover and depth) or an upgrade. O(1).
@@ -1841,6 +1881,7 @@ func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.mesh = _baked_water_patch_mesh(mesh_data)
+	_set_mesh_bytes(patch, _water_mesh_data_estimated_bytes(mesh_data))
 	patch["held_mesh"] = PackedInt64Array([lod_step, int(patch.get("cover_generation", 0)),
 		int(patch.get("depth_signature", 0))])
 	patch_bounds_changed.emit(key)

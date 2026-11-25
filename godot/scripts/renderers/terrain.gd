@@ -91,7 +91,8 @@ const PATCH_CULL_PAD_M := 64.0
 # fade reads it through get_visibility_cull_far_m.
 const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
-const PATCH_RESOURCE_POOL_MAX := 96
+# The pool takes what a steady flight returns: the budget's releases (`TERRAIN-41` B1).
+const PATCH_RESOURCE_POOL_MAX := 256
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
@@ -129,6 +130,12 @@ var terrain_cell_m: float = 1.0
 var patch_cols: int = 0
 var patch_rows: int = 0
 var patch_interval_cells: int = 1
+# Texels of neighbouring terrain a payload's height texture carries a side (the layout's).
+var _patch_border_texels: int = 0
+# The budget's extras (`TERRAIN-41` B1): bytes of spare textures the built patches hold, a
+# running sum kept at every change, and the last totals reported to the stream node.
+var _spare_bytes: int = 0
+var _extras_sent := Vector2i(-1, -1)
 # Baked relief and cliff-reach masks (patch_masks.rs), one array layer per patch slot. Every patch
 # material shares a page: one texture per patch material instead added irregular 1-5 ms frames on
 # Metal, although the shading work was the same.
@@ -286,7 +293,8 @@ func rebuild_from_simulation_state() -> void:
 	patch_cols = int(patch_layout.get("patch_cols", 0))
 	patch_rows = int(patch_layout.get("patch_rows", 0))
 	patch_interval_cells = max(1, int(patch_layout.get("patch_interval_cells", 1)))
-	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
+	_patch_border_texels = int(patch_layout.get("patch_border_texels", 0))
+	_rebuild_mask_pages(_patch_border_texels)
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
 	_stream.set_terrain_patch_span(patch_span_m)
@@ -299,6 +307,9 @@ func rebuild_from_simulation_state() -> void:
 	_stream.reset_terrain_patches(
 		self, null, patch_cols, patch_rows, patch_interval_cells, terrain_cell_m, terrain_world_size
 	)
+	# The base terrain's memory budget (`TERRAIN-41` B1): every patch fits unless the benchmark's
+	# METRUM_TERRAIN_BUDGET_MB names one (the setting is round B2's).
+	_stream.set_terrain_budget_mb(float(OS.get_environment("METRUM_TERRAIN_BUDGET_MB")))
 	_push_debug_modes()
 	if graded_tiles != null:
 		_stream.attach_graded_book(null)
@@ -372,6 +383,7 @@ func _process(delta: float) -> void:
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
 	var payload_poll_start_us := Time.get_ticks_usec()
 	var payload_poll_count := _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	_report_extras()
 	if not _land_cover_asked.is_empty():
 		_poll_land_covers()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
@@ -1082,6 +1094,7 @@ func _stage_terrain_patch_update(
 	patch["spare_height_texture"] = height_texture
 	patch["spare_height_texture_width"] = texture_width
 	patch["spare_height_texture_height"] = texture_height
+	_note_spares(patch)
 	var mask_image := _terrain_patch_mask_image(patch_data)
 	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 
@@ -1152,6 +1165,7 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture"] = old_height_texture
 	patch["spare_height_texture_width"] = old_texture_width
 	patch["spare_height_texture_height"] = old_texture_height
+	_note_spares(patch)
 	patch["last_patch_data"] = patch_data
 	_surface_commit_revision += 1
 	_push_surface_generation(key)
@@ -1289,7 +1303,24 @@ func stream_deactivate(key: Vector2i) -> void:
 		_set_patch_node_visible(key, patch_node, false)
 		if graded_tiles != null:
 			graded_tiles.release_patch(key, patch_node)
+		# A kept patch holds no spare (`TERRAIN-41` B1): a staged commit of a hidden patch is
+		# never needed, a kept patch that turns dirty is released instead.
+		_drop_spares(patches[key])
 	_graded_patch_changed(key)
+
+## Releases built, hidden `key` (`TERRAIN-41` B1: it lies beyond the budget's release rectangle):
+## its node, material and textures go back to the pool. Answers 0 released, 1 nothing built,
+## 2 a network publication is pending (no release this frame), 3 busy (its own commit is staged
+## or its own payload request is in flight).
+func stream_release(key: Vector2i) -> int:
+	if not patches.has(key):
+		return 1
+	if simulation_node.is_network_dirty():
+		return 2
+	if resident_patch_lookup.has(key) or _dirty_stages.has(key) or patch_payload_requested.has(key):
+		return 3
+	_free_patch(key)
+	return 0
 
 ## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers its surface generation, -2
 ## when nothing was built (its payload went).
@@ -1327,20 +1358,27 @@ func _set_patch_mesh_lod(key: Vector2i, step: int) -> void:
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
+	_free_patch(key)
+	_push_surface_generation(key)
+	# The streaming core wants it again as a hole when it was resident.
+	_stream.terrain_patch_removed(key)
+
+# Frees built `key`: its node, material and textures back to the pool, its reflection copy and
+# graded hold gone. Calls the stream node nothing (a release runs inside its frame).
+func _free_patch(key: Vector2i) -> void:
 	patch_render_will_change.emit(key)
 	var patch: Dictionary = patches[key]
 	if graded_tiles != null:
 		graded_tiles.release_patch(key, patch["node"])
+	_drop_spares(patch)
 	_release_terrain_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
+	_dirty_stages.erase(key)
 	_land_cover_landed.erase(key)
 	if _land_cover_asked.erase(key):
 		simulation_node.cancel_vegetation_land_cover(key)
-	_push_surface_generation(key)
 	_graded_patch_changed(key)
-	# The streaming core wants it again as a hole when it was resident.
-	_stream.terrain_patch_removed(key)
 	_terrain_debug_patch_removes += 1
 
 func _clear_patches() -> void:
@@ -1349,6 +1387,7 @@ func _clear_patches() -> void:
 		graded_tiles.clear()
 	for key in patches.keys():
 		var patch: Dictionary = patches[key]
+		_drop_spares(patch)
 		_release_terrain_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
@@ -1517,9 +1556,45 @@ func _new_terrain_patch_resources() -> Dictionary:
 		"spare_height_texture_height": 0,
 	}
 
+# The payload's height texture size (its samples and border), so a pooled blank texture is
+# written in place by the first payload (`TERRAIN-41` B1).
 func _terrain_default_patch_texture_size() -> Vector2i:
-	var sample_count: int = max(2, patch_interval_cells + 1)
-	return Vector2i(sample_count + 2, sample_count + 2)
+	var sample_count: int = max(2, patch_interval_cells + 1) + 2 * _patch_border_texels
+	return Vector2i(sample_count, sample_count)
+
+# A patch's spare textures, bytes: a spare height texture and a spare land cover with its own
+# image (`TERRAIN-41` B1's extras).
+static func _patch_spare_bytes(patch: Dictionary) -> int:
+	var bytes := 0
+	if patch.get("spare_height_texture", null) != null:
+		bytes += int(patch.get("spare_height_texture_width", 0)) * int(patch.get("spare_height_texture_height", 0)) * 4
+	var image: Image = (patch.get("spare_land_cover", {}) as Dictionary).get("image", null) as Image
+	if image != null:
+		bytes += image.get_width() * image.get_height()
+	return bytes
+
+# Keeps the running sum of spare bytes after `patch`'s spares may have changed. O(1).
+func _note_spares(patch: Dictionary) -> void:
+	var bytes := _patch_spare_bytes(patch)
+	_spare_bytes += bytes - int(patch.get("spare_bytes", 0))
+	patch["spare_bytes"] = bytes
+
+# Drops `patch`'s spare textures (a hidden or released patch keeps none). O(1).
+func _drop_spares(patch: Dictionary) -> void:
+	patch["spare_height_image"] = null
+	patch["spare_height_texture"] = null
+	patch["spare_height_texture_width"] = 0
+	patch["spare_height_texture_height"] = 0
+	patch["spare_land_cover"] = {}
+	_note_spares(patch)
+
+# Reports the extras' totals to the stream node when they changed: the spare bytes and the
+# resource sets in the pool. O(1).
+func _report_extras() -> void:
+	var extras := Vector2i(_spare_bytes, patch_resource_pool.size())
+	if extras != _extras_sent:
+		_extras_sent = extras
+		_stream.set_patch_extras(0, extras.x, extras.y)
 
 # A coverage upload uses the same active/spare ownership as the height texture. Building a
 # terrain stage cannot mutate the currently displayed texture; commit swaps both products.
@@ -1561,6 +1636,7 @@ func _stage_patch_land_cover(
 	spare = {"image": image, "texture": texture,
 		"world_bounds": data["world_bounds"], "generations": data["generations"]}
 	patch["spare_land_cover"] = spare
+	_note_spares(patch)
 	if _build_perf:
 		_build_us[8] += float(Time.get_ticks_usec() - stage_us)
 		_build_us[9] += 0.0 if prepared.is_empty() else 1.0
@@ -1603,6 +1679,7 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	_patch_material_will_change(patch)
 	patch["spare_land_cover"] = patch.get("land_cover", {})
 	patch["land_cover"] = stage
+	_note_spares(patch)
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
 	material.set_shader_parameter("land_cover_texture", stage["texture"])
 	material.set_shader_parameter("land_cover_world_bounds", stage["world_bounds"])
@@ -1691,6 +1768,12 @@ func _dirty_patch_payload_keys_from_states(
 		)
 		var generation := int(flat_states[index * 3 + 2])
 		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
+		# A kept (built, hidden) patch that turns dirty is released, not restaged (`TERRAIN-41`
+		# B1): only drawn patches are staged, so the commit never waits for hidden ones; the
+		# budget's fill builds it again from a current payload. From here its requests are the
+		# streaming core's (`TERRAIN-35`).
+		if patches.has(key) and not resident_patch_lookup.has(key):
+			_remove_patch(key)
 		var built := patches.has(key)
 		keys.append(key)
 		dirty_patch_payload_generations[key] = generation

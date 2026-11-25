@@ -18,6 +18,9 @@ pub(crate) struct WaterPatchMeshAsyncState {
     pub(crate) completed: Vec<CachedWaterPatchMesh>,
     /// Derived meshes owned entirely by the renderer job pipeline.
     pub(crate) cache: HashMap<WaterPatchMeshCacheKey, CachedWaterPatchMesh>,
+    /// `cache`'s keys by patch (`TERRAIN-41` B1): a patch's meshes leave the cache without a
+    /// walk of it, `O(meshes of the patch)`.
+    by_patch: HashMap<(usize, usize), Vec<WaterPatchMeshCacheKey>>,
 }
 
 impl WaterPatchMeshAsyncState {
@@ -29,6 +32,18 @@ impl WaterPatchMeshAsyncState {
             ready_lookup: HashSet::new(),
             completed: Vec::new(),
             cache: HashMap::new(),
+            by_patch: HashMap::new(),
+        }
+    }
+
+    /// Caches a finished mesh, indexed by its patch. `O(1)` amortised.
+    pub(in crate::nodes::simulation_node) fn cache_insert(&mut self, entry: CachedWaterPatchMesh) {
+        let key = entry.key;
+        if self.cache.insert(key, entry).is_none() {
+            self.by_patch
+                .entry((key.patch_x, key.patch_z))
+                .or_default()
+                .push(key);
         }
     }
 
@@ -58,6 +73,7 @@ impl WaterPatchMeshAsyncState {
         self.ready_lookup.clear();
         self.completed.clear();
         self.cache.clear();
+        self.by_patch.clear();
     }
 
     pub(in crate::nodes::simulation_node) fn forget_patch(
@@ -75,8 +91,10 @@ impl WaterPatchMeshAsyncState {
             .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
         self.completed
             .retain(|entry| entry.key.patch_x != patch_x || entry.key.patch_z != patch_z);
-        self.cache
-            .retain(|key, _| key.patch_x != patch_x || key.patch_z != patch_z);
+        // The cache by its index; the sets above hold work in flight only.
+        for key in self.by_patch.remove(&(patch_x, patch_z)).unwrap_or_default() {
+            self.cache.remove(&key);
+        }
     }
 }
 
@@ -655,5 +673,43 @@ impl WaterPatchPayloadAsyncState {
         self.payloads.clear();
         self.completed.clear();
         self.failed.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `TERRAIN-41` B1: a released patch's meshes leave the cache by its index; the other
+    // patches' stay.
+    #[test]
+    fn forgetting_a_patch_drops_exactly_its_cached_meshes() {
+        let mesh = |patch_x: usize, lod_step: usize| CachedWaterPatchMesh {
+            key: WaterPatchMeshCacheKey {
+                patch_x,
+                patch_z: 3,
+                lod_step,
+                cover_generation: 1,
+                depth_signature: 2,
+            },
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            world_size_x: 512.0,
+            world_size_z: 512.0,
+            stats: Default::default(),
+        };
+        let mut jobs = WaterPatchMeshAsyncState::new();
+        for (patch_x, lod_step) in [(1, 1), (1, 2), (2, 1), (1, 2)] {
+            jobs.cache_insert(mesh(patch_x, lod_step));
+        }
+        assert_eq!(jobs.cache.len(), 3);
+        jobs.forget_patch(1, 3);
+        assert_eq!(jobs.cache.keys().map(|key| key.patch_x).collect::<Vec<_>>(), vec![2]);
+        jobs.forget_patch(1, 3);
+        jobs.cache_insert(mesh(1, 4));
+        jobs.forget_patch(2, 3);
+        assert_eq!(jobs.cache.keys().map(|key| key.patch_x).collect::<Vec<_>>(), vec![1]);
     }
 }

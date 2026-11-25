@@ -464,14 +464,14 @@ impl SimulationNode {
         if max_meshes == 0 {
             let mut jobs = self.lock_water_patch_mesh_jobs();
             for entry in completed_entries {
-                jobs.cache.insert(entry.key, entry);
+                jobs.cache_insert(entry);
             }
             return stats;
         }
 
         let mut jobs = self.lock_water_patch_mesh_jobs();
         for entry in completed_entries {
-            jobs.cache.insert(entry.key, entry);
+            jobs.cache_insert(entry);
         }
         for key in completed_keys {
             if jobs.requested.contains(&key) {
