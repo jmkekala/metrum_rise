@@ -12122,7 +12122,10 @@ line goes; per-instance calls and object churn do.
   runs. Order across owners: holes before upgrades, by a reserve (1.0 ms) that the upgrade owners
   ahead of the node (the dirty commit, the graded tiles, the patches' level changes) leave while
   the node's last frame left holes waiting; inside an owner, its classes and nearest first, ties
-  by key. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
+  by key. Inside the node the water's, the terrain's and the vegetation's units share one order
+  (`VEG-35` R1): the vegetation's waiting holes run among the patch holes and its replacements of
+  drawn patches among the level changes, by class and then nearest, the patch unit first on a
+  tie; the reserve is then the room all three owners' holes spend before any level change. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
   stage, T65 option (3)), the post-load window (5.2 ms, until the patches first settle, at most
   30 s) and a load's road hydration (4.0 ms); the building publication and the sites are charged,
   not split (each building chunk's changes atomic, `RENDER-42`; the sites' frame, `RENDER-30`).
@@ -21694,9 +21697,78 @@ s at the median; the 457 installs waited 192 frames at the mean and 231 at most 
 508 stalled passes; an install measured 11.8 us against its predicted 24.6 us. Proof of no behaviour
 change: the vegetation's tests (the scripted sequence's command digest included) unchanged; settle
 digests on the shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points, one run a side) equal to `dev`
-in every family at every point but point 10's vegetation band flags (`VEG-34`: the round's value is
-the one an earlier `dev` control produced in round L1b); the terrain goldens untouched (no patch
-layer code changed).
+in every family at every point but two known run-to-run variations of `dev` itself: point 9's terrain
+and water steps (`TERRAIN-45`) and point 10's vegetation band flags (`VEG-34`: the round's value is
+the one an earlier `dev` control produced in round L1b); round R1's run equals the controls there;
+the terrain goldens untouched (no patch layer code changed).
+
+**Round R1: the vegetation's waiting products in the patch units' order.** The rule, stated at
+`frame_layers` and `FrameState::source_holes`: in the frame's first pass the hole units of the
+water, the terrain and the vegetation run in one order: class (hole in view, hole near, hole), then
+squared ground distance from the eye, then owner (water, terrain, vegetation: a patch hole first on a
+tie). Before each water or terrain hole every waiting vegetation hole that orders before it installs
+while the budget admits it, the rest after the layers' last hole; a vegetation hole the budget
+refuses closes the vegetation for the pass and holds the frame as a held patch hole does (no level
+change runs on the budget behind it, the fill and releases wait, the graded book's unwaited builds
+wait). The vegetation's replacements of drawn patches (its upgrade classes) join the level changes'
+merge the same way, each on the budget less the holes' reserve while no hole of the frame was held,
+its first in-view one of the frame always, as a patch layer's first in-view level change (the plan's
+probe: on the first build of the round 58-70 replacements waited 1.2-2.5 s behind the terrain's
+level changes and hides after the zoom). What the cursor leaves and the products pulled later in the
+pass keep their place: the install call after the patch units, and the one before the draw. The
+frame's first unit still always runs, the slot limit's skip is unchanged, no timer, no count cap.
+The cursor (`VegetationLayer::begin_units`, `next_unit`, `install_next`, `end_units`; the
+`UnitSource` trait in `schedule.rs`) orders the products delivered in the earlier passes once, `O(P
+log P)` for P products waiting (at most the wanted set), `O(1)` a comparison before each patch unit,
+nothing on a frame with nothing waiting, nothing allocated; with nothing waiting the patch units are
+those without it. The cursor's installs go to the residency (`take_installs`) before its frame reads
+the drawn set. Not in the post-load window (its own budget) nor the load's hold (unbudgeted), where
+the vegetation keeps its place after the patch units.
+
+What follows from it. A frame in which near trees install before far terrain patches is the intended
+change: since round D2 a far terrain hole is covered by the backdrop, never sky, so a tree near the
+eye is the more visible of the two. The hole reserve keeps its rule (the owners ahead of the stream
+node leave 1.0 ms while any of the node's holes waited at the last pass's end) and now means what it
+says: the room all three owners' holes spend before any level change, the vegetation's included
+(before, the vegetation's waiting holes held it on and the terrain's and water's units spent it).
+Round B1c's and B2's rules are unchanged (the fill and non-donor releases still wait while the
+vegetation has patches the view waits for; the vegetation's units come before both in the order).
+The backdrop cells follow the terrain's residency as before (no change to `follow_terrain`). The
+vegetation's install price is kept (`predicted_cost`): measured 11.8-17 us an install against
+24.6-31 us predicted on the 60 km trip, so a vegetation unit admitted by its price cannot push a frame
+over the ledger by more than the exempt first unit (the plan's lever (f): a change only when the
+price is off by more than 2x on the side that overruns). Cost of the order: a product delivered in
+the frame before is installed before the residency's frame of this one, so a patch that leaves the
+wanted set in that frame is installed and freed at once (on the 60 km trip 775 installs against 457,
+the frees 6.5-11 ms over the trip against 1.5-2.0).
+
+`VEG-33` is unchanged by R1: the residency's frees still run after the patch units and are only
+charged.
+
+**R1's proof.** Tests (`terrain/tests.rs`, a scripted unit source): a vegetation hole nearer than a
+patch hole of its class runs before it, a farther one after, a tied one after; an in-view vegetation
+hole runs before an out-of-view patch hole at any distance; a vegetation hole the budget refuses
+waits, closes the source and holds the frame's budgeted level changes; a replacement runs among the
+level changes by class and distance, behind a held hole only as the frame's first in-view one; the
+same inputs give the same units twice. `vegetation/tests.rs`: the cursor gives the holes in the
+install order, then the replacement, and a refusal closes it. The existing order test
+(`installs_take_class_then_distance_then_key_order_within_the_budget`) and the scripted sequence's
+command digest hold as written; the terrain layer's tests and both golden replays unchanged (30k 3,144
+frames / 85 checks, Kuopio 10,036 / 87, every mismatch 0, nothing re-recorded). Settle digests on the
+shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points): equal to two `dev` control runs in every family
+at every point.
+
+Where the 60 km trip's wait went, after R1 (one `--detail` run of the final library against `dev`'s
+of R0, per 0.25 s from the jump; the zoom ends at 1.5 s): the products land from 0.5 s on and install
+as they land, 178-274 a window while the terrain's in-view holes still build (`dev`: 0 installed and
+405 waiting from 0.75 s to 2.75 s); the near ring draws 0.26 s before the zoom's end and the last hole
+10 ms after it (`dev`: +1.47 s and +1.53-1.62 s), ready to drawn 13 ms at the median (`dev` 2.2 s).
+What still waits after the zoom are 31 replacements of patches out of view: they run among the level
+changes, and no level change runs on the budget while the terrain's far holes (out of view, out to
+9.5 km) are held back, so they install when those finish, 1.05 s after the zoom (`dev`'s whole
+vegetation: +1.90-1.97 s). The terrain and water are complete 1.03 s after the zoom against `dev`'s
+1.07 s.
+
 
 ## Implemented Runtime Contract
 
