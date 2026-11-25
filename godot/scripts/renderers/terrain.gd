@@ -130,8 +130,6 @@ var terrain_cell_m: float = 1.0
 var patch_cols: int = 0
 var patch_rows: int = 0
 var patch_interval_cells: int = 1
-# Texels of neighbouring terrain a payload's height texture carries a side (the layout's).
-var _patch_border_texels: int = 0
 # The budget's extras (`TERRAIN-41` B1): bytes of spare textures the built patches hold, a
 # running sum kept at every change, and the last totals reported to the stream node.
 var _spare_bytes: int = 0
@@ -293,8 +291,7 @@ func rebuild_from_simulation_state() -> void:
 	patch_cols = int(patch_layout.get("patch_cols", 0))
 	patch_rows = int(patch_layout.get("patch_rows", 0))
 	patch_interval_cells = max(1, int(patch_layout.get("patch_interval_cells", 1)))
-	_patch_border_texels = int(patch_layout.get("patch_border_texels", 0))
-	_rebuild_mask_pages(_patch_border_texels)
+	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
 	_stream.set_terrain_patch_span(patch_span_m)
@@ -1556,11 +1553,9 @@ func _new_terrain_patch_resources() -> Dictionary:
 		"spare_height_texture_height": 0,
 	}
 
-# The payload's height texture size (its samples and border), so a pooled blank texture is
-# written in place by the first payload (`TERRAIN-41` B1).
 func _terrain_default_patch_texture_size() -> Vector2i:
-	var sample_count: int = max(2, patch_interval_cells + 1) + 2 * _patch_border_texels
-	return Vector2i(sample_count, sample_count)
+	var sample_count: int = max(2, patch_interval_cells + 1)
+	return Vector2i(sample_count + 2, sample_count + 2)
 
 # A patch's spare textures, bytes: a spare height texture and a spare land cover with its own
 # image (`TERRAIN-41` B1's extras).
@@ -1721,14 +1716,13 @@ func _upload_terrain_patch_height_texture(
 ) -> ImageTexture:
 	var height_image: Image = resources["height_image"] as Image
 	height_image.set_data(texture_width, texture_height, false, Image.FORMAT_RF, height_bytes)
-	var height_texture: ImageTexture = resources.get("height_texture", null) as ImageTexture
-	var old_width: int = int(resources.get("height_texture_width", 0))
-	var old_height: int = int(resources.get("height_texture_height", 0))
-	if height_texture != null and old_width == texture_width and old_height == texture_height:
-		height_texture.update(height_image)
-	else:
-		height_texture = ImageTexture.create_from_image(height_image)
-		resources["height_texture"] = height_texture
+	# A built patch's height texture is made from its payload, never updated in place, also when a
+	# recycled set's texture has the size: Godot's rendering device tracks a texture written after
+	# its creation at every draw that binds it, and the base terrain draws hundreds of patches a
+	# frame (an in-place write of every fresh build read +0.04 ms render CPU on the shipped Kuopio,
+	# `TERRAIN-41` B1b). An edit's staged texture (the spare) is still written in place.
+	var height_texture := ImageTexture.create_from_image(height_image)
+	resources["height_texture"] = height_texture
 	resources["height_texture_width"] = texture_width
 	resources["height_texture_height"] = texture_height
 	return height_texture
