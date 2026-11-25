@@ -20882,14 +20882,98 @@ ms, counted 642-689 MB, video memory 3,662-3,695 MiB. Earlier builds of the roun
 (the in-place height textures, below) and, before releases waited for the other layer's work,
 +0.8 ms with 11-16 s settles.
 
-**The settle phases read longer** (+1.2 s after the start, +3.3 s after the turn, four runs a side;
-round B1's first record misread them as level). The stream's units for the view end sooner than
-`dev`'s (no missing patch, level change or hide left at about 3.3 s after the turn, `dev` about
-5 s), but `is_render_settled` then waits while the budget's background work runs: the water's own
-releases (14 a frame) and the water's fill (16 a frame) each queue the terrain's water texture
-sync for their patch, and a non-empty sync queue counts as pending render work. What the player
-sees is settled; the flag (the load's hand-over and the benchmark's captures read it) is late.
-Left for a roadmap row, outside this round's two findings.
+**The settle phases read longer on the tree above** (+1.2 s after the start, +3.3 s after the
+turn, and a 60 km load 9 s longer to settle: 25.4 s against 16.4; round B1's first record misread
+them as level). **Fixed in round B1c** (below).
+
+**Round B1c: what "settled" waits for** (2026-11-25). The records of the slow settles, read per
+pending kind at the moment the benchmark checks the flag (its row and its check run in the same
+frame): after the turn the view's own units ended at about 3.6-4.1 s (level changes, water
+meshes); from 4.0 s for 2.8 s the terrain's water texture sync queue held 14 entries at every check (the
+water's own releases, 14 a frame, each queueing a sync for a terrain patch that is not drawn,
+through the water's relay queue, which counted too), and for the last 1.3 s the water's fill held
+16 payload requests, which the water's `has_pending_render_work(false)` counted (the terrain's
+excludes its prewarm requests; the water's did not). The load's two settle waits were 734 and 924
+frames against `dev`'s 210 and 150 (no rows record those waits by kind). Who reads the flag: the stream
+benchmark's settles and captures (with the harness's idle state, which reads both layers'
+`has_pending_render_work(false)`), the idle, road preview and teardown benchmarks, the Godot
+tests that wait for a settled view, and the graded book's `residency_settling` while a load
+settles. The load's hand-over does not read it (it waits for the patches near the camera to draw,
+`unready_patches_near_camera`; the script's comment said otherwise and is corrected). All of them
+want "what the view draws is in step", so the flag keeps that one meaning and the background is
+reported apart:
+- `terrain.gd` keeps two sync queues: a drawn patch's sync (resident when queued, or shown while
+  queued: its entry moves ahead) holds `is_render_settled` and runs first; a sync of a patch not
+  drawn (a kept patch whose water patch was released or rebuilt, or hidden) is background work,
+  counted by `has_pending_render_work(true)` only. Same work, same per-frame count and time
+  budget; O(1) a queue or a move. `terrain_budget_save_test` checks all three cases.
+- `water.gd` books its prewarm requests as the terrain does (`prewarm_requested`; a request the
+  core makes for a wanted patch leaves the book), and calls the terrain's sync queue directly
+  instead of through its own relay queue (one queue and one frame less).
+- `fill_left` counts both layers, so `METRUM_STREAM_WAIT_FILL=1` waits for the water's fill too
+  (it had waited for it only through the counted requests).
+
+With the flag fixed the load still settled late: the base pose's wait read 1,433-1,452 frames,
+every one held by the vegetation alone (a diagnostic of the wait's terms a frame). The budget's
+fill ran beside it: its payload requests filled the workers the vegetation's products need and its
+units the frame budget the vegetation's installs share. **The fill, and releases that are not a
+build's donor, now also wait while the vegetation has patches the view waits for** (as the plan's
+"when nothing else waits" says). And at 512 MB the flight's builds paired with donor releases the
+budget did not need (built about 4,000 against 9,600 places), which slowed the hides and the
+settle after the turn: **a hole build takes a donor only while one more place would not fit**
+(`set_budget_full`, from the counted bytes once a frame; test
+`a_build_takes_a_donor_only_while_the_budget_is_full`); otherwise its candidates wait for the
+releases of a frame nothing waits in.
+
+What this changes in the measured flight: it no longer starts on a map the fill built during the
+start's settle (that pre-fill was the late flag's artefact: the benchmark waited for the water's
+fill), so the flight builds about as many patches as `dev` (2.08 a frame against 2.00) and three of
+the bars are less far ahead of `dev` than in the table above, still better by far.
+
+Measured on the final library (release, the eight P-cores, perf channel on; control `dev`
+`c66c91c51`'s release library with its scripts; times in s; the compare tool's rule):
+
+| row | `dev` | B1c | verdict |
+|---|---|---|---|
+| 60 km load to settled (512 MB, 2 sessions) | 16.28-16.53 | 16.52-16.62 | level pooled (+0.19 / 0.25; session 1 alone +0.23 / 0.08) |
+| `flight_high_start` settle (512 MB) | 7.55-7.78 | 7.19-7.40 | better |
+| `flight_high_settle` (after the turn, 512 MB) | 4.75-5.01 | 4.75-5.23 | level pooled (+0.13 / 0.48; session 2 alone +0.32 / 0.16) |
+| 60 km load to settled (256 MB, 1 session) | 16.15-16.35 | 16.57-16.73 | **worse** (+0.40 / 0.21) |
+| `flight_high_start` settle (256 MB) | 7.62-7.67 | 7.28-7.29 | better |
+| `flight_high_settle` (256 MB) | 4.75, 4.94 | 5.34, 7.02 | level by the rule only through the branch's own spread: **later** |
+| shipped Kuopio load to settled (2 sessions; the library before the donor change, which needs release candidates and the shipped Kuopio has none) | 7.07-7.14 | 6.93-7.35 | level |
+| 30k pond load to settled (1 session) | 11.74-11.93 | 11.60-12.10 | level |
+
+Round B1's flight before this round: 25.2-25.5 s to settle the load, 9.1 / 8.1-8.2 s for the two
+phases. The flight's bars at 512 MB, two sessions pooled: frame p50 13.11-13.41 against
+12.98-13.17 ms, **level pooled** (+0.25 against 0.30) but worse in each session alone (+0.18 /
+0.14, +0.31 / 0.14; scripts' time equal, main thread +0.3 ms, render CPU +0.1 ms: more of the view
+drawn); missing at most 99-109 against 156-180, terrain wanted-to-drawn p95 42-57 against 97-110
+frames, most in-view holes 99-103 against 138-145, all better. The shipped Kuopio, two C B B C
+sessions: every one of the 16 phases level at the median and the maximum pooled.
+
+**At 256 MB the settle after the turn stays later than `dev`'s.** The records: the turn's hides and
+holes end at 2.8 s as on `dev`, then the terrain's over-budget releases (about 800, which run in
+the frame's leftover room whatever waits, round B1's rule for the soft bound) take the room the
+water's level changes and the vegetation's installs need (water level changes 50 a 0.7 s against
+250-390 on `dev`) until the counted bytes are back within the budget. Making them wait would let
+the counted bytes stay over the budget longer: it belongs to the margin the user is choosing (round
+B1b's options), so it is left as it is and reported. The 256 MB load's +0.4 s is spread over the
+load's two waits (equal frame counts, slower frames), not attributed further.
+
+**What the settle digests wait for now**: the view's work only (what `is_render_settled` and both
+layers' `has_pending_render_work(false)` count), no longer for the background syncs or the water's
+fill; with `METRUM_STREAM_WAIT_FILL=1` also for both layers' fill. Against `dev`'s control runs
+(this round's branch run at 512 MB; `dev` `c66c91c51` once and `f959970ab` twice): the 60 km
+flight's 4 points equal in terrain and water residency and steps, graded, buildings, roads, parked
+cars, vegetation and the water mesh check (0 mismatches), the built sets and land covers different
+by design; the 30k pond's 16 points equal wherever the controls agree (point 8's steps and the
+`TERRAIN-27` graded tile differ between the controls too); the shipped Kuopio's 12 points equal in
+every family but the vegetation at point 10 (`far_to_ground`), where two patches carry the band
+flags `000` against `101` with equal products (not traced; likely a settle taken a few frames sooner, since the hides'
+water syncs no longer hold it, catching the vegetation's band check earlier); the three controls agree
+there, and round B1's record notes `dev` varying the same way run to run. The whole-map budget
+after its fill: 13,689 patches of each layer built, no build, prewarm or release in any phase.
 
 **At 256 MB** (the final library, one run a row): `flight_high`'s built set stays at 3,750-4,010
 terrain patches over the flight, its turn and settle (`dev` 3,472 to 5,460), video memory 2,855
