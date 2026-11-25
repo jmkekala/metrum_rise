@@ -6,7 +6,11 @@
 ## fresh 20 km blank world, paused: every patch fits, the smallest budget, every patch fits again
 ## (the last shows the sequence itself saves byte-equal, so a difference is the budget's).
 ## A save records the second it was written (`save_meta.saved_at_unix`), so two saves are compared
-## byte for byte except within one four-byte window (that integer). Headless; the game scene as the load flow builds it, without its input and camera processing.
+## byte for byte except within one four-byte window (that integer). After the smallest budget's
+## walk it also checks what "settled" waits for: a drawn patch's water texture sync holds
+## `is_render_settled`, a sync of a patch not drawn (the budget's background releases and fill
+## queue those) is background work only, and a background sync of a patch shown since holds it
+## again (`TERRAIN-41` B1c). Headless; the game scene as the load flow builds it, without its input and camera processing.
 extends SceneTree
 
 const SETTLE_TIMEOUT_MS := 90000
@@ -101,6 +105,8 @@ func _sequence(budget_mb: float, index: int) -> Array:
 	for road: Array in ROADS:
 		_expect(await _commit(road[0], road[1], road[2]), "road %s must commit" % [road])
 	released += await _settle()
+	if budget_mb == SMALLEST_BUDGET_MB:
+		await _check_settle_meaning()
 	var path := ProjectSettings.globalize_path("user://terrain_budget_save_%d.sqlite" % index)
 	if OS.get_environment("METRUM_KEEP_SAVES") != "":
 		path = OS.get_environment("METRUM_KEEP_SAVES").path_join("save_%d.sqlite" % index)
@@ -126,6 +132,46 @@ func _settle() -> int:
 			return released
 	_expect(false, "the world must settle")
 	return released
+
+# A drawn patch's water texture sync holds the settle; one of a patch not drawn does not, but is
+# background work (has_pending_render_work with the background cache); a queued background sync
+# of a patch drawn since moves into the drawn queue and holds it. Render state only: run after the
+# walk has settled, it leaves every binding as a sync makes it.
+func _check_settle_meaning() -> void:
+	var drawn: Array[Vector2i] = _terrain.get_resident_patch_keys()
+	var hidden := Vector2i(-1, -1)
+	for x in range(64):
+		if not _terrain.resident_patch_lookup.has(Vector2i(x, 0)):
+			hidden = Vector2i(x, 0)
+			break
+	_expect(not drawn.is_empty() and hidden.x >= 0 and _terrain.is_render_settled(),
+		"the settled walk must draw patches and leave one at the edge undrawn")
+	if drawn.is_empty() or hidden.x < 0:
+		return
+	_terrain.refresh_water_patch_binding(hidden)
+	_expect(_terrain.is_render_settled(), "a sync of a patch not drawn must not hold the settle")
+	_expect(_terrain.has_pending_render_work(true), "a sync of a patch not drawn must count as background work")
+	_expect(await _terrain_settled(), "the background sync must drain")
+	_expect(int(_terrain.get_pending_render_work_counts().get("water_texture_sync_background", -1)) == 0,
+		"the background sync must be done")
+	_terrain.refresh_water_patch_binding(drawn[0])
+	_expect(not _terrain.is_render_settled(), "a drawn patch's water texture sync must hold the settle")
+	_expect(await _terrain_settled(), "the drawn sync must drain")
+	# Shown while its background sync waits: the script's own residency step, undone before any frame.
+	_terrain.refresh_water_patch_binding(hidden)
+	_terrain.resident_patch_lookup[hidden] = true
+	_terrain.refresh_water_patch_binding(hidden)
+	_terrain.resident_patch_lookup.erase(hidden)
+	_expect(not _terrain.is_render_settled(), "a background sync of a patch drawn since must hold the settle")
+	_expect(await _terrain_settled(), "the moved sync must drain")
+
+# Frames until is_render_settled (at most 120). Answers whether it settled.
+func _terrain_settled() -> bool:
+	for frame in 120:
+		await process_frame
+		if _terrain.is_render_settled():
+			return true
+	return false
 
 func _commit(a: Vector2, b: Vector2, lanes: int) -> bool:
 	var points := PackedVector3Array([

@@ -55,7 +55,6 @@ const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const WATER_PATCH_RESOURCE_POOL_MAX := 256
 const WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME := 128
-const WATER_TERRAIN_BINDING_BUDGET_PER_FRAME := 128
 const WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME := 8
 const WATER_PATCH_MESH_BUSY_REQUEST_BUDGET_PER_FRAME := 4
 const WATER_PATCH_MESH_BACKLOG_REQUEST_THRESHOLD := 96
@@ -98,12 +97,13 @@ var _mesh_bytes: int = 0
 var _extras_sent := Vector2i(-1, -1)
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
+# The prewarm's requests among them (the budget's fill, `TERRAIN-41`): a settled view does not
+# wait for them, as terrain.gd's. A key the core wants drawn leaves it.
+var _prewarm_requests: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var pending_water_ack_states: PackedInt64Array = PackedInt64Array()
 var height_texture_rebind_queue: Array[Vector2i] = []
 var height_texture_rebind_lookup: Dictionary = {}
-var terrain_patch_binding_queue: Array[Vector2i] = []
-var terrain_patch_binding_lookup: Dictionary = {}
 # The mesh requests by cause (`TERRAIN-41` L2): `mesh_refresh_queue` for holes (a wet resident
 # patch whose node draws no mesh of its cover and depth), `mesh_upgrade_queue` for upgrades (it
 # draws one at another step), which are submitted and applied only inside the install ledger's
@@ -206,7 +206,6 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_full_water_grid_mesh_variants()
 	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	_rebuild_water_border()
-	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
 	if _terrain_debug_enabled:
 		_water_debug_log("renderer ready visual=%d" % MetrumDebug.visual_mode_index("terrain_visual"))
 
@@ -220,7 +219,6 @@ func _process(delta: float) -> void:
 	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
-	var terrain_binding_elapsed_ms := 0.0
 	var mesh_refresh_elapsed_ms := 0.0
 	var mesh_refresh_perf_stats: Dictionary = {}
 	var height_rebind_start_us := Time.get_ticks_usec()
@@ -237,10 +235,6 @@ func _process(delta: float) -> void:
 		var border_start_us := Time.get_ticks_usec()
 		_rebuild_water_border()
 		border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
-
-	var terrain_binding_start_us := Time.get_ticks_usec()
-	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
-	terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
 
 	var mesh_work := (
 		not mesh_refresh_queue.is_empty()
@@ -287,7 +281,6 @@ func _process(delta: float) -> void:
 			"upload": upload_elapsed_ms,
 			"border": border_elapsed_ms,
 			"height_rebind": height_rebind_elapsed_ms,
-			"terrain_binding": terrain_binding_elapsed_ms,
 			"mesh_refresh": mesh_refresh_elapsed_ms,
 		}
 		for key_variant in mesh_refresh_perf_stats.keys():
@@ -315,7 +308,7 @@ func update_water_visuals(allow_async: bool = false) -> bool:
 		for key in dirty_keys:
 			if patches.has(key):
 				if _upload_patch(key, allow_async):
-					_queue_terrain_patch_binding(key)
+					_refresh_terrain_patch_binding(key)
 				else:
 					dirty_upload_pending = true
 	if dirty_upload_pending:
@@ -333,10 +326,10 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 func get_pending_render_work_counts() -> Dictionary:
 	return {
 		"payload_requested": patch_payload_requested.size(),
+		"prewarm_requested": _prewarm_requests.size(),
 		"payload_ready": patch_payload_ready.size(),
 		"pending_ack": int(pending_water_ack_states.size() / 3),
 		"height_rebind": height_texture_rebind_queue.size(),
-		"terrain_binding": terrain_patch_binding_queue.size(),
 		"mesh_refresh": mesh_refresh_queue.size(),
 		"mesh_requested": mesh_refresh_requested_lod.size(),
 		"mesh_pending": mesh_pending_lod.size(),
@@ -345,19 +338,21 @@ func get_pending_render_work_counts() -> Dictionary:
 		"stream_pending": 1 if _stream.has_water_pending_work() else 0,
 	}
 
+## Payloads requested (the prewarm's only with the background cache), an acknowledgement, a
+## height rebind or mesh work waiting, or the streaming core's water patches with work; with the
+## background cache also payloads held for a later build.
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
 	return (
-		not patch_payload_requested.is_empty()
+		patch_payload_requested.size() > _prewarm_requests.size()
 		or not pending_water_ack_states.is_empty()
 		or not height_texture_rebind_queue.is_empty()
-		or not terrain_patch_binding_queue.is_empty()
 		or not mesh_refresh_queue.is_empty()
 		or not mesh_refresh_requested_lod.is_empty()
 		or not mesh_pending_lod.is_empty()
 		or not mesh_apply_queue.is_empty()
 		or _water_mesh_ready_backlog_estimate > 0
 		or _stream.has_water_pending_work()
-		or (include_background_cache and not patch_payload_ready.is_empty())
+		or (include_background_cache and (not patch_payload_ready.is_empty() or not _prewarm_requests.is_empty()))
 	)
 
 func get_water_patch_texture_binding(key: Vector2i) -> Dictionary:
@@ -497,7 +492,7 @@ func refresh_road_covered_patches(flat_pairs: PackedInt32Array) -> void:
 		simulation_node.clear_water_patch_mesh_cache(flat_pairs)
 	for key in dirty_keys:
 		if patches.has(key):
-			patch_payload_requested.erase(key)
+			_forget_payload_request(key)
 			patch_payload_ready.erase(key)
 			_upload_patch(key, true)
 
@@ -628,9 +623,10 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 # the terrain's resident patches the water's and calls these, one unit at a time under its frame
 # budget. None of them calls the StreamNode back (it is mid-frame): what it must know is returned.
 
-## Requests the water payloads of `keys` (flat x, z pairs). Answers, as flat x, z, news triples,
-## the keys whose payload is already held or built (news 1).
-func stream_request(keys: PackedInt32Array, _prewarm: bool) -> PackedInt32Array:
+## Requests the water payloads of `keys` (flat x, z pairs); `prewarm` marks a prewarm build's
+## requests, which a settled view does not wait for. Answers, as flat x, z, news triples, the keys
+## whose payload is already held or built (news 1).
+func stream_request(keys: PackedInt32Array, prewarm: bool) -> PackedInt32Array:
 	var answers := PackedInt32Array()
 	var wanted: Array[Vector2i] = []
 	for index in range(0, keys.size(), 2):
@@ -638,6 +634,10 @@ func stream_request(keys: PackedInt32Array, _prewarm: bool) -> PackedInt32Array:
 		if patch_payload_ready.has(key) or patches.has(key):
 			answers.append_array(PackedInt32Array([key.x, key.y, 1]))
 		else:
+			if not prewarm:
+				_prewarm_requests.erase(key)
+			elif not patch_payload_requested.has(key):
+				_prewarm_requests[key] = true
 			wanted.append(key)
 	_request_water_patch_payloads(wanted, wanted.size())
 	return answers
@@ -664,7 +664,7 @@ func stream_activate(key: Vector2i, step: int) -> Vector2i:
 	elif int(patch.get("depth_nonzero_count", 0)) > 0:
 		_water_mesh_reshow_kept_count += 1
 	_queue_height_texture_rebind(key)
-	_queue_terrain_patch_binding(key)
+	_refresh_terrain_patch_binding(key)
 	return Vector2i(0, -1)
 
 ## Hides resident `key`, whose terrain patch left.
@@ -677,7 +677,7 @@ func stream_deactivate(key: Vector2i) -> void:
 	if patches.has(key):
 		var patch_node: MeshInstance3D = patches[key]["node"]
 		patch_node.visible = false
-		_queue_terrain_patch_binding(key)
+		_refresh_terrain_patch_binding(key)
 	patch_bounds_changed.emit(key)
 
 ## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers -1, or -2 when nothing was
@@ -725,7 +725,7 @@ func _free_patch(key: Vector2i) -> void:
 	resident_patch_lookup.erase(key)
 	mesh_refresh_requested_lod.erase(key)
 	mesh_pending_lod.erase(key)
-	_queue_terrain_patch_binding(key)
+	_refresh_terrain_patch_binding(key)
 	patch_bounds_changed.emit(key)
 	_water_debug_patch_removes += 1
 
@@ -738,12 +738,11 @@ func _clear_patches() -> void:
 	resident_patch_lookup.clear()
 	patches_cleared.emit()
 	patch_payload_requested.clear()
+	_prewarm_requests.clear()
 	patch_payload_ready.clear()
 	pending_water_ack_states = PackedInt64Array()
 	height_texture_rebind_queue.clear()
 	height_texture_rebind_lookup.clear()
-	terrain_patch_binding_queue.clear()
-	terrain_patch_binding_lookup.clear()
 	mesh_refresh_queue.clear()
 	mesh_upgrade_queue.clear()
 	mesh_refresh_requested_lod.clear()
@@ -1149,6 +1148,11 @@ func _road_geometry_water_border_line() -> String:
 func _patch_visible_depth_count(patch_data: Dictionary) -> int:
 	return int(patch_data.get("depth_nonzero_count", 1))
 
+# A payload request ended (answered, failed or dropped).
+func _forget_payload_request(key: Vector2i) -> void:
+	patch_payload_requested.erase(key)
+	_prewarm_requests.erase(key)
+
 func _request_water_patch_payload(key: Vector2i, include_existing: bool = false) -> bool:
 	var keys: Array[Vector2i] = []
 	keys.append(key)
@@ -1190,7 +1194,7 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 	for pair_index in range(failed_patch_keys.size() >> 1):
 		var offset := pair_index * 2
 		var failed_key := Vector2i(failed_patch_keys[offset], failed_patch_keys[offset + 1])
-		patch_payload_requested.erase(failed_key)
+		_forget_payload_request(failed_key)
 		_stream.water_payload(failed_key, 0)
 	var payloads: Array = result.get("patches", []) as Array
 	var accepted_count := 0
@@ -1205,7 +1209,7 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 		if not patch_payload_requested.has(key):
 			continue
 		patch_payload_ready[key] = patch_data
-		patch_payload_requested.erase(key)
+		_forget_payload_request(key)
 		_stream.water_payload(key, 1)
 		accepted_count += 1
 	# The request books agree (`TERRAIN-35`, as terrain.gd's poll). Debug builds only; O(1).
@@ -1219,7 +1223,7 @@ func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dic
 	if patch_payload_ready.has(key):
 		var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
 		patch_payload_ready.erase(key)
-		patch_payload_requested.erase(key)
+		_forget_payload_request(key)
 		return ready_patch_data
 	_request_water_patch_payload(key, patches.has(key))
 	return {}
@@ -2065,20 +2069,8 @@ func _bind_patch_height_texture(key: Vector2i) -> void:
 	material.set_shader_parameter("heightmap", next_texture)
 	_water_debug_height_rebinds += 1
 
-func _queue_terrain_patch_binding(key: Vector2i) -> void:
-	if terrain_patch_binding_lookup.has(key):
-		return
-	terrain_patch_binding_lookup[key] = true
-	terrain_patch_binding_queue.append(key)
-
-func _process_terrain_patch_binding_queue(budget: int) -> void:
-	var remaining_budget := budget
-	while remaining_budget > 0 and not terrain_patch_binding_queue.is_empty():
-		var key: Vector2i = terrain_patch_binding_queue.pop_front()
-		terrain_patch_binding_lookup.erase(key)
-		_refresh_terrain_patch_binding(key)
-		remaining_budget -= 1
-
+# Tells the terrain `key`'s water texture changed: terrain.gd queues the sync (drawn patches
+# first; it dedupes and budgets them) and calls nothing back, so a stream unit may call it. O(1).
 func _refresh_terrain_patch_binding(key: Vector2i) -> void:
 	if terrain_node == null:
 		return

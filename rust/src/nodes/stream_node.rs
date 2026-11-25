@@ -808,8 +808,9 @@ impl StreamNode {
 
     /// The base terrain's budget now (`TERRAIN-41` B1, the debug view's and the benchmark's):
     /// `budget_bytes` (-1: every patch fits), `counted_bytes`, `extra_bytes`, `places`, `ring`
-    /// (`K`), `overrun`, `terrain_built`, `water_built`, `fill_left`, `release_rect`.
-    /// `O(prewarm square)` for `fill_left`: a status read, not a frame's.
+    /// (`K`), `overrun`, `terrain_built`, `water_built`, `fill_left` (both layers' patches of
+    /// their prewarm squares not yet built: the background fill a settled view does not wait
+    /// for), `release_rect`. `O(prewarm square)` for `fill_left`: a status read, not a frame's.
     #[func]
     pub fn get_terrain_budget(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -818,7 +819,7 @@ impl StreamNode {
         out.set("counted_bytes", self.counted_bytes() as i64);
         out.set("terrain_built", self.terrain.built_count() as i64);
         out.set("water_built", self.water.built_count() as i64);
-        out.set("fill_left", self.terrain.fill_left() as i64);
+        out.set("fill_left", (self.terrain.fill_left() + self.water.fill_left()) as i64);
         if let Some(keep) = self.terrain.keep() {
             out.set("places", i64::try_from(keep.places).unwrap_or(-1));
             out.set("ring", keep.ring as i64);

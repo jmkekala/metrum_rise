@@ -202,7 +202,12 @@ var _land_cover_perf := PackedInt64Array([0, 0, 0, 0])
 # summed (completed jobs' payloads, retries, payloads emitted, stale), its ready queue and requests
 # in flight before the last poll, and the payload workers' times (`worker_perf`, summed).
 var _poll_perf := {}
+# Patches whose water binding waits for a sync (`_queue_water_patch_texture_sync`): the drawn
+# ones, which a settled view waits for and which go first, then the background's, built patches
+# not drawn (a kept patch's binding follows its water patch's release or rebuild; `TERRAIN-41`).
+# The lookup holds each queued key, true while its entry is in the drawn queue.
 var water_texture_sync_queue: Array[Vector2i] = []
+var water_texture_sync_background: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var cached_overlay_day: int = -1
@@ -566,6 +571,7 @@ func get_pending_render_work_counts() -> Dictionary:
 		"payload_ready": patch_payload_ready.size(),
 		"pending_ack": int(pending_terrain_ack_states.size() / 3),
 		"water_texture_sync": water_texture_sync_queue.size(),
+		"water_texture_sync_background": water_texture_sync_background.size(),
 		"refused": patch_payload_refused.size(),
 		"land_cover_asked": _land_cover_asked.size(),
 		"land_cover_landed": _land_cover_landed.size(),
@@ -579,10 +585,10 @@ func get_blocked_dirty_patch_failures() -> Array[Dictionary]:
 func has_blocked_dirty_patch_failure() -> bool:
 	return false
 
-## Payloads requested (prewarm's only with the background cache), an acknowledgement or water
-## texture sync waiting, land covers asked or handed over and not uploaded, or the streaming
-## core's patches missing, leaving or queued for a level check; with the background cache also
-## payloads held for a later build.
+## Payloads requested (prewarm's only with the background cache), an acknowledgement or a drawn
+## patch's water texture sync waiting, land covers asked or handed over and not uploaded, or the
+## streaming core's patches missing, leaving or queued for a level check; with the background
+## cache also payloads held for a later build and the syncs of patches not drawn.
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
 	return (
 		patch_payload_requested.size() > _prewarm_requests.size()
@@ -593,14 +599,17 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 		or _stream.has_terrain_pending_work()
 		or (
 			include_background_cache
-			and (not patch_payload_ready.is_empty() or not _prewarm_requests.is_empty())
+			and (not patch_payload_ready.is_empty() or not _prewarm_requests.is_empty()
+				or not water_texture_sync_background.is_empty())
 		)
 	)
 
 ## Whether the renderer has settled: no pending patch work (has_pending_render_work without the
-## background cache) and no graded tile work (requests, lists, counts, deferred results, an edit
-## batch, cell set builds, a resident patch drawing nothing). A capture of what the player sees
-## waits for it, and a world load hands the game over on it (input_manager.gd): until then a
+## background cache: what the view draws is in step; the memory budget's fill and its releases
+## beyond the view are not waited for, `TERRAIN-41`) and no graded tile work (requests, lists,
+## counts, deferred results, an edit batch, cell set builds, a resident patch drawing nothing). A
+## capture of what the player sees waits for it. A world load hands the game over earlier, once
+## the patches near the camera draw (unready_patches_near_camera, input_manager.gd); until then a
 ## patch whose graded cells are not ready draws nothing (T53 (a)). O(1).
 func is_render_settled() -> bool:
 	return not has_pending_render_work(false) and (graded_tiles == null or not graded_tiles.has_pending_work())
@@ -1405,6 +1414,7 @@ func _clear_patches() -> void:
 	_land_cover_landed.clear()
 	simulation_node.clear_vegetation_land_covers()
 	water_texture_sync_queue.clear()
+	water_texture_sync_background.clear()
 	water_texture_sync_lookup.clear()
 	_stream.revise_terrain_residency()
 
@@ -2612,11 +2622,18 @@ func _queue_all_water_patch_texture_syncs() -> void:
 	for key_variant in resident_patch_lookup.keys():
 		_queue_water_patch_texture_sync(key_variant as Vector2i)
 
+# Queues `key`'s sync, in the drawn queue when its patch is drawn, else in the background's. A
+# queued background entry of a patch drawn since moves ahead into the drawn queue (its old entry
+# is skipped when popped), so a shown patch's sync holds the settle. O(1).
 func _queue_water_patch_texture_sync(key: Vector2i) -> void:
-	if water_texture_sync_lookup.has(key):
+	var drawn := resident_patch_lookup.has(key)
+	if water_texture_sync_lookup.has(key) and (bool(water_texture_sync_lookup[key]) or not drawn):
 		return
-	water_texture_sync_lookup[key] = true
-	water_texture_sync_queue.append(key)
+	water_texture_sync_lookup[key] = drawn
+	if drawn:
+		water_texture_sync_queue.append(key)
+	else:
+		water_texture_sync_background.append(key)
 
 func _process_water_patch_texture_sync_queue(
 	budget: int,
@@ -2629,10 +2646,15 @@ func _process_water_patch_texture_sync_queue(
 	var missing_count := 0
 	var depth_nonzero_total := 0
 	var remaining_budget := budget
-	while remaining_budget > 0 and not water_texture_sync_queue.is_empty():
+	# The drawn queue first, then the background's, under one count and time budget.
+	while remaining_budget > 0 and not (water_texture_sync_queue.is_empty() and water_texture_sync_background.is_empty()):
 		if _time_budget_exhausted(sync_start_us, PATCH_WATER_TEXTURE_SYNC_BUDGET_MS, processed_count):
 			break
-		var key: Vector2i = water_texture_sync_queue.pop_front()
+		var drawn := not water_texture_sync_queue.is_empty()
+		var key: Vector2i = water_texture_sync_queue.pop_front() if drawn else water_texture_sync_background.pop_front()
+		# A background entry whose key moved to the drawn queue, or was synced from there.
+		if not drawn and water_texture_sync_lookup.get(key, true):
+			continue
 		water_texture_sync_lookup.erase(key)
 		var depth_nonzero_count := _sync_one_water_patch_texture(key, perf_stats)
 		processed_count += 1
@@ -2650,7 +2672,7 @@ func _process_water_patch_texture_sync_queue(
 				processed_count,
 				updated_count,
 				missing_count,
-				water_texture_sync_queue.size(),
+				water_texture_sync_queue.size() + water_texture_sync_background.size(),
 				depth_nonzero_total,
 				float(Time.get_ticks_usec() - sync_start_us) / 1000.0,
 			]
@@ -2659,7 +2681,7 @@ func _process_water_patch_texture_sync_queue(
 		perf_stats["water_sync_processed_count"] = float(processed_count)
 		perf_stats["water_sync_updated_count"] = float(updated_count)
 		perf_stats["water_sync_missing_count"] = float(missing_count)
-		perf_stats["water_sync_queued_count"] = float(water_texture_sync_queue.size())
+		perf_stats["water_sync_queued_count"] = float(water_texture_sync_queue.size() + water_texture_sync_background.size())
 	return perf_stats
 
 func _new_water_sync_perf_stats() -> Dictionary:

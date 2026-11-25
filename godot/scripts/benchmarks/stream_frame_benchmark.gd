@@ -33,7 +33,8 @@
 ## patch drawn that frame waited from wanted to drawn, the main thread's core locks by call site
 ## (`core_locks`, `CODE-26`) and the frame's time split at its draw (`draw_split`, `PL1`).
 ## "Settled" means the gameplay harness's idle state, `terrain.is_render_settled()` and no
-## vegetation upload pending, for SETTLED_FRAMES frames in a row. `./run.sh --benchmark-stream` runs it pinned and isolated.
+## vegetation upload pending, for SETTLED_FRAMES frames in a row: what the view draws is in step;
+## the base terrain budget's background fill and releases beyond it are not waited for. `./run.sh --benchmark-stream` runs it pinned and isolated.
 ## With METRUM_STREAM_DIGESTS=1 (an untimed run: it reads the pages back) every settle point
 ## records the graded tiles' product in `graded_digests`: per installed tile its level, step,
 ## token, flag, walls and the bytes of each of its copies (the slot layer with its run's place in
@@ -174,7 +175,8 @@ var _last_us := 0
 var _previous_streams: Dictionary
 var _digests := false
 # METRUM_STREAM_WAIT_FILL=1 (`TERRAIN-41` B1): every settle also waits for the base terrain
-# budget's fill (the kept patches built hidden), so a phase starts on a filled budget.
+# budget's fill (the kept terrain and water patches built hidden), so a phase starts on a filled
+# budget.
 var _wait_fill := false
 var _settle_points := 0
 # Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so,
@@ -783,7 +785,8 @@ func _is_settled(bench: Node) -> bool:
 	return (bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
 		and (_roads == null or not _roads.is_pending()) and not (_wait_fill and _fill_left() > 0))
 
-# The base terrain budget's fill still to build (`TERRAIN-41` B1; 0 without the method).
+# The base terrain budget's fill still to build, both layers (`TERRAIN-41` B1; 0 without the
+# method).
 func _fill_left() -> int:
 	var budget_node: Node = _terrain.get("_stream") if _terrain != null else null
 	if budget_node == null or not budget_node.has_method("get_terrain_budget"):
