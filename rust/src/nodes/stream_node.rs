@@ -125,6 +125,9 @@ pub struct StreamNode {
     water_scripts: Option<Gd<Node>>,
     full_world: bool,
     load_settling: bool,
+    // A world load's preload (`TERRAIN-59`, `set_terrain_preload`), and its time slice a frame.
+    preload: Preload,
+    preload_budget: FrameBudget,
     // The post-load window (`POST_LOAD_PATCH_BUDGET_US`): from a world reset until the patches
     // first settle, their units run under their own budget.
     post_load_window: bool,
@@ -171,6 +174,26 @@ pub struct StreamNode {
     // `set_vegetation_catalogue` replaces whole). Made by `set_backdrop_drawing`.
     backdrop_backend: Option<GodotBackend>,
 }
+
+/// A world load's preload of the base terrain (`TERRAIN-59`): while the load holds the game,
+/// the patches the terrain memory target keeps are built before gameplay is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Preload {
+    /// No preload: the load hands over once the near ring draws, the fill follows in the
+    /// background (the tools' and tests' loads).
+    Off,
+    /// The view's own patches first; the fill is held, so the extras the places are counted
+    /// from (the drawn patches' water meshes) are final before the keep rectangle is filled.
+    View,
+    /// The fill, under the preload's slice and without the vegetation's hold.
+    Fill,
+}
+
+/// The preload's time slice a frame, microseconds (`TERRAIN-59`): the patch units run until
+/// their measured or predicted time reaches it, then the frame returns to the engine, so the
+/// window stays responsive (progress shown, quit possible) while frames are long. It protects
+/// the window, not a result: what is built and in which order does not depend on it.
+const PRELOAD_SLICE_US: f64 = 50_000.0;
 
 // The agents' twins with their own backend (their own mesh and material catalogue), the feed
 // of candidates from the agents' frame, the sun whose shadow range they follow, and the frame's
@@ -226,6 +249,8 @@ impl INode for StreamNode {
             water_scripts: None,
             full_world: false,
             load_settling: false,
+            preload: Preload::Off,
+            preload_budget: FrameBudget::new(PRELOAD_SLICE_US),
             post_load_window: false,
             post_load_s: 0.0,
             post_load_budget: FrameBudget::new(POST_LOAD_PATCH_BUDGET_US),
@@ -970,6 +995,8 @@ impl StreamNode {
         self.backdrop_layer
             .reset_cells(grid, self.backdrop_backend.as_mut());
         self.releases_total = [0; 2];
+        // A new world starts without a preload; the load flow asks for one after this.
+        self.set_preload(Preload::Off);
         self.post_load_window = grid.is_some();
         self.post_load_s = 0.0;
         self.terrain_scripts = Some(terrain);
@@ -1079,6 +1106,54 @@ impl StreamNode {
     #[func]
     pub fn set_terrain_load_settling(&mut self, settling: bool) {
         self.load_settling = settling;
+        if !settling {
+            self.set_preload(Preload::Off);
+        }
+    }
+
+    /// A world load's preload of the base terrain (`TERRAIN-59`), while the load holds the game
+    /// (`set_terrain_load_settling`): `phase` 0 none (the load hands over as before), 1 the view's
+    /// own patches first with the fill held, 2 the fill. During 1 and 2 the patch units run under
+    /// the preload's time slice a frame ([`PRELOAD_SLICE_US`]) instead of without a limit, and
+    /// each layer hands out up to `PRELOAD_REQUESTS` (256) payload requests a frame; during 2 the
+    /// fill no longer waits for the vegetation. The hold's end turns it off.
+    #[func]
+    pub fn set_terrain_preload(&mut self, phase: i64) {
+        self.set_preload(match phase {
+            1 => Preload::View,
+            2 => Preload::Fill,
+            _ => Preload::Off,
+        });
+    }
+
+    /// The preload's state (`TERRAIN-59`, the load flow's and its progress line's): `phase`
+    /// (as [`Self::set_terrain_preload`]), `built` (terrain and water patches built), `left`
+    /// (both layers' patches of the keep rectangle not built, and wanted ones built but not yet
+    /// shown: `built + left` is the preload's whole), and `done`: the fill phase has nothing left, the view
+    /// waits for no patch unit and the backdrop is ready (or there is none). `O(keep rectangle)`
+    /// for `left`: read once a frame while the load holds the game.
+    #[func]
+    pub fn get_terrain_preload(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        let layers = [&self.terrain, &self.water];
+        let built: usize = layers.iter().map(|layer| layer.built_count()).sum();
+        let left: usize = layers.iter().map(|layer| layer.preload_left()).sum();
+        let in_step = !self.terrain.has_pending_work() && !self.water.has_pending_work();
+        out.set("phase", self.preload as i64);
+        out.set("built", built as i64);
+        out.set("left", left as i64);
+        out.set(
+            "done",
+            self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready(),
+        );
+        out
+    }
+
+    /// Whether a world load's preload runs (`TERRAIN-59`): the scripts' payload polls take up to
+    /// what the layers request then. `O(1)`.
+    #[func]
+    pub fn is_terrain_preloading(&self) -> bool {
+        self.load_settling && self.preload != Preload::Off
     }
 
     /// A terrain patch's payload news from `terrain.gd`'s poll: 1 arrived, 0 dropped (ask
@@ -1621,6 +1696,28 @@ impl StreamNode {
 }
 
 impl StreamNode {
+    // Sets the preload's phase on the node and both patch layers (their request limit).
+    fn set_preload(&mut self, preload: Preload) {
+        self.preload = preload;
+        self.terrain.set_preload(preload != Preload::Off);
+        self.water.set_preload(preload != Preload::Off);
+    }
+
+    // Whether the backdrop has nothing left to build or upload (`get_backdrop`'s `ready`), or
+    // there is none (a scene without a simulation). `O(1)`.
+    fn backdrop_ready(&self) -> bool {
+        let Some(spawner) = self.backdrop.as_ref() else {
+            return true;
+        };
+        let world = spawner.shared.world();
+        // A job holding the state is not ready yet: asked again next frame, never waited for.
+        let Ok(state) = spawner.shared.state.try_lock() else {
+            return false;
+        };
+        let product = state.product.as_ref().filter(|product| product.world == world);
+        product.is_some_and(|product| !product.has_pending()) && !state.running
+    }
+
     // The extras' bytes (`TERRAIN-41` B1): reported bytes, and each pooled set a place of its
     // layer. `O(1)`.
     fn patch_extra_bytes(&self) -> u64 {
@@ -1683,16 +1780,23 @@ impl StreamNode {
                 )
             })
         };
-        let unbudgeted = self.load_settling;
+        // A load's preload (`TERRAIN-59`) runs the hold's units under its time slice; the hold
+        // without one runs them unbudgeted.
+        let preload = self.load_settling && self.preload != Preload::Off;
+        let unbudgeted = self.load_settling && !preload;
         // In the post-load window the patch units run under their own budget, the stream node's
         // frame budget otherwise (vegetation shares that one).
-        let window = self.post_load_window && !unbudgeted;
+        let window = self.post_load_window && !self.load_settling;
         if window {
             self.post_load_budget.begin_frame();
         }
+        if preload {
+            self.preload_budget.begin_frame();
+        }
         let window_before = self.post_load_budget.measured_us;
-        // Level changes keep the ledger's reserve while holes waited (none in the window).
-        let reserve = if window {
+        // Level changes keep the ledger's reserve while holes waited (none in the window or the
+        // preload).
+        let reserve = if window || preload {
             0.0
         } else {
             with_ledger(self.ledger_frame, |ledger| ledger.reserve_us())
@@ -1714,9 +1818,17 @@ impl StreamNode {
         // A layer's releases also wait for the other layer's pending work, read inside
         // `frame_layers` once both layers' holes, level changes and hides ran. O(1).
         let vegetation_waits = self.residency.has_pending_work();
+        // The preload (`TERRAIN-59`): its view phase holds the fill, so the places are counted
+        // from the drawn patches' final extras before the keep rectangle is filled; its fill
+        // phase is the load's own work and does not wait for the vegetation.
+        let (fill_held, fill_waits) = match (preload, self.preload) {
+            (true, Preload::View) => (true, true),
+            (true, _) => (false, false),
+            _ => (false, vegetation_waits),
+        };
         self.water
-            .hold_prewarm(self.terrain.has_pending_work() || vegetation_waits);
-        self.terrain.hold_prewarm(vegetation_waits);
+            .hold_prewarm(fill_held || self.terrain.has_pending_work() || fill_waits);
+        self.terrain.hold_prewarm(fill_held || fill_waits);
         self.water.hold_releases(vegetation_waits);
         self.terrain.hold_releases(vegetation_waits);
         // Over the budget, releases still wait for the view like any release that is not a
@@ -1729,7 +1841,9 @@ impl StreamNode {
         });
         self.terrain.set_budget_full(full);
         self.water.set_budget_full(full);
-        let budget = if window {
+        let budget = if preload {
+            &mut self.preload_budget
+        } else if window {
             &mut self.post_load_budget
         } else {
             &mut self.budget
@@ -1782,6 +1896,8 @@ impl StreamNode {
         self.frame_patch_units_us = self.budget.measured_us - units_before
             + if window {
                 self.post_load_budget.measured_us - window_before
+            } else if preload {
+                self.preload_budget.measured_us
             } else {
                 0.0
             };

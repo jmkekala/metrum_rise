@@ -263,6 +263,11 @@ pub(crate) const WATER_LIMITS: Limits = Limits {
     requests: 64,
     halo: 1,
 };
+/// Payload requests a layer hands out a frame, and holds for its fill, while a world load's
+/// preload runs (`TERRAIN-59`, [`PatchStream::set_preload`]): the load shows nothing to keep
+/// smooth, so the jobs in flight are bounded by memory only (256 held terrain payloads are about
+/// 16 MB), and a frame's builds by the preload's time slice (`StreamNode`).
+pub(crate) const PRELOAD_REQUESTS: usize = 256;
 
 /// Predicted costs of the units, microseconds: fixed constants, never adapted at run time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -533,6 +538,8 @@ pub(crate) struct PatchStream {
     times: UnitTimes,
     force_lod1: bool,
     prewarm_held: bool,
+    // A world load's preload runs (`TERRAIN-59`): payload requests up to `PRELOAD_REQUESTS`.
+    preload: bool,
 }
 
 impl PatchStream {
@@ -587,6 +594,7 @@ impl PatchStream {
             times: UnitTimes::default(),
             force_lod1: false,
             prewarm_held: false,
+            preload: false,
         }
     }
 
@@ -675,6 +683,13 @@ impl PatchStream {
         self.prewarm_held = held;
     }
 
+    /// A world load's preload (`TERRAIN-59`): while set, the layer hands out and holds up to
+    /// [`PRELOAD_REQUESTS`] payload requests a frame instead of [`Limits::requests`]. What is
+    /// requested and built, and in which order, does not change.
+    pub(crate) fn set_preload(&mut self, preload: bool) {
+        self.preload = preload;
+    }
+
     /// Holds the releases that are not a build's donor back while the other patch layer has work
     /// a settled view waits for (`TERRAIN-41` B1: no hole, hide or level change of either layer
     /// waits behind a release).
@@ -744,6 +759,23 @@ impl PatchStream {
         (halo[1]..=halo[3])
             .flat_map(|z| (halo[0]..=halo[2]).map(move |x| [x, z]))
             .filter(|&key| self.flags[grid.index(key)] & (BUILT | REFUSED) == 0)
+            .count()
+    }
+
+    /// What a load's preload still has to do in this layer (`TERRAIN-59`): the prewarm square's
+    /// patches not built (refused excluded: [`Self::fill_left`]) and its wanted patches built but
+    /// not yet shown; every wanted patch lies in the prewarm square, so `built + preload_left` is
+    /// the preload's whole without counting a hole twice. `O(prewarm square)`: a status read.
+    pub(crate) fn preload_left(&self) -> usize {
+        let (Some(grid), Some(halo)) = (self.grid, self.halo) else {
+            return 0;
+        };
+        (halo[1]..=halo[3])
+            .flat_map(|z| (halo[0]..=halo[2]).map(move |x| [x, z]))
+            .filter(|&key| {
+                let flags = self.flags[grid.index(key)];
+                flags & (BUILT | REFUSED) == 0 || flags & (WANTED | RESIDENT | BUILT) == WANTED | BUILT
+            })
             .count()
     }
 
@@ -1547,6 +1579,11 @@ impl PatchStream {
         };
         let distance_sq = |index: usize| ground_distance_sq(grid, eye, index);
         const NEEDS: u8 = READY | BUILT | REQUESTED | REFUSED | RESIDENT;
+        let limit = if self.preload {
+            PRELOAD_REQUESTS
+        } else {
+            self.limits.requests
+        };
         self.requests.clear();
         let prewarm = self.missing == 0;
         if prewarm && self.prewarm_held {
@@ -1571,7 +1608,7 @@ impl PatchStream {
             // B1); it takes the nearest by the list's last sort.
             let mut pending = 0;
             for &index in self.prewarm.iter().rev() {
-                if pending + wanting.len() >= self.limits.requests {
+                if pending + wanting.len() >= limit {
                     break;
                 }
                 let flags = self.flags[index as usize];
@@ -1586,7 +1623,7 @@ impl PatchStream {
             }
         }
         wanting.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)));
-        for &(_, _, index) in wanting.iter().take(self.limits.requests) {
+        for &(_, _, index) in wanting.iter().take(limit) {
             let key = grid.key(index as usize);
             self.flags[index as usize] |= REQUESTED;
             self.requested += 1;
