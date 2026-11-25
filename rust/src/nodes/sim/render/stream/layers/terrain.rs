@@ -650,8 +650,9 @@ impl PatchStream {
         self.prewarm_held = held;
     }
 
-    /// Holds the releases that are not a build's donor back while the other patch layer's holes
-    /// wait (`TERRAIN-41` B1: no hole of either layer waits behind a release).
+    /// Holds the releases that are not a build's donor back while the other patch layer has work
+    /// a settled view waits for (`TERRAIN-41` B1: no hole, hide or level change of either layer
+    /// waits behind a release).
     pub(crate) fn hold_releases(&mut self, held: bool) {
         self.releases_held = held;
     }
@@ -1317,8 +1318,8 @@ impl PatchStream {
 
         // Releases on their own (`TERRAIN-41` B1): after holes, level changes and hides, before
         // the fill, at a fixed price, never as the frame's exempt first unit, and only while no
-        // hole of either layer waits (in a frame of holes a release is a build's donor) or while
-        // the counted bytes are over the budget. Farthest first. `O(released + R log R)` while
+        // hole of this layer and no pending work of the other waits (in a frame of holes a
+        // release is a build's donor) or while the counted bytes are over the budget. Farthest first. `O(released + R log R)` while
         // candidates exist, nothing otherwise.
         if !blocked
             && !release_blocked

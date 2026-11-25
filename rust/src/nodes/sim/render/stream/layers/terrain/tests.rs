@@ -812,3 +812,21 @@ fn over_the_budget_releases_run_while_holes_wait_for_their_payloads() {
         assert_eq!(work.releases > 0, over, "over the budget: {over}");
     }
 }
+
+#[test]
+fn releases_wait_while_the_other_layer_has_work() {
+    // Settled after a jump's holes were built: the old square's patches are candidates. While the
+    // other layer has work a settled view waits for, they wait; then they go.
+    let mut layer = wide_layer(Some(3500));
+    let mut scripts = Scripts::default();
+    settle(&mut layer, &mut scripts, [-12000.0, 800.0, -3000.0], f64::INFINITY);
+    layer.hold_releases(true);
+    for _ in 0..200 {
+        wide_frame(&mut layer, &mut scripts, [12000.0, 800.0, 12000.0], f64::INFINITY);
+    }
+    assert!(!layer.has_pending_work() && !layer.releasable.is_empty());
+    let held = scripts.released.len();
+    layer.hold_releases(false);
+    let work = wide_frame(&mut layer, &mut scripts, [12000.0, 800.0, 12000.0], f64::INFINITY);
+    assert!(work.releases > work.donors && scripts.released.len() > held);
+}

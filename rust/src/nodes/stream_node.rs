@@ -1471,7 +1471,10 @@ impl StreamNode {
         self.water
             .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
         self.water.hold_prewarm(self.terrain.has_pending_work());
-        self.water.hold_releases(self.terrain.pending()[0] > 0);
+        // Releases on their own wait while the other layer has work a settled view waits for
+        // (holes, hides, level checks): the water's frame runs before the terrain's, so its
+        // releases would take the room of the terrain's units.
+        self.water.hold_releases(self.terrain.has_pending_work());
         // Over the budget, the terrain's releases (its frame runs after both layers' holes)
         // give the bytes back; the water's run before the terrain's holes, so they stay donors.
         let over = self
@@ -1499,7 +1502,7 @@ impl StreamNode {
             self.water.take_generations().for_each(drop);
             self.water.take_released().for_each(drop);
         }
-        self.terrain.hold_releases(self.water.pending()[0] > 0);
+        self.terrain.hold_releases(self.water.has_pending_work());
         if let Some(scripts) = self.terrain_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {
