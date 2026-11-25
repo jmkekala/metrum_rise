@@ -21492,7 +21492,23 @@ the bytes are the table's; uploads through the recorder create each channel once
 bytes, send nothing when nothing waits, replace only the changed channels under their handles, and
 free everything for another world; a land cover noted before the build reaches its world's product
 only. On a live `SimCore`: a sculpt and an in-place water write (`TERRAIN-38`'s path) move the key,
-refresh only their blocks and land on the full rebuild.
+refresh only their blocks and land on the full rebuild. `terrain_memory_setting_test` checks that
+after a 20 km blank world's load the backdrop is ready with its 9 blocks' bytes uploaded.
+
+**Rows** (`dev` `d9012138d`'s release library and scripts against the round's, 512 MB both sides,
+the eight P-cores). The shipped Kuopio (`turns,pan,zoom,jump`), two C B B C sessions: the first read
+`zoom_in_repeat` worse (+0.41 ms median against a spread of 0.41), the second nothing worse;
+**pooled, all 16 phases level at the median and at the maximum**; load to settled and the load call
+level (1,160-1,325 against 1,159-1,330 ms; report only). Nothing is drawn, so the settle digests
+equal the control's wherever two control runs agree (point 10's vegetation, `VEG-34`) and the
+stream goldens replay unchanged. The engine's texture memory is 2.6 MiB higher in every sample
+(2.73 MB for 1,792,593 bytes of texels: this card allocates these sizes at about 1.5 times their
+texels); Godot's static memory is level (the upload images are dropped); process RSS varies 75 MiB
+between runs of one library, so the product's 1.79 MB of system memory is exact by construction, not
+read there. The 60 km `flight_high` at 512 MB (report only, two pairs): every bar
+level pooled (frame p50 14.0-15.2 against 13.9-14.3 ms, the first pair at a load of 4); the load call
+6,164-6,588 against 6,110-6,120 ms; 64 blocks, 12,747,328 bytes of texels, texture memory +17-19
+MiB; the build 6.3-7.6 ms on its worker.
 
 ## Implemented Runtime Contract
 
