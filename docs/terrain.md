@@ -20831,8 +20831,10 @@ ring (none without a budget). A budget below the wanted square and its ring is a
   hold go (`patch_render_will_change`, `release_patch`), the water's baked meshes leave the Rust
   mesh cache by a per-patch index (`WaterPatchMeshAsyncState`, `O(meshes of the patch)` instead of a
   walk of the cache). The core then drops the patch's surface generation, as for a node a script
-  freed itself. The terrain pool's blank height texture now takes the payload's size, so a pooled
-  texture is written in place.
+  freed itself. A build creates its patch's height texture from the payload, recycled sets
+  included, and never writes a pooled texture in place: Godot's rendering device tracks a texture
+  written after its creation at every draw that binds it, and the base terrain draws hundreds of
+  patches a frame (see the shipped Kuopio below).
 - **Kept patches.** A hidden patch drops its spare textures; a kept (built, hidden) patch that turns
   dirty is released at the dirty pass instead of restaged, so only drawn patches are staged and an
   edit's commit never waits for hidden ones; the fill builds it again from a current payload. A
@@ -20849,90 +20851,114 @@ overrun, built patches of both layers, the fill left and the release rectangle.
 `tools/stream_benchmark.py flight` prints a budget line a sample; `METRUM_STREAM_WAIT_FILL=1`
 makes the benchmark's settles wait for the fill.
 
-**Measured, 60 km `flight_high`** (diagnostic rows: perf channel on, the eight P-cores, 8
-workers; control `dev` `f959970ab` with its scripts and the round's benchmark script; the final
-library, two C B B C sessions at 512 MB, the automatic value this machine would take; load
-1.7-2.8):
+**Measured, 60 km `flight_high`** (the final tree, merged with `dev` `c66c91c51`; diagnostic rows:
+perf channel on, the eight P-cores, 8 workers; control `dev` `c66c91c51`'s release library with
+its scripts and the round's benchmark script; two C B B C sessions at 512 MB, the automatic value
+this machine would take; load at the rows' starts 1.8-3.4, the rows' own):
 
 | | `dev` | 512 MB |
 |---|---|---|
-| frame p50 ms | 13.2, 12.9, 13.1, 13.1 | 13.4, 13.4, 13.3, 13.4 |
-| missing at most | 161, 176, 169, 160 | 53, 62, 53, 53 |
-| terrain wanted-to-drawn p50 / p95 / max frames | 6 / 99-111 / 430-512 | 4-5 / 9-14 / 12-159 |
-| most in-view holes in a frame | 146, 163, 151, 149 | 53, 62, 53, 53 |
-| builds a frame | 1.96-2.00 | 0.00-1.47 |
-| ledger ms a frame: graded / water / stream / measured | 0.25-0.26 / 0.62-0.65 / 0.84-0.87 / 1.81-1.84 | 0.27-0.30 / 0.69-0.76 / 0.22-0.48 / 1.31-1.58 |
-| render CPU ms, primitives | 3.32-3.35, 0.72-0.73 M | 3.73-3.82, 0.81-0.85 M |
-| built terrain at the flight's start / end | 3,472 / 4,746 | 4,380-9,089 / 4,532-8,947 |
-| video memory at the start / after the settle, MiB | 2,778 / 2,991 | 3,311 / 3,340 |
-| settle after the start / after the turn, s | 7.7-11.1 / 4.8-9.2 | 7.6-9.4 / 4.8-8.3 |
+| frame p50 ms | 13.1, 13.0, 13.1, 13.1 | 13.1, 13.2, 13.3, 13.0 |
+| missing at most | 159, 156, 177, 150 | 53, 53, 53, 53 |
+| terrain wanted-to-drawn p50 / p95 / max frames | 6-7 / 92-121 / 380-498 | 4 / 9 / 12-13 |
+| most in-view holes in a frame | 148, 137, 150, 133 | 53, 53, 53, 53 |
+| builds a frame | 1.99-2.03 | 0.00 |
+| ledger ms a frame: graded / water / stream / measured | 0.23-0.26 / 0.62-0.64 / 0.85-0.88 / 1.82-1.84 | 0.29-0.30 / 0.75-0.76 / 0.22-0.23 / 1.31-1.33 |
+| render CPU ms, primitives | 3.27-3.35, 0.68-0.73 M | 3.69-3.77, 0.83-0.85 M |
+| built terrain at the flight's start / end | 3,472 / 4,755-4,765 | 9,409 / 8,939-8,946 |
+| video memory at the flight's start / after the settle, MiB | 2,776-2,778 / 2,990-2,991 | 3,311-3,312 / 3,339-3,340 |
+| the `flight_high_start` and `flight_high_settle` phases, s | 8.0-8.2 / 5.1-5.4 | 9.4 / 8.5-8.6 |
 
-By the compare tool's rule pooled over the four runs a side the frame median is **level**
-(+0.25 ms against a spread of 0.28; each session alone read worse: +0.35 against 0.30 and +0.25
-against 0.10); the other three bars are better by far. At 512 MB the budget does not bind on this
-flight's wanted set: what changes is the fill, which had built most of the path before the flight
-(builds 0 a frame in three runs; the slowest wanted patch then waits for its show, at `dev`'s show
-price). More of the view is drawn (render CPU +0.4 ms, primitives +0.1 M), and the whole-map
-budget after its fill (every patch built, **no build and no release in the flight, the turn or
-the settle**; one run) runs the same flight at 13.5 ms. The fill holds about 8,900-9,100 terrain
-and 9,300-10,600 water patches (counted at most 510-511 MB in a frame, extras 34-88 MB, `K`
-22-31). Earlier builds of the round, before releases waited for the other layer's work, ran
-+0.8 ms at the median pooled and took 11-16 s to settle (the water's releases took the room of the
-terrain's hides and level changes); fixed.
+By the compare tool's rule the frame median is **level** in each session (+0.10 against a spread
+of 0.10, +0.05 against 0.30) and pooled over the four runs a side (+0.08 against 0.30); the other
+three bars are better by far, in each session and pooled. At 512 MB the budget does not bind on
+this flight's wanted set: what changes is the fill, which built the whole path before the flight
+(no build in the flight; the slowest wanted patch waits for its show, at `dev`'s show price). More
+of the view is drawn (render CPU +0.4 ms, primitives +0.13 M). Counted at most 507.6-511.9 MB in a
+frame (extras 84-92 MB, `K` 22-26); 143 terrain and 396 water releases in the flight. The whole-map
+budget after its fill (`METRUM_STREAM_WAIT_FILL=1`, one run): every patch built (13,689 of both
+layers), **no build, prewarm or release in the flight, the turn or the settle**, frame p50 13.4
+ms, counted 642-689 MB, video memory 3,662-3,695 MiB. Earlier builds of the round ran +0.25 ms
+(the in-place height textures, below) and, before releases waited for the other layer's work,
++0.8 ms with 11-16 s settles.
 
-**At 256 MB** (one run a build, the builds before releases waited for the other layer's work): the built set stays at 3,300-4,000 terrain patches over the
-flight, its turn and settle (`dev` 3,472 to 5,459), video memory 2,814-2,865 MiB from the flight's
-start to after its settle (`dev` 2,778 to 2,990: +212 MiB), and the flight's builds recycle: 1,614
-of 1,680 took pooled resources (96 %), a build 115-119 us (resources 3-8 us) against 228-236
-(resources 114-118) on `dev`; 2.3-2.6 builds a frame against 1.96; missing at most 125-127. The
-proxy book check (`METRUM_STREAM_PROXY_CHECK=1`, untimed, 256 MB, `flight_high` and
-`flight_jump`, 11,000 releases) found the reflection's proxies in step with the drawn patches on
+**The settle phases read longer** (+1.2 s after the start, +3.3 s after the turn, four runs a side;
+round B1's first record misread them as level). The stream's units for the view end sooner than
+`dev`'s (no missing patch, level change or hide left at about 3.3 s after the turn, `dev` about
+5 s), but `is_render_settled` then waits while the budget's background work runs: the water's own
+releases (14 a frame) and the water's fill (16 a frame) each queue the terrain's water texture
+sync for their patch, and a non-empty sync queue counts as pending render work. What the player
+sees is settled; the flag (the load's hand-over and the benchmark's captures read it) is late.
+Left for a roadmap row, outside this round's two findings.
+
+**At 256 MB** (the final library, one run a row): `flight_high`'s built set stays at 3,750-4,010
+terrain patches over the flight, its turn and settle (`dev` 3,472 to 5,460), video memory 2,855
+MiB at the flight's start, 2,879 after its settle (`dev` +213 MiB over the same span), and the
+flight's builds recycle: 1,609 of 1,708 took pooled resources (94 %), a build 133 us (resources
+10 us, the height texture made from the payload 47 us) against 228-236 on `dev`; round B1's builds
+wrote the pooled height texture in place, 116 us, at a cost to every frame's draws (below). The
+proxy book check (`METRUM_STREAM_PROXY_CHECK=1`, untimed, 256 MB, `flight_high` and `flight_jump`,
+round B1's build, 11,000 releases) found the reflection's proxies in step with the drawn patches on
 every frame. A release costs terrain 48-123 us (mean by leg), water 60-87 us.
 
-**The bound is soft by the extras' growth.** The water meshes the kept patches hold grow during a
-flight (finer steps near the eye; 33 to 89 MB here), so the places shrink faster than the donors
-give them back: the first build's counted bytes reached 267 MB at 256 MB. A terrain release now
-also runs while holes wait when the counted bytes are over the budget, in the room the frame's
-holes left (the terrain's frame runs after both layers' holes; the water's releases stay donors,
-since its frame runs before the terrain's holes and took their room: missing at most 244 when they
-ran too). With that the worst frame of the flight and its turn counted 261 MB (+1.9 %), back to
-216 MB at the settle. The final build, whose water releases also wait for the terrain's hides and
-level changes, keeps more water patches built in the flight (4,555 against 3,900-4,300) and its
-worst frame counted 280 MB (+9 %, one run), 221 MB at the settle; video memory stayed flat (2,848
-to 2,876 MiB). Keeping every frame within the budget needs either water releases over the budget
-that take the room of the terrain's units or a margin held back for the extras' growth; that is
-left for the user (it relaxes a plan bar).
+**The bound is soft by the extras' growth** (the user's decision, 2026-11-25: hold back a margin
+rather than let water releases take the terrain's room; the margin's rule is open, below). The
+counted bytes' worst frame by row, final library:
 
-**The shipped Kuopio** (C B B C at 512 MB, earlier builds of the round: they differ from the final
-only in when releases run, and nothing is released on this map): every patch fits (1,296 places of 10,684, counted 102
-MB); nothing is filled or released in any phase, the built set is the load's. Session 1 read
-`turn_out` 1 s, `pan_out` and `far_to_ground` worse at the median (+0.1 to +0.4 ms against spreads
-of 0.0-0.1) and four phases better at the maximum; session 2 read ten medians worse by 0.1-0.4 ms.
-Pooled over the four runs a side (the tool's rule, the spread the larger range): 15 of 16 phases
-level at the median and all 16 at the maximum; `pan_out` worse at the median, +0.17 ms against a
-spread of 0.07. The branch's medians lean +0.03 to +0.34 ms above `dev`'s in 15 of 16 phases with
-no unit, fill or release of the budget's in any phase. With the perf channel and the drawn probe
-off (the final library, two more C B B C sessions, pooled): 14 of 16 phases level at the median and
-all 16 at the maximum; `turn_out` 0.5 s (+0.28 against 0.25) and `far_zoom_out` (+0.27 against
-0.23, 6.3-6.5 against 6.1 ms in all four pairs) worse at the median. Their cause is not identified:
-no unit of the budget runs there; what runs each frame is the budget's bookkeeping (places, the
-extras the scripts report, `O(1)`), the water's mesh cache index on each finished mesh, and the
-prewarm list's re-sort after a square change.
+| row | 256 MB | 512 MB |
+|---|---|---|
+| `flight_high` (start / flight / turn / settle) | 234 / 263 / 269 / **275 (+7.6 %)** | 476 / 498 / 504 / 512 (four runs: at most 511.9) |
+| `flight_low` | 246 / 244 / 239 / 240 | 488 / 502 / 491 / 493 |
+| `flight_jump` | 245 / 239 / 237 / 238 | 323 / 485 / 491 / 493 |
 
-**Settle digests** (untimed, two controls and the branch at 512 MB). Shipped Kuopio, 12 points:
-every family equal to both controls. 60 km flight, 4 points: terrain and water residency and steps
-equal at every point; the built sets (the fill) and their land cover differ by design; vegetation
-at the point after the turn: three patches' band flags (same products), as `dev` varies run to run
-there. The 30k pond (16 points, one control): every family equal except the terrain and water
-steps at point 8 (the first far-to-ground settle, where `dev` runs differ among themselves, round
-L2's record) and one graded tile from point 8 on at equal level and token (`TERRAIN-27`). Its
-world holds 100 patches: nothing filled or released. The pond's timed row, one run a side: medians
-within -0.9 to +0.6 ms of `dev`'s by phase.
+The water meshes the kept patches hold grow during a high flight (36 to 84-92 MB of extras), so
+the places shrink (5,043 to 3,941 at 256 MB) faster than the donors give them back, and the water's
+own releases wait while the terrain has work; the excess is built water patches (4,556 against
+3,941 places), back within the budget once the settle's releases run. Why no margin derived from
+the layout keeps it strict without giving up most of the places: a water mesh is at most 4,096
+cells of 6 vertices of 32 bytes at step 1 (786,432 bytes; 196,608 at step 2, 49,152 at step 4,
+12,288 at step 8), and a kept patch keeps the mesh of the step it had when it was hidden, the
+finest after a jump or a zoom-in. A reserve of that worst mesh a place leaves 294 / 603 / 1,220
+places at 256 / 512 / 1,024 MB (below the 60 km flight's wanted square: every budget an overrun);
+a reserve of the extras now plus one frame's growth moves the places every frame, and the built
+set follows them only by releases, which wait for the terrain's work through a flight, so it is
+not strict either. The options, with what they cost on these rows, are in the hand-back for the
+user's choice; until then the rule is the round's (`N = floor((B - extras) / P)`).
 
-**Level F** (`./run.sh --timing --level F`, release test executables of `dev` and of the branch
-before its last fix, which touches only the patch frame the simulation's rows never run): every
-metric level, the 30k 1x day's agent mean better (-4.1 %); one 32x row on each side missed the
-acceptance's worst unpreempted frame (8.05 and 8.04 ms against 8.0), the other passed.
+**The shipped Kuopio** (the final tree; perf channel and drawn probe off, the finding's rows; C B B
+C twice at 512 MB, control `dev` `c66c91c51`): every patch fits (1,296 places of 10,684); nothing
+is filled or released in any phase. **Pooled over the four runs a side, all 16 phases level at the
+median and at the maximum** (medians -0.11 to +0.30 ms against spreads of 0.05-0.84; one branch
+run, `k-b1a`, read slow in every phase). Round B1's builds read `turn_out` 0.5 s and
+`far_zoom_out` worse at the median (+0.27-0.28 ms) and `pan_out` with the perf channel on (+0.17):
+the cause was round B1's own pooled blank height texture, made at the payload's size so the first
+payload wrote it in place. Godot's rendering device tracks a texture written after its creation at
+every draw that binds it, so every freshly built patch drew dearer: render CPU 1.27-1.29 ms on
+`dev` against 1.31-1.32 on round B1 over the whole Kuopio row (perf channel on, six runs a side
+over three sessions, no overlap), with the perf channel's script and patch-frame times equal.
+Bisected with diagnostic script sets on round B1's library: the Rust alone with `dev`'s scripts,
+the blank at `dev`'s size, and the blank kept but the build creating its texture all read `dev`'s
+1.26-1.29 ms; the pools at 256 alone read round B1's. A build now creates the height texture from
+its payload, recycled sets included.
+
+**Settle digests** (untimed; the final tree at 512 MB against `dev` `c66c91c51` once and round
+B1's two `dev` `f959970ab` controls, whose Rust differs only in the authored water's edit path).
+Shipped Kuopio, 12 points: every family equal to all three controls, terrain and water residency
+and steps included. 60 km flight, 4 points: terrain and water residency and steps, graded,
+buildings, roads, parked, vegetation equal at every point; the built sets (the fill) and their
+land cover differ by design. The 30k pond (16 points): every family equal where the controls
+agree; at point 8 (the first far-to-ground settle) the terrain and water steps take one of the two
+values the controls take (`TERRAIN-45`), and one graded tile differs at equal level and token from
+point 8 on, as it does between the controls (`TERRAIN-27`). Its world holds 100 patches: nothing
+filled or released. The water mesh check found no mismatch at any point (wet 927-1,947 a point on
+the 60 km flight and Kuopio, 3 on the pond), with `water.gd`'s returned-upgrade fix (round L2's
+defect, also on `dev`) brought onto this branch.
+
+**Level F** (`./run.sh --timing --level F`, release test executables of `dev` `c66c91c51` and of
+the final tree): every metric level in the 30k 32x C B B C and the 1x day (both days pass the
+acceptance); one 32x row on each side missed the acceptance's worst unpreempted frame (8.22 and
+8.30 ms against 8.0), the other passed (7.79, 7.74), as in round B1's and L1's sessions on the
+same control.
 
 **The save** (`terrain_budget_save_test`, in `./run.sh --test`): a camera walk of four eyes and
 three roads on a paused 20 km blank world, run with every patch fitting, at 20 MB (525 patches
@@ -20941,12 +20967,14 @@ the save's own time (`save_meta.saved_at_unix`, the only field that differs run 
 
 **Not done, or not as the plan says.** The plan's "no release in a frame with a deferred hole
 except as a donor" holds except for the terrain's while the counted bytes are over the budget
-(above), and "counted bytes within the budget in every frame" by 1.9 % at 256 MB. Objects
-beyond a full pool are freed at once (`queue_free`), not four a frame: releases are bounded by the
-ledger. A water patch that turns dirty while kept is restaged as before (only the terrain's kept
-dirty patches are released). The fill starts with the game, not after a hand-over of its own.
-The default stays "every patch fits" until B2's setting: on a 60 km map that fills the whole map
-(+0.9 GiB of video memory here).
+(above), and "counted bytes within the budget in every frame" misses by 7.6 % at 256 MB on the high
+flight (the margin is the user's to choose). Objects beyond a full pool are freed at once
+(`queue_free`), not four a frame: releases are bounded by the ledger. A water patch that turns
+dirty while kept is restaged as before (only the terrain's kept dirty patches are released). The
+fill starts with the game, not after a hand-over of its own. The default stays "every patch fits"
+until B2's setting: on a 60 km map that fills the whole map (+0.9 GiB of video memory here). A
+recycled set's land cover texture is still written in place when its size matches (only on maps
+where the budget releases; the water's depth textures are written in place on `dev` already).
 
 ## Implemented Runtime Contract
 
