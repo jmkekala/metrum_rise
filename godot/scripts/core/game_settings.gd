@@ -27,6 +27,7 @@ const KEY_SHOW_FPS := "show_fps"
 const KEY_RENDER_SCALE := "render_scale"
 const KEY_SHADOW_QUALITY := "shadow_quality"
 const KEY_VIEW_DISTANCE := "view_distance"
+const KEY_TERRAIN_RELIEF := "terrain_relief"
 const KEY_TERRAIN_MEMORY := "terrain_memory"
 const KEY_UI_SCALE := "ui_scale"
 const KEY_HAS_POSITION := "has_position"
@@ -63,6 +64,11 @@ const DEFAULT_VIEW_DISTANCE := VIEW_DISTANCE_FULL
 ## VEG-23 prototype switch; no persisted option/UI until visual and GPU acceptance.
 const GRASS_ENABLED := true
 const REDUCED_VIEW_DISTANCE_M := 3000.0
+## Strengths of the ground's relief light (`RENDER-78`, add form): Off, Low, Normal, High.
+const TERRAIN_RELIEF_CHOICES := [0.0, 0.5, 1.0, 1.5]
+const DEFAULT_TERRAIN_RELIEF := 1.0
+## The shader global the relief light reads (terrain_relief_light.gdshaderinc).
+const TERRAIN_RELIEF_GLOBAL := "terrain_relief_light"
 ## Terrain memory (`TERRAIN-41`): a target, in megabytes of 10^6 bytes, for the base terrain the
 ## streaming core keeps built (heights, land cover, water depth and water meshes); stored as the
 ## megabytes, or one of the two choices below. Automatic is 512 MB on a discrete graphics adapter
@@ -80,6 +86,9 @@ const MAX_UI_SCALE := 2.0
 const UI_SCALE_STEP := 0.05
 
 static var _menu_frame_cap := false
+## A session override of the relief light from the debug console or METRUM_TERRAIN_RELIEF
+## (any strength and form, never saved); null leaves the stored setting in charge.
+static var terrain_relief_override: Variant = null
 
 static func load_config() -> ConfigFile:
 	var cfg := ConfigFile.new()
@@ -149,6 +158,18 @@ static func get_view_distance() -> int:
 	var value := int(_graphics_value(KEY_VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE))
 	return value if value in [VIEW_DISTANCE_FULL, VIEW_DISTANCE_REDUCED] else DEFAULT_VIEW_DISTANCE
 
+static func get_terrain_relief() -> float:
+	var value := float(_graphics_value(KEY_TERRAIN_RELIEF, DEFAULT_TERRAIN_RELIEF))
+	return value if value in TERRAIN_RELIEF_CHOICES else DEFAULT_TERRAIN_RELIEF
+
+## The relief light's global as it should be: the console's session override when one is set,
+## else the stored setting in the add form (y = 0).
+static func terrain_relief_global() -> Vector2:
+	return terrain_relief_override if terrain_relief_override != null else Vector2(get_terrain_relief(), 0.0)
+
+## Writes `terrain_relief_global()` to the shader global: one write, every ground material follows.
+static func apply_terrain_relief() -> void:
+	RenderingServer.global_shader_parameter_set(TERRAIN_RELIEF_GLOBAL, terrain_relief_global())
 ## The stored Terrain memory choice, one of TERRAIN_MEMORY_CHOICES.
 static func get_terrain_memory() -> int:
 	var value := int(_graphics_value(KEY_TERRAIN_MEMORY, DEFAULT_TERRAIN_MEMORY))
@@ -393,6 +414,7 @@ static func _write_defaults(cfg: ConfigFile) -> void:
 	cfg.set_value(SECTION_GRAPHICS, KEY_RENDER_SCALE, DEFAULT_RENDER_SCALE)
 	cfg.set_value(SECTION_GRAPHICS, KEY_SHADOW_QUALITY, DEFAULT_SHADOW_QUALITY)
 	cfg.set_value(SECTION_GRAPHICS, KEY_VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE)
+	cfg.set_value(SECTION_GRAPHICS, KEY_TERRAIN_RELIEF, DEFAULT_TERRAIN_RELIEF)
 	cfg.set_value(SECTION_GRAPHICS, KEY_TERRAIN_MEMORY, DEFAULT_TERRAIN_MEMORY)
 	cfg.set_value(SECTION_ACCESSIBILITY, KEY_UI_SCALE, DEFAULT_UI_SCALE)
 

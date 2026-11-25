@@ -171,6 +171,7 @@ varying float var_cloud_sun;
 #include "res://scripts/shaders/grass_wind.gdshaderinc"
 #include "res://scripts/shaders/weather_rain.gdshaderinc"
 #include "res://scripts/shaders/water_reflection.gdshaderinc"
+#include "res://scripts/shaders/terrain_relief_light.gdshaderinc"
 #ifdef WATER_REFLECTION_PROXY
 const bool WATER_REFLECTION_UNDERSIDE = true;
 #else
@@ -1152,7 +1153,7 @@ void light() {
 			clamp(ATTENUATION, 0.0, 1.0)
 		);
 		float facing = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
-		float soft_facing = mix(0.82, 1.0, facing);
+		float soft_facing = terrain_relief_facing(mix(0.82, 1.0, facing), facing, LIGHT, INV_VIEW_MATRIX);
 		DIFFUSE_LIGHT += ALBEDO
 			* LIGHT_COLOR
 			* sun_strength

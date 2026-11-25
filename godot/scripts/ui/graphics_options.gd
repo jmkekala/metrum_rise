@@ -55,6 +55,8 @@ func _build_ui() -> void:
 	_lod_quality = _add_choice("Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
 		["Performance", "Balanced", "Quality"],
 		"Controls when buildings switch to simpler meshes. Does not affect simulation or remove distant buildings.")
+	_add_choice("Terrain relief shading", GameSettings.KEY_TERRAIN_RELIEF, ["Off", "Low", "Normal", "High"],
+		"How strongly the sun and moon shade hills and slopes. Off is the flat look of earlier versions.")
 	# Wording for the user's review (`TERRAIN-41` B2).
 	var memory_labels := TERRAIN_MEMORY_LABELS.duplicate()
 	memory_labels[0] = memory_labels[0] % GameSettings.automatic_terrain_memory_mb()
@@ -106,6 +108,7 @@ func reset_defaults() -> void:
 		GameSettings.KEY_SHADOW_QUALITY: GameSettings.DEFAULT_SHADOW_QUALITY,
 		GameSettings.KEY_VIEW_DISTANCE: GameSettings.DEFAULT_VIEW_DISTANCE,
 		GameSettings.KEY_BUILDING_LOD_QUALITY: GameSettings.DEFAULT_BUILDING_LOD_QUALITY,
+		GameSettings.KEY_TERRAIN_RELIEF: GameSettings.DEFAULT_TERRAIN_RELIEF,
 		GameSettings.KEY_TERRAIN_MEMORY: GameSettings.DEFAULT_TERRAIN_MEMORY,
 	}
 	_sync_controls()
@@ -123,6 +126,7 @@ func _persisted_values() -> Dictionary:
 		GameSettings.KEY_SHADOW_QUALITY: GameSettings.get_shadow_quality(),
 		GameSettings.KEY_VIEW_DISTANCE: GameSettings.get_view_distance(),
 		GameSettings.KEY_BUILDING_LOD_QUALITY: GameSettings.get_building_lod_quality(),
+		GameSettings.KEY_TERRAIN_RELIEF: GameSettings.get_terrain_relief(),
 		GameSettings.KEY_TERRAIN_MEMORY: GameSettings.get_terrain_memory(),
 	}
 
@@ -137,6 +141,8 @@ func _value_for_index(key: String, index: int) -> Variant:
 			return GameSettings.RENDER_SCALE_CHOICES[index]
 		GameSettings.KEY_SHADOW_QUALITY:
 			return GameSettings.SHADOW_QUALITY_CHOICES[index]
+		GameSettings.KEY_TERRAIN_RELIEF:
+			return GameSettings.TERRAIN_RELIEF_CHOICES[index]
 		GameSettings.KEY_TERRAIN_MEMORY:
 			return GameSettings.TERRAIN_MEMORY_CHOICES[index]
 	return index
@@ -151,6 +157,8 @@ func _index_for_value(key: String, value: Variant) -> int:
 			return GameSettings.RENDER_SCALE_CHOICES.find(value)
 		GameSettings.KEY_SHADOW_QUALITY:
 			return GameSettings.SHADOW_QUALITY_CHOICES.find(value)
+		GameSettings.KEY_TERRAIN_RELIEF:
+			return GameSettings.TERRAIN_RELIEF_CHOICES.find(value)
 		GameSettings.KEY_TERRAIN_MEMORY:
 			return GameSettings.TERRAIN_MEMORY_CHOICES.find(value)
 	return int(value)

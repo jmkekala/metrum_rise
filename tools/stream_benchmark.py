@@ -1360,7 +1360,7 @@ def main(argv=None):
     shot.add_argument("--poses", required=True, help="idle-matrix poses, comma separated")
     shot.add_argument("--views", default="", help="extra views, `name:x,z,yaw,pitch,distance;...`")
     shot.add_argument("--variants", default="full", help="idle-matrix variants, comma separated")
-    shot.add_argument("--hour", type=int, default=10)
+    shot.add_argument("--hour", type=float, default=10.0, help="hour of the pinned day; a fraction places the sun")
     shot.add_argument("--warmup", type=int, default=30)
     shot.add_argument("--resolution", default="1920x1080")
     shot.add_argument("--timeout", type=int, default=900)

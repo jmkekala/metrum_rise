@@ -209,7 +209,11 @@ also turns off the screen-space AA pass), `Shadows` (High, the default; Medium: 
 filter and penumbra over two unblended cascades instead of four, `RENDER-15`; or Low: plain PCF, two
 cascades, no cascade blending; stored as High 0, Low 1, Medium 2, so a settings file from before
 Medium keeps its choice), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
-9 km), `Building detail` (Performance/Balanced/Quality; default Balanced) and `Terrain memory`
+9 km), `Building detail` (Performance/Balanced/Quality; default Balanced), `Terrain relief
+shading` (Off/Low/Normal/High, the relief light's strength 0/0.5/1/1.5 in its add form, default
+Normal, `RENDER-78`; Off is the flat look of earlier versions; applied through `SceneLighting` in
+the `graphics_settings` group, one shader global write; the debug console's `relief` command
+overrides it for a session) and `Terrain memory`
 (`TERRAIN-41`: Automatic, the default, or 256 MB, 512 MB, 1,024 MB, Whole map; a target, not a
 hard limit, for how much of the map's base ground stays built after the camera leaves it, counted
 as the patches' height, land cover and water depth texels plus their spare textures, water meshes
