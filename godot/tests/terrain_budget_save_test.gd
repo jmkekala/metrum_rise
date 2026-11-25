@@ -116,22 +116,18 @@ func _sequence(budget_mb: float, index: int) -> Array:
 		DirAccess.remove_absolute(path)
 	return [bytes, released]
 
-# Frames until the terrain and water settle; answers the terrain patches released meanwhile
-# (built before less built after, never below zero a frame).
+# Frames until the terrain and water settle; answers the terrain patches released meanwhile (the
+# stream node's count, a build's donors included: a donor's release keeps the built count level).
 func _settle() -> int:
 	var start := Time.get_ticks_msec()
-	var released := 0
-	var built := int(_stream.get_terrain_budget().get("terrain_built", 0))
+	var before := int(_stream.get_terrain_budget().get("terrain_releases_total", 0))
 	while Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
 		_camera.advance_motion(1.0 / 60.0)
 		await process_frame
-		var now := int(_stream.get_terrain_budget().get("terrain_built", 0))
-		released += maxi(0, built - now)
-		built = now
 		if _terrain.is_render_settled() and not _water.has_pending_render_work(false):
-			return released
-	_expect(false, "the world must settle")
-	return released
+			break
+	_expect(Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS, "the world must settle")
+	return int(_stream.get_terrain_budget().get("terrain_releases_total", 0)) - before
 
 # A drawn patch's water texture sync holds the settle; one of a patch not drawn does not, but is
 # background work (has_pending_render_work with the background cache); a queued background sync
