@@ -24,6 +24,9 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
 `flight` prints a flight run's terrain streaming (`--phases flight_low,flight_high,flight_jump`,
 `TERRAIN-41`): per sample the builds a frame, the backlog over time and, instrumented, one build's
 split, the payload workers' time and the install ledger by owner.
+`trip` prints a trip run's vegetation arrival (`--phases trip`, `VEG-35`): when the near ring, the
+last patch and the settle came after the zoom-in, the installs' waits and stalled passes against
+the bars, and, instrumented, each patch's product ready and drawn times.
 Every row names its display driver: `--display-driver x11` (the default, the rows on record) or
 `wayland` (`RENDER-62`, analysis A8: gamescope exposes its Wayland socket). Godot 4.7's Wayland
 driver can hang after its window closes (godot#123059): a Wayland row whose Godot is still there
@@ -865,6 +868,89 @@ def flight(args):
     return 0
 
 
+# `trip`: a trip run's vegetation arrival (`--phases trip`, `VEG-35`).
+
+# `VEG-35`'s bars: a product waits at most 5 frames for its install, the near ring draws within
+# 5 frames of the zoom's end, the vegetation is complete within 0.5 s of it, no pass ends with a
+# hole product waiting and no install.
+TRIP_BARS = {"wait_frames": 5, "near_frames": 5, "done_ms": 500.0, "stalled": 0}
+
+
+def trip_numbers(report):
+    """A trip run's numbers, times in ms from the zoom-in's end (the end of `trip_in`'s last
+    frame): `near_ms` and `near_frames` (the near ring drawn; frames counted after the zoom),
+    `done_ms` (the vegetation's last pending work), `settle_ms`; the installs' counts over the
+    zoom-in and the hold (`installs`, `wait_mean`, `wait_max`, `over_bar`, `stalled`, measured and
+    predicted microseconds an install); with the perf channel on, from the wanted patches at the
+    end (`keys`): `last_ready_ms`, `last_drawn_ms`, ready-to-drawn p50 and max ms; the frames' p50
+    and max over both samples. None for a run without the trip."""
+    samples = {s["label"]: s for s in report["samples"]}
+    zoom, hold = samples.get("trip_in"), samples.get("trip_hold")
+    if not zoom or not hold:
+        return None
+    end = zoom["rows"][-1]["trip_ms"]
+    after = lambda ms: ms - end if ms is not None and ms >= 0 else None
+    near = after(hold.get("near_ms"))
+    out = {"near_ms": near, "done_ms": after(hold.get("veg_done_ms")), "settle_ms": after(hold.get("settle_ms")),
+           "near_frames": None if near is None else sum(1 for r in hold["rows"] if end < r["trip_ms"] <= end + near)}
+    counts = [s.get("vegetation_installs") for s in (zoom, hold)]
+    if all(counts):
+        total = lambda key: sum(c[key] for c in counts)
+        installs = total("installs")
+        out.update({"installs": installs, "wait_mean": total("wait_frames_sum") / max(1, installs),
+                    "wait_max": max(c["wait_frames_max"] for c in counts), "over_bar": total("waited_over_bar"),
+                    "stalled": total("stalled_passes"), "us_measured": total("measured_us") / max(1, installs),
+                    "us_predicted": total("predicted_us") / max(1, installs)})
+    # keys: [x, y, z, wanted, ready, drawn, left, distance to the pivot]; the wanted at the end.
+    keys = [k for k in (report.get("trip") or {}).get("keys", []) if k[6] < 0]
+    drawn = [k for k in keys if k[5] >= 0 and k[4] >= 0]
+    if drawn:
+        waits = [k[5] - k[4] for k in drawn]
+        out.update({"keys": len(keys), "last_ready_ms": after(max(k[4] for k in drawn)),
+                    "last_drawn_ms": after(max(k[5] for k in drawn)),
+                    "ready_drawn_ms": (percentile(waits, 0.5), max(waits))})
+    times = [r["frame_ms"] for s in (zoom, hold) for r in s["rows"]]
+    out.update({"frame_p50": percentile(times, 0.5), "frame_max": max(times)})
+    return out
+
+
+def trip_lines(name, report):
+    """One table row of a trip run (`trip_numbers`) and its verdict against `TRIP_BARS`."""
+    n = trip_numbers(report)
+    if n is None:
+        return f"| {name} | no trip |"
+    fmt = lambda v, f="{:.0f}": "-" if v is None else f.format(v)
+    misses = []
+    if n.get("wait_max") is not None and n["wait_max"] > TRIP_BARS["wait_frames"]:
+        misses.append("wait")
+    if n["near_frames"] is None or n["near_frames"] > TRIP_BARS["near_frames"]:
+        misses.append("near")
+    if n["done_ms"] is None or n["done_ms"] > TRIP_BARS["done_ms"]:
+        misses.append("done")
+    if n.get("stalled") is not None and n["stalled"] > TRIP_BARS["stalled"]:
+        misses.append("stalled")
+    rd = n.get("ready_drawn_ms")
+    return (f"| {name} | {fmt(n.get('last_ready_ms'))} | {fmt(n['near_ms'])} ({fmt(n['near_frames'])}) | "
+            f"{fmt(n.get('last_drawn_ms'))} | {fmt(n['done_ms'])} | {fmt(n['settle_ms'])} | "
+            f"{'-' if rd is None else f'{rd[0]:.0f} / {rd[1]:.0f}'} | "
+            f"{fmt(n.get('wait_mean'), '{:.1f}')} / {fmt(n.get('wait_max'))} ({fmt(n.get('over_bar'))}) | "
+            f"{fmt(n.get('stalled'))} | {fmt(n.get('installs'))} | "
+            f"{fmt(n.get('us_measured'), '{:.1f}')} / {fmt(n.get('us_predicted'), '{:.1f}')} | "
+            f"{n['frame_p50']:.1f} / {n['frame_max']:.1f} | {'pass' if not misses else 'MISS ' + ','.join(misses)} |")
+
+
+def trip(args):
+    print("| run | last ready | near ring drawn (frames) | last drawn | done | settled | ready to drawn p50 / max | "
+          "wait frames mean / max (over 5) | stalled passes | installs | us an install measured / predicted | "
+          "frame p50 / max | bars |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines = [trip_lines(Path(path).name.removesuffix(".metrics.json"), json.loads(Path(path).read_text()))
+             for path in args.metrics]
+    print("\n".join(lines))
+    print("ms after the zoom-in's end; ready and drawn from the perf channel's per-patch record (`--detail`).")
+    return int(any("MISS" in line for line in lines))
+
+
 def split_blocks(report):
     """A shadow-sequence run's quartets (`RENDER-15`): per variant X whose blocks run `full, X, X,
     full`, the reports `ctl1`, `br1`, `br2`, `ctl2` holding those blocks' samples, as a series'
@@ -1348,6 +1434,8 @@ def main(argv=None):
     flown = commands.add_parser("flight", help="a flight run's terrain streaming (TERRAIN-41)")
     flown.add_argument("metrics", nargs="+", help="runs with --phases flight_low, flight_high or flight_jump")
     flown.add_argument("--every", type=float, default=1.0, help="seconds between backlog lines")
+    tripped = commands.add_parser("trip", help="a trip run's vegetation arrival (VEG-35)")
+    tripped.add_argument("metrics", nargs="+", help="runs with --phases trip")
     still = commands.add_parser("stills").add_subparsers(dest="stills_command", required=True)
     shot = still.add_parser("capture")
     shot.add_argument("--label", required=True)
@@ -1390,6 +1478,8 @@ def main(argv=None):
         return drawn(args)
     if args.command == "flight":
         return flight(args)
+    if args.command == "trip":
+        return trip(args)
     if args.command == "stills":
         return stills(args)
     if args.command == "census":

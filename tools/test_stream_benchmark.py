@@ -652,3 +652,29 @@ class FlightTests(unittest.TestCase):
         # A line a second, summed over that second's frames: 400 + 600 ms, then the last 500 ms.
         self.assertIn("   1 | 2 | 5 / 0 / 1 / 0 | 2 / 0 / 0 / 0 | 1.50 / 1.75 | 4 | 8 / 0", lines)
         self.assertIn("   2 | 1 | 1 / 0 / 2 / 0 | 1 / 0 / 0 / 0 | 1.50 / 1.75 | 2 | 3 / 0", lines)
+
+
+class TripTests(unittest.TestCase):
+    def report(self, near_ms, done_ms, waits):
+        zoom = {"label": "trip_in", "rows": [{"trip_ms": 500.0 * i, "frame_ms": 10.0} for i in range(1, 4)],
+                "vegetation_installs": waits}
+        hold = {"label": "trip_hold", "rows": [{"trip_ms": 1500.0 + 10.0 * i, "frame_ms": 10.0} for i in range(1, 60)],
+                "near_ms": near_ms, "veg_done_ms": done_ms, "settle_ms": 2000.0,
+                "vegetation_installs": dict(waits, installs=0, wait_frames_sum=0, wait_frames_max=0,
+                                             measured_us=0.0, predicted_us=0.0)}
+        keys = [[0, 0, 4, 100.0, 1400.0, near_ms, -1.0, 300.0], [1, 0, 4, 100.0, 1450.0, 1600.0, -1.0, 900.0],
+                [2, 0, 4, 100.0, 120.0, 130.0, 700.0, 50.0]]
+        return {"samples": [zoom, hold], "trip": {"keys": keys}}
+
+    def test_the_numbers_count_from_the_zoom_end_and_the_bars_read_them(self):
+        waits = {"installs": 4, "wait_frames_sum": 8, "wait_frames_max": 3, "waited_over_bar": 0,
+                 "stalled_passes": 0, "measured_us": 100.0, "predicted_us": 80.0}
+        numbers = sb.trip_numbers(self.report(1540.0, 1700.0, waits))
+        self.assertEqual((numbers["near_ms"], numbers["near_frames"], numbers["done_ms"]), (40.0, 4, 200.0))
+        self.assertEqual((numbers["installs"], numbers["wait_mean"], numbers["wait_max"]), (4, 2.0, 3))
+        self.assertEqual(numbers["us_measured"], 25.0)
+        # The patch that left is not counted; ready to drawn 140 and 150 ms.
+        self.assertEqual((numbers["keys"], numbers["last_drawn_ms"], numbers["ready_drawn_ms"]), (2, 100.0, (150.0, 150.0)))
+        self.assertTrue(sb.trip_lines("x", self.report(1540.0, 1700.0, waits)).endswith("| pass |"))
+        late = sb.trip_lines("x", self.report(1600.0, 2100.0, dict(waits, wait_frames_max=9, stalled_passes=2)))
+        self.assertTrue(late.endswith("| MISS wait,near,done,stalled |"), late)

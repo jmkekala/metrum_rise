@@ -103,6 +103,19 @@
 ## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
 ## rectangle the old way too) records per row the reflection's running counts `rect_check`:
 ## rectangles checked, of them unequal to the walk's, walks the kept hull fell back to.
+## The `trip` phase (`VEG-35`; not in the default matrix): from a settled 200 m orbit at the game's
+## default pitch (TRIP_LOW_M), the camera jumps TRIP_M along x (at most 0.3 of the world) to a
+## TRIP_HIGH_M orbit and zooms in geometrically to TRIP_LOW_M over TRIP_ZOOM_S (`trip_in`, its
+## first frame at the high orbit), then holds until settled for SETTLED_FRAMES frames
+## (`trip_hold`, capped at TRIP_HOLD_MAX_S after the zoom: a capped run fails). From the jump each
+## row records `trip_ms` and, on a library with `count_vegetation_drawn_near`, the wanted
+## vegetation patches within TRIP_NEAR_M of the pivot and of them drawn (`near`); the hold records
+## `settle_ms`, `veg_done_ms` (the vegetation's last pending work) and `near_ms` (the near ring
+## drawn), ms from the jump. Every sample records the vegetation's installs since its start
+## (`vegetation_installs`: waits from delivery to install, classes, passes stalled with a hole
+## product waiting). With the perf channel on, the report's `trip.keys` holds per wanted patch its
+## wanted, product ready, own drawn and left ms and its distance to the pivot
+## (`tools/stream_benchmark.py trip`). With `trip` the only phase the base pose is the trip's start.
 ## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
 ## timestamps) every sample records
 ## `gpu_passes`: per pass, named by its starting mark and that mark's occurrence in the frame, the
@@ -147,6 +160,14 @@ const FLIGHT_HIGH_M := 4000.0
 const FLIGHT_SETTLE_MAX_FRAMES := 30000
 # Built patches whose held bytes a flight settle point measures.
 const PATCH_BYTES_SAMPLE := 16
+# The trip (`VEG-35`): the low and high orbits, the jump, the zoom-in, the hold's cap after the
+# zoom and the near ring's radius.
+const TRIP_LOW_M := 200.0
+const TRIP_HIGH_M := 20000.0
+const TRIP_M := 20000.0
+const TRIP_ZOOM_S := 1.5
+const TRIP_HOLD_MAX_S := 6.0
+const TRIP_NEAR_M := 800.0
 const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water", "water_turns"]
 const WATER_STEP_M := 250.0
 const WATER_SCAN_M := 250.0
@@ -326,6 +347,9 @@ func run(bench: Node) -> void:
 	var base := saved_view.duplicate()
 	base[4] = PITCH_RAD
 	base[5] = DISTANCE_M
+	if phases == ["trip"]:
+		# The trip alone (`VEG-35`'s 60 km row): the base pose is its start, one settle fewer.
+		base = _trip_pose(bench.simulation_node.get_terrain_world_size(), false, TRIP_LOW_M)
 	var lighting := main.get_node("SceneLighting")
 	var sun: DirectionalLight3D = main.get_node("DirectionalLight3D")
 	if not shadows.is_empty():
@@ -433,6 +457,8 @@ func run(bench: Node) -> void:
 			if not bool(sample.settled):
 				bench._fail("%s did not settle" % jump[0], {"settle_ms": sample.settle_ms})
 				return
+	if phases.has("trip") and not await _trip(bench, world):
+		return
 	if phases.has("night"):
 		# Street lamps on: their lamp grid, far light map and light pool follow the camera.
 		main.menu_set_time_of_day(23.0)
@@ -1195,6 +1221,10 @@ func _begin(label: String) -> Array:
 		_core_locks.take_core_lock_stats()
 	_previous_streams = _streams()
 	_gpu_passes = {}
+	# The vegetation's install counters count from here (`VEG-35`; absent on an older library).
+	var stream: Node = _vegetation.stream if _vegetation != null else null
+	if stream != null and stream.has_method("take_vegetation_install_waits"):
+		stream.take_vegetation_install_waits()
 	_last_us = Time.get_ticks_usec()
 	return []
 
@@ -1495,6 +1525,9 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 	# library).
 	if stream != null and stream.has_method("get_backdrop"):
 		sample["backdrop"] = stream.get_backdrop()
+	# The vegetation's installs since the sample's start (`VEG-35`; absent on an older library).
+	if stream != null and stream.has_method("take_vegetation_install_waits"):
+		sample["vegetation_installs"] = stream.take_vegetation_install_waits()
 	sample.merge(over)
 	if _gpu_profile:
 		var passes := {}
@@ -1606,7 +1639,12 @@ func _vegetation_counters() -> Dictionary:
 		"prepared": int(status.get("prepared", -1)), "prepared_bytes": int(status.get("prepared_bytes", -1)),
 		"prepared_over_cap": int(status.get("prepared_over_cap", -1)),
 		"prepared_used": int(status.get("prepared_used", -1)), "prepared_dropped": int(status.get("prepared_dropped", -1)),
-		"prepared_replaced": int(status.get("prepared_replaced", -1))}
+		"prepared_replaced": int(status.get("prepared_replaced", -1)),
+		# The installs' running counts (`VEG-35`; -1 on a build without them): waits summed and
+		# past the bar, passes stalled with a hole product waiting.
+		"install_wait_frames_sum": int(status.get("install_wait_frames_sum", -1)),
+		"install_waited_over_bar": int(status.get("install_waited_over_bar", -1)),
+		"install_stalled_passes": int(status.get("install_stalled_passes", -1))}
 
 # Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
 # set every frame): a patch that enters the wanted set drawing nothing waits from that frame,
@@ -1652,3 +1690,112 @@ static func _delta(before: Dictionary, after: Dictionary) -> Dictionary:
 		if not changed.is_empty():
 			out[group] = changed
 	return out
+
+# The trip's pose: the start or the end of its jump along x through the world's centre, looking
+# along it at the game's default pitch, at orbit `distance`, the pivot on the ground.
+func _trip_pose(world: Vector2, end: bool, distance: float) -> PackedFloat32Array:
+	var half := minf(TRIP_M, world.x * 0.3) * 0.5
+	var x := half if end else -half
+	return PackedFloat32Array([x, _simulation.get_height_at(Vector2(x, 0.0)), 0.0, -PI * 0.5,
+		FAR_PITCH_RAD, distance, 0.0])
+
+# The trip phase (see the header); false (the run failed) when its start or its hold did not settle.
+func _trip(bench: Node, world: Vector2) -> bool:
+	if not await _start_from(bench, _trip_pose(world, false, TRIP_LOW_M)):
+		bench._fail("the trip's start did not settle")
+		return false
+	var stream: Node = _vegetation.stream
+	var end := _trip_pose(world, true, TRIP_HIGH_M)
+	var trip := {"low_m": TRIP_LOW_M, "high_m": TRIP_HIGH_M, "zoom_s": TRIP_ZOOM_S, "near_m": TRIP_NEAR_M,
+		"from_x": _trip_pose(world, false, TRIP_LOW_M)[0], "to_x": end[0], "keys": []}
+	_report["trip"] = trip
+	var probe := {"start_us": 0, "pivot": Vector2(end[0], end[2]), "keys": {},
+		"near": stream.has_method("count_vegetation_drawn_near"), "near_ms": -1.0}
+	var rows := _begin("trip_in")
+	probe.start_us = _last_us
+	var fraction := 0.0
+	while fraction < 1.0:
+		fraction = minf(1.0, float(Time.get_ticks_usec() - int(probe.start_us)) / (TRIP_ZOOM_S * 1000000.0))
+		var view := end.duplicate()
+		view[5] = TRIP_HIGH_M * pow(TRIP_LOW_M / TRIP_HIGH_M, fraction)
+		bench.camera.set_view_state(view)
+		await bench.get_tree().process_frame
+		var row := _trip_row(rows.size(), probe, stream)
+		row["fraction"] = fraction
+		rows.append(row)
+	_report.samples.append(_finish("trip_in", TRIP_ZOOM_S, rows))
+	rows = _begin("trip_hold")
+	var stable := 0
+	var settle_ms := -1.0
+	var veg_done_ms := -1.0
+	var cap_ms := (TRIP_ZOOM_S + TRIP_HOLD_MAX_S) * 1000.0
+	while stable < SETTLED_FRAMES:
+		await bench.get_tree().process_frame
+		var row := _trip_row(rows.size(), probe, stream)
+		rows.append(row)
+		if _vegetation.has_pending_work():
+			veg_done_ms = -1.0
+		elif veg_done_ms < 0.0:
+			veg_done_ms = float(row.trip_ms)
+		if _is_settled(bench):
+			if stable == 0:
+				settle_ms = float(row.trip_ms)
+			stable += 1
+		else:
+			stable = 0
+		if float(row.trip_ms) > cap_ms:
+			break
+	var sample := _finish("trip_hold", 0.0, rows)
+	sample.merge({"settled": stable >= SETTLED_FRAMES, "settle_ms": settle_ms, "veg_done_ms": veg_done_ms,
+		"near_ms": probe.near_ms})
+	_report.samples.append(sample)
+	for key: Vector3i in probe.keys:
+		trip.keys.append([key.x, key.y, key.z] + probe.keys[key])
+	if not bool(sample.settled):
+		bench._fail("the trip did not settle within %.0f s of its zoom" % TRIP_HOLD_MAX_S, {"settle_ms": settle_ms})
+		return false
+	_record_digest("trip_hold")
+	return true
+
+# One row of the trip: the row, its ms from the jump, the near ring and, with the perf channel on,
+# every wanted vegetation patch's times (`_trip_keys`).
+func _trip_row(index: int, probe: Dictionary, stream: Node) -> Dictionary:
+	var row := _row(index)
+	var now := float(Time.get_ticks_usec() - int(probe.start_us)) / 1000.0
+	row["trip_ms"] = now
+	if probe.near:
+		var near: Vector2i = stream.count_vegetation_drawn_near(probe.pivot, TRIP_NEAR_M)
+		row["near"] = [near.x, near.y]
+		if near.x == 0 or near.x != near.y:
+			probe.near_ms = -1.0
+		elif float(probe.near_ms) < 0.0:
+			probe.near_ms = now
+	if _scripts:
+		_trip_keys(probe, stream, now)
+	return row
+
+# Per wanted vegetation patch (perf channel on, `O(wanted)` a frame): [first wanted, product
+# ready, own drawn, left the wanted set (ms from the jump, -1 unset), its centre's distance to the
+# pivot (m)]; a patch that leaves and comes back starts a new entry.
+func _trip_keys(probe: Dictionary, stream: Node, now: float) -> void:
+	var keys: Dictionary = probe.keys
+	var seen := {}
+	for layer: String in ["vegetation_coarse", "vegetation_fine"]:
+		var data: PackedFloat32Array = stream.probe_stream_layer(layer)
+		var at := 0
+		while at + 8 <= data.size():
+			var key := Vector3i(int(data[at]), int(data[at + 1]), int(data[at + 2]))
+			var flags := int(data[at + 3])
+			seen[key] = true
+			if not keys.has(key) or float(keys[key][3]) >= 0.0:
+				var centre := Vector2((data[at + 4] + data[at + 6]) * 0.5, (data[at + 5] + data[at + 7]) * 0.5)
+				keys[key] = [now, -1.0, -1.0, -1.0, centre.distance_to(probe.pivot)]
+			var entry: Array = keys[key]
+			if flags & 4 and float(entry[1]) < 0.0:
+				entry[1] = now
+			if flags & 1 and float(entry[2]) < 0.0:
+				entry[2] = now
+			at += 8
+	for key: Vector3i in keys:
+		if not seen.has(key) and float(keys[key][3]) < 0.0:
+			keys[key][3] = now
