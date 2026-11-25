@@ -30,12 +30,16 @@
 //!   unit of their own after the hides at a fixed price. The water keeps and releases with the
 //!   terrain (`StreamNode`). Without places the layer keeps its own halo and releases nothing.
 //!
-//! The units run in the scheduler's order (`schedule::Class`): holes in view, holes within the
-//! near ring (the 2 km of `TERRAIN-15`'s hand-over), other holes, level changes in view, other
-//! level changes; then patches leaving, farthest first; then prewarm. Inside a class nearest
-//! first by exact squared distance, then by key. A hole whose payload has not arrived is skipped
-//! (its request is out); payload requests are bounded per frame ([`Limits::requests`]), as jobs
-//! in flight, not in milliseconds.
+//! The units of both layers run in one order a frame ([`frame_layers`], `TERRAIN-41` L1): the
+//! water's holes, then the terrain's, each in the scheduler's classes (`schedule::Class`: holes in
+//! view, holes within the near ring, the 2 km of `TERRAIN-15`'s hand-over, other holes); then both
+//! layers' level changes merged, in view first; then patches leaving, farthest first; then the
+//! budget's own releases; then prewarm (the fill). Inside a class nearest first by exact squared distance, then by key. A level change
+//! runs on the budget only while no hole of the frame was held back, and each layer's first
+//! in-view level change of a frame always runs, so near ground cannot keep a stale step behind a
+//! backlog. A hole whose payload has not arrived is skipped (its request is out); payload
+//! requests are bounded per frame ([`Limits::requests`]), as jobs in flight, not in
+//! milliseconds.
 //!
 //! Storage is dense per patch, sized once per world; a frame allocates nothing.
 
@@ -260,8 +264,7 @@ pub(crate) const WATER_LIMITS: Limits = Limits {
     halo: 1,
 };
 
-/// Predicted costs of the units, microseconds: fixed, from the scripts' measured unit times
-/// with a margin (`RENDER-32-M` record), never adapted.
+/// Predicted costs of the units, microseconds: fixed constants, never adapted at run time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UnitCosts {
     /// Activating a patch whose node is built (prewarmed or kept).
@@ -280,28 +283,36 @@ pub(crate) struct UnitCosts {
     pub(crate) release_us: f64,
 }
 
-/// Terrain's unit costs, measured on Kuopio's load (`RENDER-32-M` record): a build (a height
-/// image and texture, a mask layer, the land cover from its payload and the patch's own material
-/// parameters in `terrain.gd`) takes 0.16 ms a build (0.41 before the land cover left the main
-/// thread and the constant parameters moved to the pooled material); an activation of a built
-/// patch is a node shown, a level change and the graded hand-over's bookkeeping. A level change
-/// (terrain or water) measured 11 us at the median, 25-36 at the 95th percentile (frames of
-/// level changes only, 30k, 100k and Kuopio turns, `RENDER-32-Q`): 20 us, against 60 and 40
-/// before, which spent Kuopio's turn frames' budget while measured 0.2-0.4 ms.
+// The prices (`TERRAIN-41` L1) are the units' measured means, read from the units by kind
+// (`take_patch_unit_times`) on the 60 km Kuopio's `flight_high` and the shipped Kuopio's turns,
+// pan, zoom and jump (one diagnostic run each, perf channel on, P-cores, 2026-11-24), set near
+// them: the frame spends the larger of the measured and the predicted total, so a price above the
+// mean leaves the ledger idle (re-shows were charged 100, 60, 40 and 30 us for 4-23 us of work)
+// and one below it does not let more run. A build's mean differs by map (terrain 150 us on the
+// shipped map, 230-263 on the 60 km one; water 55 against 109-139), so the builds keep the prices
+// between them. The first unit of a frame still always runs, and the last may exceed its price by
+// its spread (95th percentiles: show 21-51, hide 9-17, level change 15-39 us).
+
+/// Terrain's unit costs. A build (a height image and texture, a mask layer, the land cover from
+/// its payload and the patch's own material parameters in `terrain.gd`) is new resources for
+/// half of it while no patch is released (`TERRAIN-41`); a shown patch is a node shown, its
+/// level and the graded hand-over's bookkeeping, 11-23 us at the mean; a hide 6-8; a level change
+/// 12-14 (11 at the median in `RENDER-32-Q`).
 pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
-    activate_us: 100.0,
+    activate_us: 20.0,
     build_us: 200.0,
-    lod_us: 20.0,
-    free_us: 40.0,
+    lod_us: 12.0,
+    free_us: 8.0,
     release_us: 160.0,
 };
-/// Water's unit costs, measured as terrain's: an activation that builds the node (a depth image
-/// and texture, a material) takes 0.064 ms at the median, 0.21 ms at most.
+/// Water's unit costs, measured as terrain's: a shown patch 5-9 us at the mean, a hide 3-4, a
+/// level change 4-6 (its new mesh is the water's mesh pipeline's, charged there); a build (a
+/// depth image and texture, a material) as above.
 pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
-    activate_us: 60.0,
+    activate_us: 8.0,
     build_us: 120.0,
-    lod_us: 20.0,
-    free_us: 30.0,
+    lod_us: 5.0,
+    free_us: 4.0,
     release_us: 140.0,
 };
 
@@ -428,9 +439,8 @@ pub(crate) struct PatchWork {
     pub(crate) requests: usize,
     /// Units the budget held back.
     pub(crate) deferred: usize,
-    /// Of them holes (any class; a hole skipped for its payload or behind a blocked activation
-    /// is not counted): what the graded book's builds wait behind (`TERRAIN-41` L2).
-    pub(crate) holes_deferred: usize,
+    /// Of them holes in view.
+    pub(crate) holes_deferred_in_view: usize,
     /// Kept patches released (`TERRAIN-41` B1), of them `donors` as a hole build's donor.
     pub(crate) releases: usize,
     /// Releases that ran as a build's donor in a frame of holes.
@@ -508,6 +518,7 @@ pub(crate) struct PatchStream {
     news: Vec<i32>,
     // Scratch.
     order: Vec<(Class, f64, u32)>,
+    wanting: Vec<(Class, f64, u32)>,
     requests: Vec<i32>,
     // Wanted changes since the last frame; the frame's work; units' times since the last take.
     wanted_changes: usize,
@@ -563,6 +574,7 @@ impl PatchStream {
             follow: None,
             news: Vec::new(),
             order: Vec::new(),
+            wanting: Vec::new(),
             requests: Vec::new(),
             wanted_changes: 0,
             work: PatchWork::default(),
@@ -597,6 +609,8 @@ impl PatchStream {
         }
         self.order.clear();
         self.order.reserve(len);
+        self.wanting.clear();
+        self.wanting.reserve(len);
         self.changes.clear();
         self.changes.reserve(len);
         self.generations.clear();
@@ -1084,10 +1098,9 @@ impl PatchStream {
     fn release_one(
         &mut self,
         grid: PatchGrid,
-        budget: &mut FrameBudget,
-        clock: &impl Clock,
+        frame: &mut FrameState<'_>,
         predicted_us: f64,
-        exec: &mut impl PatchExecutor,
+        exec: &mut dyn PatchExecutor,
         busy: &mut Vec<u32>,
     ) -> Option<bool> {
         while let Some(index) = self.releasable.pop() {
@@ -1096,7 +1109,7 @@ impl PatchStream {
                 continue;
             }
             let key = grid.key(index);
-            let start = clock.now_us();
+            let start = frame.clock.now_us();
             if self.flags[index] & RESIDENT != 0 {
                 // Still drawn, beyond the release rectangle (a jump whose hides wait behind its
                 // holes): hidden first, inside the release's price, so a burst releases as fast
@@ -1105,7 +1118,8 @@ impl PatchStream {
                 self.set_resident(index, false);
             }
             let done = exec.release(key);
-            self.account(budget, UnitKind::Release, predicted_us, clock.now_us() - start);
+            let us = frame.clock.now_us() - start;
+            self.account(frame.budget, UnitKind::Release, predicted_us, us);
             match done {
                 Release::Done => {
                     self.set_built(index, false);
@@ -1130,9 +1144,8 @@ impl PatchStream {
         self.upgrade_reserve_us = reserve_us;
     }
 
-    /// One frame: the level of detail gate, then units in order while the budget admits them,
-    /// then payload requests. `eye` is the view's (none before a camera); `in_view` orders work
-    /// only. Returns the frame's counts.
+    /// One frame of this layer alone ([`frame_layers`] with one layer): the tests' entry.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn frame(
         &mut self,
@@ -1144,36 +1157,38 @@ impl PatchStream {
         in_view: &impl Fn(PatchKey) -> bool,
         exec: &mut impl PatchExecutor,
     ) -> PatchWork {
+        frame_layers(
+            &mut [Some(LayerFrame::new(self, exec))],
+            eye,
+            delta,
+            budget,
+            clock,
+            unbudgeted,
+            in_view,
+        );
+        self.work
+    }
+
+    /// The counts of the last frame's work.
+    pub(crate) fn work(&self) -> PatchWork {
+        self.work
+    }
+
+    // The frame's start: the level of detail gate, then the holes and the queued checks in class
+    // order, nearest first inside a class, then by key (`order`). `O(backlog log backlog)`.
+    fn begin(&mut self, eye: Option<[f32; 3]>, delta: f64, in_view: &dyn Fn(PatchKey) -> bool) {
         self.work = PatchWork {
             wanted_changes: std::mem::take(&mut self.wanted_changes),
             ..PatchWork::default()
         };
+        self.order.clear();
         let Some(grid) = self.grid else {
-            return self.work;
+            return;
         };
         self.ring.reset_visited();
         self.lod_gate(grid, eye, delta);
         self.work.ring_cells = self.ring.visited();
-        let admit = |budget: &FrameBudget, cost: f64| unbudgeted || budget.admits(cost);
-        let upgrade_reserve_us = self.upgrade_reserve_us;
-        let mut blocked = false;
-        let mut held = false;
-        let mut release_blocked = false;
-        let mut busy = std::mem::take(&mut self.release_busy);
-        busy.clear();
-
-        // Holes, then level changes, nearest first inside their classes.
-        self.order.clear();
-        let point = eye.map(|eye| [eye[0], eye[2]]);
-        let distance_sq = |index: usize| match point {
-            Some(point) => {
-                let centre = grid.centre(grid.key(index));
-                let dx = f64::from(centre[0]) - f64::from(point[0]);
-                let dz = f64::from(centre[1]) - f64::from(point[1]);
-                dx * dx + dz * dz
-            }
-            None => 0.0,
-        };
+        self.release_busy.clear();
         let mut holes = std::mem::take(&mut self.holes);
         holes.retain(|&index| self.flags[index as usize] & (WANTED | RESIDENT) == WANTED);
         holes.sort_unstable();
@@ -1184,7 +1199,7 @@ impl PatchStream {
                 continue;
             }
             let key = grid.key(index as usize);
-            let distance = distance_sq(index as usize);
+            let distance = ground_distance_sq(grid, eye, index as usize);
             let class = if in_view(key) {
                 Class::HoleInView
             } else if distance <= NEAR_RING_M * NEAR_RING_M {
@@ -1204,79 +1219,67 @@ impl PatchStream {
             } else {
                 Class::Upgrade
             };
-            self.order.push((class, distance_sq(index as usize), index));
+            self.order.push((class, ground_distance_sq(grid, eye, index as usize), index));
         }
         self.queue = queue;
-        self.order.sort_unstable_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then(a.1.total_cmp(&b.1))
-                .then(grid.key(a.2 as usize)[1].cmp(&grid.key(b.2 as usize)[1]))
-                .then(grid.key(a.2 as usize)[0].cmp(&grid.key(b.2 as usize)[0]))
-        });
+        self.order
+            .sort_unstable_by(|a, b| order_cmp(grid, *a, grid, *b));
+    }
+
+    // The frame's holes (the head of `order`): activations while the budget admits them. A hole
+    // held back lets a cheaper one behind it run, and marks the frame: no level change runs on
+    // the budget after it. `O(holes)`.
+    fn run_holes(
+        &mut self,
+        frame: &mut FrameState<'_>,
+        exec: &mut dyn PatchExecutor,
+        blocked: &mut bool,
+        release_blocked: &mut bool,
+    ) {
+        let Some(grid) = self.grid else {
+            return;
+        };
         let order = std::mem::take(&mut self.order);
-        for &(class, _, index) in &order {
+        let mut busy = std::mem::take(&mut self.release_busy);
+        for &(class, _, index) in order.iter().take_while(|entry| entry.0 < Class::UpgradeInView) {
+            if *blocked {
+                break;
+            }
             let index = index as usize;
             let key = grid.key(index);
-            if class >= Class::UpgradeInView {
-                // A queued check: the eye's step now; no unit when it holds.
-                self.flags[index] &= !QUEUED;
-                let target = self.rule(grid, eye, index);
-                if target == self.step[index] {
-                    continue;
-                }
-                if !(unbudgeted || budget.admits_upgrade(self.costs.lod_us, upgrade_reserve_us)) {
-                    self.flags[index] |= QUEUED;
-                    self.work.deferred += 1;
-                    held = true;
-                    continue;
-                }
-                let start = clock.now_us();
-                exec.set_lod(key, target);
-                self.account(budget, UnitKind::Step, self.costs.lod_us, clock.now_us() - start);
-                self.step[index] = target;
-                if let Some(follow) = self.follow.as_mut() {
-                    follow.push((key, Follow::Step(target)));
-                }
-                self.update_mismatch(index);
-                self.work.lod_changes += 1;
-                continue;
-            }
-            if blocked {
-                continue;
-            }
             let (kind, cost) = if self.flags[index] & BUILT != 0 {
                 (UnitKind::Show, self.costs.activate_us)
             } else {
                 (UnitKind::Build, self.costs.build_us)
             };
-            if !admit(budget, cost) {
+            if !frame.admits(cost) {
                 self.work.deferred += 1;
-                // A hole the budget refused: counted only, the order and admission are as
-                // before (`TERRAIN-41` L2). O(1).
-                self.work.holes_deferred += 1;
-                held = true;
+                frame.held = true;
+                frame.hole_deferred = true;
+                self.work.holes_deferred_in_view += usize::from(class == Class::HoleInView);
                 continue;
             }
             if kind == UnitKind::Build
                 && self.budget_full
-                && !release_blocked
+                && !*release_blocked
                 && !self.releasable.is_empty()
             {
                 // The donor rule (`TERRAIN-41` B1): while the budget is full a build first
                 // releases the farthest kept patch outside the release rectangle, inside the
                 // build's price, so its resources are built into at once and a burst releases as
                 // fast as it builds.
-                self.sort_releasable(grid, &distance_sq);
-                match self.release_one(grid, budget, clock, 0.0, exec, &mut busy) {
+                let eye = frame.eye;
+                self.sort_releasable(grid, &|index| ground_distance_sq(grid, eye, index));
+                match self.release_one(grid, frame, 0.0, exec, &mut busy) {
                     Some(true) => self.work.donors += 1,
                     Some(false) => {}
-                    None => release_blocked = true,
+                    None => *release_blocked = true,
                 }
             }
-            let step = self.rule(grid, eye, index);
-            let start = clock.now_us();
+            let step = self.rule(grid, frame.eye, index);
+            let start = frame.clock.now_us();
             let (done, generation) = exec.activate(key, step);
-            self.account(budget, kind, cost, clock.now_us() - start);
+            self.account(frame.budget, kind, cost, frame.clock.now_us() - start);
             if done == Activation::Done && self.flags[index] & BUILT == 0 {
                 self.generations.push((key, generation));
             }
@@ -1293,32 +1296,83 @@ impl PatchStream {
                     self.set_built(index, false);
                     self.flags[index] &= !READY;
                 }
-                Activation::Blocked => blocked = true,
+                Activation::Blocked => *blocked = true,
             }
         }
         self.order = order;
-        self.queue.retain(|&index| self.flags[index as usize] & QUEUED != 0);
+        self.release_busy = busy;
+    }
 
-        // Patches that left, farthest first.
+    // A queued level check (an entry of the tail of `order`): the eye's step now, no unit when
+    // it holds. It runs on the budget less the holes' reserve while no hole of the frame was held
+    // back; the layer's first in-view change of the frame runs regardless (`TERRAIN-41` L1:
+    // steps cannot starve behind holes; one unit of `lod_us` a layer a frame). `O(1)`.
+    fn run_step(
+        &mut self,
+        frame: &mut FrameState<'_>,
+        exec: &mut dyn PatchExecutor,
+        (class, _, index): (Class, f64, u32),
+        in_view_steps: &mut usize,
+    ) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        let index = index as usize;
+        let key = grid.key(index);
+        self.flags[index] &= !QUEUED;
+        let target = self.rule(grid, frame.eye, index);
+        if target == self.step[index] {
+            return;
+        }
+        let in_view = class == Class::UpgradeInView;
+        let admitted = frame.unbudgeted
+            || (in_view && *in_view_steps == 0)
+            || (!frame.hole_deferred
+                && frame
+                    .budget
+                    .admits_upgrade(self.costs.lod_us, self.upgrade_reserve_us));
+        if !admitted {
+            self.flags[index] |= QUEUED;
+            self.work.deferred += 1;
+            frame.held = true;
+            return;
+        }
+        let start = frame.clock.now_us();
+        exec.set_lod(key, target);
+        self.account(frame.budget, UnitKind::Step, self.costs.lod_us, frame.clock.now_us() - start);
+        self.step[index] = target;
+        if let Some(follow) = self.follow.as_mut() {
+            follow.push((key, Follow::Step(target)));
+        }
+        self.update_mismatch(index);
+        self.work.lod_changes += 1;
+        *in_view_steps += usize::from(in_view);
+    }
+
+    // Patches that left, farthest first, while the budget admits them; the rest wait. `O(leaving
+    // log leaving)`.
+    fn run_hides(&mut self, frame: &mut FrameState<'_>, exec: &mut dyn PatchExecutor) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        let eye = frame.eye;
+        let distance_sq = |index: u32| ground_distance_sq(grid, eye, index as usize);
         let mut leaving = std::mem::take(&mut self.leaving);
         leaving.retain(|&index| self.flags[index as usize] & (WANTED | RESIDENT) == RESIDENT);
         leaving.sort_unstable();
         leaving.dedup();
-        leaving.sort_by(|&a, &b| {
-            distance_sq(b as usize)
-                .total_cmp(&distance_sq(a as usize))
-                .then(a.cmp(&b))
-        });
+        leaving.sort_by(|&a, &b| distance_sq(b).total_cmp(&distance_sq(a)).then(a.cmp(&b)));
         let mut freed = 0;
         for &index in &leaving {
-            if !admit(budget, self.costs.free_us) {
+            if !frame.admits(self.costs.free_us) {
                 self.work.deferred += 1;
-                held = true;
+                frame.held = true;
                 break;
             }
-            let start = clock.now_us();
+            let start = frame.clock.now_us();
             exec.deactivate(grid.key(index as usize));
-            self.account(budget, UnitKind::Hide, self.costs.free_us, clock.now_us() - start);
+            let us = frame.clock.now_us() - start;
+            self.account(frame.budget, UnitKind::Hide, self.costs.free_us, us);
             self.set_resident(index as usize, false);
             if self.outside_release(grid, index as usize) {
                 // Kept, hidden, beyond the release rectangle (a jump): released later.
@@ -1333,31 +1387,47 @@ impl PatchStream {
         leaving.extend(pushed);
         self.leaving = leaving;
         self.work.frees = freed;
+    }
 
-        // Releases on their own (`TERRAIN-41` B1): after holes, level changes and hides, before
-        // the fill, at a fixed price, never as the frame's exempt first unit, and only while no
-        // hole of this layer and no pending work of the other waits (in a frame of holes a
-        // release is a build's donor) or while the counted bytes are over the budget. Farthest first. `O(released + R log R)` while
-        // candidates exist, nothing otherwise.
-        if !blocked
-            && !release_blocked
-            && (self.over_budget || !self.releases_held && self.missing == self.refused)
-            && !self.releasable.is_empty()
-        {
-            self.sort_releasable(grid, &distance_sq);
+    // Releases on their own (`TERRAIN-41` B1): after both layers' holes, level changes and hides,
+    // before the fill, at a fixed price, never as the frame's exempt first unit (`fits`), farthest
+    // first. They wait while anything the view waits for is pending: a unit of the frame held
+    // back, a hole of this layer, work of another layer (`others_pending`, read after its units
+    // ran) or the vegetation's (`hold_releases`) (in a frame of holes a release is a build's
+    // donor); unless the counted bytes are over the budget, when they run in the room the frame
+    // left whatever waits (B1's soft bound). Then the busy candidates go back to the list.
+    // `O(released + R log R)` while candidates exist, nothing otherwise.
+    fn run_releases(
+        &mut self,
+        frame: &mut FrameState<'_>,
+        exec: &mut dyn PatchExecutor,
+        release_blocked: &mut bool,
+        others_pending: bool,
+    ) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        let mut busy = std::mem::take(&mut self.release_busy);
+        let waits = self.releases_held
+            || others_pending
+            || frame.held
+            || self.missing != self.refused;
+        if !*release_blocked && (self.over_budget || !waits) && !self.releasable.is_empty() {
+            let eye = frame.eye;
+            self.sort_releasable(grid, &|index| ground_distance_sq(grid, eye, index));
             while !self.releasable.is_empty()
-                && (unbudgeted || budget.fits(self.costs.release_us))
+                && (frame.unbudgeted || frame.budget.fits(self.costs.release_us))
             {
-                match self.release_one(grid, budget, clock, self.costs.release_us, exec, &mut busy) {
+                match self.release_one(grid, frame, self.costs.release_us, exec, &mut busy) {
                     Some(true) => {}
                     Some(false) => break,
                     None => {
-                        release_blocked = true;
+                        *release_blocked = true;
                         break;
                     }
                 }
             }
-            if !self.releasable.is_empty() && !release_blocked {
+            if !self.releasable.is_empty() && !*release_blocked {
                 self.work.deferred += 1;
             }
         }
@@ -1366,22 +1436,8 @@ impl PatchStream {
             self.releasable.extend_from_slice(&busy);
             self.releasable_dirty = true;
         }
+        busy.clear();
         self.release_busy = busy;
-
-        // Prewarm (the budget's fill) once nothing else waits, releases included: a fill never
-        // builds past the places the releases still have to give back.
-        if !blocked
-            && !held
-            && !self.prewarm_held
-            && self.releasable.is_empty()
-            && self.missing == 0
-            && self.extra == 0
-            && self.queue.is_empty()
-        {
-            self.prewarm_units(grid, eye, budget, clock, unbudgeted, &distance_sq, exec);
-        }
-        self.request_payloads(grid, &distance_sq, exec);
-        self.work
     }
 
     // Charges a unit that ran to the frame's budget and counts it by kind.
@@ -1401,37 +1457,24 @@ impl PatchStream {
         self.times.clear();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn prewarm_units(
-        &mut self,
-        grid: PatchGrid,
-        eye: Option<[f32; 3]>,
-        budget: &mut FrameBudget,
-        clock: &impl Clock,
-        unbudgeted: bool,
-        distance_sq: &impl Fn(usize) -> f64,
-        exec: &mut impl PatchExecutor,
-    ) {
-        if self.prewarm_dirty {
-            self.prewarm_dirty = false;
-            self.prewarm.clear();
-            if let Some(halo) = self.halo {
-                for z in halo[1]..=halo[3] {
-                    for x in halo[0]..=halo[2] {
-                        let index = grid.index([x, z]);
-                        if self.flags[index] & (BUILT | REFUSED) == 0 {
-                            self.prewarm.push(index as u32);
-                        }
-                    }
-                }
-            }
-            // Farthest first, so the nearest pops off the end.
-            self.prewarm.sort_by(|&a, &b| {
-                distance_sq(b as usize)
-                    .total_cmp(&distance_sq(a as usize))
-                    .then(b.cmp(&a))
-            });
+    // Prewarm builds, nearest first, once nothing of the layer waits and no unit of the frame was
+    // held back.
+    fn run_prewarm(&mut self, frame: &mut FrameState<'_>, exec: &mut dyn PatchExecutor) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        // A fill never builds past the places the releases still have to give back.
+        if frame.held
+            || self.prewarm_held
+            || !self.releasable.is_empty()
+            || self.missing != 0
+            || self.extra != 0
+            || !self.queue.is_empty()
+        {
+            return;
         }
+        let eye = frame.eye;
+        self.refresh_prewarm(grid, eye);
         while let Some(&index) = self.prewarm.last() {
             let index = index as usize;
             if self.flags[index] & (BUILT | REFUSED) != 0 {
@@ -1439,19 +1482,20 @@ impl PatchStream {
                 continue;
             }
             if self.flags[index] & READY == 0 {
-                // Its payload is requested below; the nearer ones first.
+                // Its payload is the layer's requests' (`request_payloads`), nearer ones first.
                 break;
             }
-            if !(unbudgeted || budget.admits(self.costs.build_us)) {
+            if !frame.admits(self.costs.build_us) {
                 self.work.deferred += 1;
                 break;
             }
             self.prewarm.pop();
             let key = grid.key(index);
             let step = self.rule(grid, eye, index);
-            let start = clock.now_us();
+            let start = frame.clock.now_us();
             let built = exec.build(key, step);
-            self.account(budget, UnitKind::Prewarm, self.costs.build_us, clock.now_us() - start);
+            let us = frame.clock.now_us() - start;
+            self.account(frame.budget, UnitKind::Prewarm, self.costs.build_us, us);
             self.flags[index] &= !READY;
             if let Some(generation) = built {
                 self.set_built(index, true);
@@ -1462,23 +1506,53 @@ impl PatchStream {
         }
     }
 
-    // Payloads for the holes, nearest first, then for the prewarm square once nothing is
-    // missing, up to the frame's request limit.
-    fn request_payloads(
-        &mut self,
-        grid: PatchGrid,
-        distance_sq: &impl Fn(usize) -> f64,
-        exec: &mut impl PatchExecutor,
-    ) {
-        const NEEDS: u8 = READY | BUILT | REQUESTED | REFUSED | RESIDENT;
-        self.requests.clear();
-        let mut wanting = std::mem::take(&mut self.order);
-        wanting.clear();
-        let prewarm = self.missing == 0;
-        if prewarm && self.prewarm_held {
-            self.order = wanting;
+    // The prewarm square's unbuilt patches, farthest first, when the square or a patch changed
+    // since the last refresh. `O(halo log halo)` then, nothing otherwise.
+    fn refresh_prewarm(&mut self, grid: PatchGrid, eye: Option<[f32; 3]>) {
+        if !self.prewarm_dirty {
             return;
         }
+        let distance_sq = |index: usize| ground_distance_sq(grid, eye, index);
+        self.prewarm_dirty = false;
+        self.prewarm.clear();
+        if let Some(halo) = self.halo {
+            for z in halo[1]..=halo[3] {
+                for x in halo[0]..=halo[2] {
+                    let index = grid.index([x, z]);
+                    if self.flags[index] & (BUILT | REFUSED) == 0 {
+                        self.prewarm.push(index as u32);
+                    }
+                }
+            }
+        }
+        // Farthest first, so the nearest pops off the end.
+        self.prewarm.sort_by(|&a, &b| {
+            distance_sq(b as usize)
+                .total_cmp(&distance_sq(a as usize))
+                .then(b.cmp(&a))
+        });
+    }
+
+    // Payloads for the holes, nearest first, then for the prewarm square once nothing is
+    // missing, up to the frame's request limit. Asked right after the layer's holes ran
+    // (`frame_layers`), so one layer's payload job does not start just as the next layer's tries
+    // the core.
+    fn request_payloads(&mut self, eye: Option<[f32; 3]>, exec: &mut dyn PatchExecutor) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        let distance_sq = |index: usize| ground_distance_sq(grid, eye, index);
+        const NEEDS: u8 = READY | BUILT | REQUESTED | REFUSED | RESIDENT;
+        self.requests.clear();
+        let prewarm = self.missing == 0;
+        if prewarm && self.prewarm_held {
+            return;
+        }
+        if prewarm {
+            self.refresh_prewarm(grid, eye);
+        }
+        let mut wanting = std::mem::take(&mut self.wanting);
+        wanting.clear();
         if !prewarm {
             for &index in &self.holes {
                 if self.flags[index as usize] & NEEDS == 0 {
@@ -1514,7 +1588,7 @@ impl PatchStream {
             self.requested += 1;
             self.requests.extend_from_slice(&key);
         }
-        self.order = wanting;
+        self.wanting = wanting;
         if !self.requests.is_empty() {
             self.work.requests = self.requests.len() / 2;
             let mut news = std::mem::take(&mut self.news);
@@ -1629,6 +1703,201 @@ impl PatchStream {
         );
         self.ring = ring;
     }
+}
+
+// The squared ground distance from the eye to `index`'s centre (0 without an eye): the order's
+// "nearest first".
+fn ground_distance_sq(grid: PatchGrid, eye: Option<[f32; 3]>, index: usize) -> f64 {
+    match eye {
+        Some(eye) => {
+            let centre = grid.centre(grid.key(index));
+            let dx = f64::from(centre[0]) - f64::from(eye[0]);
+            let dz = f64::from(centre[1]) - f64::from(eye[2]);
+            dx * dx + dz * dz
+        }
+        None => 0.0,
+    }
+}
+
+// The order of units: class, then nearest, then key (row, then column).
+fn order_cmp(
+    grid_a: PatchGrid,
+    a: (Class, f64, u32),
+    grid_b: PatchGrid,
+    b: (Class, f64, u32),
+) -> std::cmp::Ordering {
+    let (key_a, key_b) = (grid_a.key(a.2 as usize), grid_b.key(b.2 as usize));
+    a.0.cmp(&b.0)
+        .then(a.1.total_cmp(&b.1))
+        .then(key_a[1].cmp(&key_b[1]))
+        .then(key_a[0].cmp(&key_b[0]))
+}
+
+/// One layer's part in a frame of the patch layers ([`frame_layers`]): the layer, its executor
+/// and what the frame learnt of it.
+pub(crate) struct LayerFrame<'a> {
+    layer: &'a mut PatchStream,
+    exec: &'a mut dyn PatchExecutor,
+    // An activation met a pending publication: no more activations, no prewarm this frame.
+    blocked: bool,
+    // A release met a pending publication: no more releases this frame (`TERRAIN-41` B1).
+    release_blocked: bool,
+    // In-view level changes run this frame (the first one is always admitted).
+    in_view_steps: usize,
+    // The next of the layer's level change entries in `order`, for the merge.
+    cursor: usize,
+}
+
+impl<'a> LayerFrame<'a> {
+    /// `layer` executed by `exec` this frame.
+    pub(crate) fn new(layer: &'a mut PatchStream, exec: &'a mut dyn PatchExecutor) -> Self {
+        Self {
+            layer,
+            exec,
+            blocked: false,
+            release_blocked: false,
+            in_view_steps: 0,
+            cursor: 0,
+        }
+    }
+}
+
+// What a frame of the patch layers shares across them.
+struct FrameState<'a> {
+    eye: Option<[f32; 3]>,
+    budget: &'a mut FrameBudget,
+    clock: &'a dyn Clock,
+    unbudgeted: bool,
+    // A unit of any layer was held back: no prewarm.
+    held: bool,
+    // A hole of any layer was held back: no level change runs on the budget after it.
+    hole_deferred: bool,
+}
+
+impl FrameState<'_> {
+    fn admits(&self, predicted_us: f64) -> bool {
+        self.unbudgeted || self.budget.admits(predicted_us)
+    }
+}
+
+/// One frame of the patch layers in one order (`TERRAIN-41` L1, with round B1's budget units):
+///
+/// 1. every layer's level of detail gate;
+/// 2. the holes, layer by layer in `layers`' order (the water's, then the terrain's: the water's
+///    holes are terrain patches resident since the last frame); a hole build takes a donor (the
+///    farthest releasable kept patch, released inside the build's price) only while the budget
+///    is full; each layer's payload requests right after its holes;
+/// 3. every layer's queued level changes merged in one class order (in view first, nearest
+///    first, then key; the earlier layer on a tie);
+/// 4. the hides, layer by layer;
+/// 5. releases on their own (not a donor), layer by layer: only while nothing the view waits for
+///    is pending (no unit of the frame held back, no hole of the layer, no work of another
+///    layer, no vegetation hold), or while the counted bytes are over the budget (the terrain's;
+///    then in the room the frame left);
+/// 6. prewarm (the budget's fill), layer by layer, once nothing of the frame was held back, the
+///    layer has nothing waiting and no release candidate is left.
+///
+/// `None` entries (a layer without its scripts) take no part. One budget for all: a unit starts
+/// when its predicted price fits (the frame's first unit always, a release never), and a layer's
+/// first in-view level change of the frame always runs. `eye` is the view's (none before a
+/// camera); `in_view` orders work only. Returns whether the budget held a hole back (`TERRAIN-41`
+/// L2: the graded book's builds then wait). `O(backlog log backlog)` while a backlog exists,
+/// nothing on a still frame; allocates nothing once the layers' lists have grown. At most 64
+/// layers (a bit each for the pending work).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn frame_layers(
+    layers: &mut [Option<LayerFrame<'_>>],
+    eye: Option<[f32; 3]>,
+    delta: f64,
+    budget: &mut FrameBudget,
+    clock: &dyn Clock,
+    unbudgeted: bool,
+    in_view: &dyn Fn(PatchKey) -> bool,
+) -> bool {
+    let mut frame = FrameState {
+        eye,
+        budget,
+        clock,
+        unbudgeted,
+        held: false,
+        hole_deferred: false,
+    };
+    for at in layers.iter_mut().flatten() {
+        at.layer.begin(eye, delta, in_view);
+    }
+    for at in layers.iter_mut().flatten() {
+        at.layer
+            .run_holes(&mut frame, &mut *at.exec, &mut at.blocked, &mut at.release_blocked);
+        at.layer.request_payloads(eye, &mut *at.exec);
+        at.cursor = at
+            .layer
+            .order
+            .partition_point(|entry| entry.0 < Class::UpgradeInView);
+    }
+    // The level changes of every layer, merged: `O(changes x layers)`.
+    loop {
+        let mut next: Option<(usize, (Class, f64, u32))> = None;
+        for (at, layer) in layers.iter().enumerate() {
+            let Some(layer) = layer else {
+                continue;
+            };
+            let (Some(&entry), Some(grid)) = (layer.layer.order.get(layer.cursor), layer.layer.grid)
+            else {
+                continue;
+            };
+            let first = next.is_none_or(|(best, best_entry)| {
+                let best_grid = layers[best].as_ref().and_then(|l| l.layer.grid).unwrap_or(grid);
+                order_cmp(grid, entry, best_grid, best_entry).is_lt()
+            });
+            if first {
+                next = Some((at, entry));
+            }
+        }
+        let Some((at, entry)) = next else {
+            break;
+        };
+        let Some(layer) = layers[at].as_mut() else {
+            break;
+        };
+        layer.cursor += 1;
+        layer
+            .layer
+            .run_step(&mut frame, &mut *layer.exec, entry, &mut layer.in_view_steps);
+    }
+    for at in layers.iter_mut().flatten() {
+        let flags = &at.layer.flags;
+        at.layer
+            .queue
+            .retain(|&index| flags[index as usize] & QUEUED != 0);
+    }
+    for at in layers.iter_mut().flatten() {
+        at.layer.run_hides(&mut frame, &mut *at.exec);
+    }
+    // Which layers still have work a settled view waits for, read once every layer's holes,
+    // level changes and hides ran: a layer's own releases wait for the others' (`TERRAIN-41` B1).
+    let pending = layers.iter().enumerate().fold(0u64, |mask, (at, layer)| {
+        let waits = layer.as_ref().is_some_and(|l| l.layer.has_pending_work());
+        mask | (u64::from(waits) << at)
+    });
+    for (at, layer) in layers.iter_mut().enumerate() {
+        let Some(layer) = layer else {
+            continue;
+        };
+        let others_pending = pending & !(1 << at) != 0;
+        layer.release_blocked |= layer.blocked;
+        layer.layer.run_releases(
+            &mut frame,
+            &mut *layer.exec,
+            &mut layer.release_blocked,
+            others_pending,
+        );
+    }
+    for at in layers.iter_mut().flatten() {
+        if !at.blocked {
+            at.layer.run_prewarm(&mut frame, &mut *at.exec);
+        }
+    }
+    frame.hole_deferred
 }
 
 // Visits the cells of `a` that are not in `b` (inclusive rectangles), row by row.

@@ -46,9 +46,9 @@ use crate::nodes::sim::render::stream::layers::roads::{
     RoadWork,
 };
 use crate::nodes::sim::render::stream::layers::terrain::{
-    Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
-    POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS, UNIT_KIND_NAMES, UNIT_KINDS,
-    WATER_COSTS, WATER_LIMITS, place_bytes, places,
+    Activation, LayerFrame, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream,
+    PatchWork, Payload, POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS,
+    UNIT_KIND_NAMES, UNIT_KINDS, WATER_COSTS, WATER_LIMITS, frame_layers, place_bytes, places,
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
@@ -1465,28 +1465,29 @@ impl StreamNode {
         };
         self.water.set_upgrade_reserve(reserve);
         self.terrain.set_upgrade_reserve(reserve);
-        // The water first, then the terrain: the water's holes are terrain patches resident since
-        // the last frame and its units are cheap, so a shore draws a frame after its ground, as
-        // the scripts drew it, and the water's first draw (its shader's first use) falls inside
-        // the load like the terrain's.
+        // One order across the two layers (`TERRAIN-41` L1): the water's holes, the terrain's,
+        // then both layers' level changes, hides, the budget's releases and prewarm (the order is
+        // stated at `frame_layers`). The water's holes are terrain
+        // patches resident since the last frame and its units are cheap, so a shore draws a frame
+        // after its ground, as the scripts drew it, and the water's first draw (its shader's first
+        // use) falls inside the load like the terrain's.
         self.water
             .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
         // The budget's background work (the fill, and releases that are not a build's donor)
         // also waits while the vegetation has patches the view waits for (`TERRAIN-41` B1c): its
         // installs share this frame budget and its products the payload workers the fill's
         // requests would fill, so a fill running beside it kept a settled view waiting seconds.
-        // O(1).
+        // A layer's releases also wait for the other layer's pending work, read inside
+        // `frame_layers` once both layers' holes, level changes and hides ran. O(1).
         let vegetation_waits = self.residency.has_pending_work();
         self.water
             .hold_prewarm(self.terrain.has_pending_work() || vegetation_waits);
         self.terrain.hold_prewarm(vegetation_waits);
-        // Releases on their own wait while the other layer has work a settled view waits for
-        // (holes, hides, level checks): the water's frame runs before the terrain's, so its
-        // releases would take the room of the terrain's units.
-        self.water
-            .hold_releases(self.terrain.has_pending_work() || vegetation_waits);
-        // Over the budget, the terrain's releases (its frame runs after both layers' holes)
-        // give the bytes back; the water's run before the terrain's holes, so they stay donors.
+        self.water.hold_releases(vegetation_waits);
+        self.terrain.hold_releases(vegetation_waits);
+        // Over the budget, the terrain's releases give the bytes back in the room the frame
+        // left; the water's stay donors and own-class releases (round B1's soft bound, the
+        // margin is the user's).
         let over = self
             .terrain_budget
             .is_some_and(|budget| self.counted_bytes() > budget);
@@ -1498,46 +1499,38 @@ impl StreamNode {
         });
         self.terrain.set_budget_full(full);
         self.water.set_budget_full(full);
-        if let Some(scripts) = self.water_scripts.as_mut() {
-            let mut exec = ScriptExecutor(scripts);
-            let budget = if window {
-                &mut self.post_load_budget
-            } else {
-                &mut self.budget
-            };
-            self.water_work = self.water.frame(
-                eye,
-                self.delta,
-                budget,
-                &self.clock,
-                unbudgeted,
-                &in_view,
-                &mut exec,
-            );
-            self.patch_holes_deferred |= self.water_work.holes_deferred > 0;
+        let budget = if window {
+            &mut self.post_load_budget
+        } else {
+            &mut self.budget
+        };
+        let mut water_exec = self.water_scripts.as_mut().map(ScriptExecutor);
+        let mut terrain_exec = self.terrain_scripts.as_mut().map(ScriptExecutor);
+        let ran = [water_exec.is_some(), terrain_exec.is_some()];
+        self.patch_holes_deferred = frame_layers(
+            &mut [
+                water_exec
+                    .as_mut()
+                    .map(|exec| LayerFrame::new(&mut self.water, exec)),
+                terrain_exec
+                    .as_mut()
+                    .map(|exec| LayerFrame::new(&mut self.terrain, exec)),
+            ],
+            eye,
+            self.delta,
+            budget,
+            &self.clock,
+            unbudgeted,
+            &in_view,
+        );
+        if ran[0] {
+            self.water_work = self.water.work();
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
             self.water.take_released().for_each(drop);
         }
-        self.terrain
-            .hold_releases(self.water.has_pending_work() || vegetation_waits);
-        if let Some(scripts) = self.terrain_scripts.as_mut() {
-            let mut exec = ScriptExecutor(scripts);
-            let budget = if window {
-                &mut self.post_load_budget
-            } else {
-                &mut self.budget
-            };
-            self.terrain_work = self.terrain.frame(
-                eye,
-                self.delta,
-                budget,
-                &self.clock,
-                unbudgeted,
-                &in_view,
-                &mut exec,
-            );
-            self.patch_holes_deferred |= self.terrain_work.holes_deferred > 0;
+        if ran[1] {
+            self.terrain_work = self.terrain.work();
         }
         self.follow_terrain();
         // The window closes when the patches first settle with residents, or after
@@ -1973,7 +1966,10 @@ impl StreamNode {
                 patches.set(format!("{name}_builds"), work.builds as i64);
                 patches.set(format!("{name}_requests"), work.requests as i64);
                 patches.set(format!("{name}_deferred"), work.deferred as i64);
-                patches.set(format!("{name}_holes_deferred"), work.holes_deferred as i64);
+                patches.set(
+                    format!("{name}_holes_deferred_in_view"),
+                    work.holes_deferred_in_view as i64,
+                );
                 patches.set(format!("{name}_releases"), work.releases as i64);
                 patches.set(format!("{name}_donors"), work.donors as i64);
                 patches.set(format!("{name}_built"), layer.built_count() as i64);
