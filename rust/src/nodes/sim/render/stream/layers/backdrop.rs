@@ -745,9 +745,21 @@ impl BackdropLayer {
         });
     }
 
-    /// Patch `key` became resident or left (`O(1)`): its cell goes or comes at the next flush.
+    /// Patch `key` became resident or left (`O(1)`): its cell goes (unless the patch draws
+    /// nothing) or comes at the next flush.
     pub(crate) fn set_resident(&mut self, key: PatchKey, resident: bool) {
         self.cells.set_resident(key, resident);
+    }
+
+    /// Resident patch `key` draws nothing (`blank`, the graded book's: its cell comes) or draws
+    /// again (its cell goes) at the next flush (`TERRAIN-41` D3). `O(1)`.
+    pub(crate) fn set_blank(&mut self, key: PatchKey, blank: bool) {
+        self.cells.set_blank(key, blank);
+    }
+
+    /// Whether patch `key` is drawn as a patch: resident and drawing something. `O(1)`.
+    pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
+        self.cells.patch_draws(key)
     }
 
     /// Whether patch `key` draws a cell (as last flushed). `O(1)`.

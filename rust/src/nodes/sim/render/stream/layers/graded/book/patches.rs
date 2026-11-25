@@ -34,12 +34,16 @@ pub(super) struct PatchNode {
 
 /// The patches' nodes in the order they were lent (a Godot dictionary's order: `resident_keys`
 /// and the readers walk it), the patch nodes whose `PlaneMesh` the book collapsed, the patches
-/// drawing nothing since when (engine milliseconds, process frame), and the view's frustum.
+/// drawing nothing since when (engine milliseconds, process frame), the changes of that set not
+/// yet taken by the stream node, and the view's frustum.
 #[derive(Default)]
 pub(super) struct PatchNodes {
     nodes: OrderedMap<PatchKey, PatchNode>,
     collapsed: OrderedMap<PatchKey, i64>,
     unready: OrderedMap<PatchKey, (i64, i64)>,
+    // Each entry or exit of `unready` in order (true: the patch draws nothing from now on): the
+    // backdrop's cells follow them (`TERRAIN-41` D3, `take_blank_news`).
+    blank_news: Vec<(PatchKey, bool)>,
     planes: Vec<Plane>,
 }
 
@@ -107,12 +111,14 @@ impl GradedTileBook {
                     Engine::singleton().get_process_frames() as i64,
                 );
                 unready.insert(key, now);
+                self.patch_nodes.blank_news.push((key, true));
             }
             return;
         }
         let Some((ms, frame)) = unready.remove(&key) else {
             return;
         };
+        self.patch_nodes.blank_news.push((key, false));
         let counters = &mut self.counters;
         counters.ready_ms_max = counters
             .ready_ms_max
@@ -148,6 +154,29 @@ impl GradedTileBook {
         patch.set_instance_shader_parameter("cell_mode", &1.0f64.to_variant());
         patch.set_visibility_range_end(HIDDEN_RANGE_M as f32);
         collapsed.insert(key, node);
+    }
+
+    /// Patch `key`, just made resident by the streaming core, draws nothing from now on when its
+    /// draw state is nothing (its list not known yet), rather than its PlaneMesh until the
+    /// renderer's next frame applies that state (`TERRAIN-41` D3: the backdrop's cell stays
+    /// until the patch draws, so its first frame draws neither a PlaneMesh collapsed a frame later
+    /// nor nothing). No trace line: the frame's draw state, which a trace records and a replay
+    /// checks, follows as before and finds it applied. `O(1)` plus the draw state's `O(list)`.
+    pub(crate) fn blank_until_drawn(&mut self, key: [i32; 2]) {
+        let at = (key[0], key[1]);
+        if !self.state.resident.contains_key(&at) || self.state.draw_state(at) != DRAW_NONE {
+            return;
+        }
+        self.set_ready(at, false);
+        let node = self.patch_nodes.nodes.get(&at).map_or(0, |patch| patch.node);
+        self.set_plane(at, node, false);
+    }
+
+    /// The patches that started (true) or stopped drawing nothing since the last call, in order
+    /// (`TERRAIN-41` D3: the stream node's backdrop cells follow them in both of its passes, so a
+    /// draw state the book applies in a frame reaches that frame's cells). `O(news)`.
+    pub(crate) fn take_blank_news(&mut self) -> std::vec::Drain<'_, (PatchKey, bool)> {
+        self.patch_nodes.blank_news.drain(..)
     }
 
     // The patch nodes as a reader walks them.
@@ -261,7 +290,9 @@ impl GradedTileBook {
     pub fn release_patch_node(&mut self, key: Vector2i, node: i64) {
         self.release_set(key);
         let at = (key.x, key.y);
-        self.patch_nodes.unready.remove(&at);
+        if self.patch_nodes.unready.remove(&at).is_some() {
+            self.patch_nodes.blank_news.push((at, false));
+        }
         self.set_plane(at, node, true);
     }
 
@@ -272,7 +303,9 @@ impl GradedTileBook {
         for key in keys {
             self.set_plane(key, 0, true);
         }
-        self.patch_nodes.unready.clear();
+        let PatchNodes { unready, blank_news, .. } = &mut self.patch_nodes;
+        blank_news.extend(unready.keys().map(|&key| (key, false)));
+        unready.clear();
     }
 
     /// The view's frustum (`Camera3D.get_frustum()`, set each frame): an unready patch whose

@@ -7,10 +7,16 @@
 //! it (never drawn as a patch there), so a view that reaches past the square to the far plane
 //! shows ground, not sky.
 //!
-//! The set is the terrain layer's residency mirrored: [`Cells::set_resident`] takes each residency
-//! change as the stream node takes them from the terrain layer (`follow_terrain`), in the pass in
-//! which the unit ran, and [`Cells::flush`] sends the changed blocks before the frame draws (both
-//! of the stream node's passes end with it). One `MultiMesh` and one instance a block of
+//! **The hand-over rule, on the renderer's side** (`TERRAIN-41` D3): a patch is drawn as a patch
+//! when it is resident *and* its node draws something. A resident patch can draw nothing: the
+//! graded tile book collapses its PlaneMesh while its list of graded tiles is not known or its
+//! graded set is not ready (T53 (a), "nothing until then"). So a cell goes only when both hold and
+//! comes back when either stops: [`Cells::set_resident`] takes the terrain layer's residency
+//! changes (`follow_terrain`, in the pass in which the unit ran) and [`Cells::set_blank`] the
+//! book's draw-nothing changes (taken in both passes), and [`Cells::flush`] sends the changed
+//! blocks before the frame draws (both of the stream node's passes end with it). The book marks
+//! a patch that turns resident without a known list as drawing nothing in the same pass, so its
+//! first frame draws its cell, not a PlaneMesh it would collapse a frame later. One `MultiMesh` and one instance a block of
 //! [`BLOCK_PATCHES`] x [`BLOCK_PATCHES`] patches, holding that block's cells in a dense list (a
 //! swap-remove keeps it dense), drawn with the block's material; the engine culls a block by its
 //! bounds like any instance.
@@ -33,6 +39,10 @@ pub(crate) const STRIDE: usize = 16;
 pub(crate) const CAPACITY: usize = BLOCK_PATCHES * BLOCK_PATCHES;
 // A patch drawn as a patch: no cell.
 const NOT_DRAWN: u16 = u16::MAX;
+// A patch's state bits: resident (the terrain layer's), and blank (resident but drawing nothing,
+// the graded book's). A cell draws unless the patch is resident and not blank.
+const RESIDENT: u8 = 1;
+const BLANK: u8 = 2;
 
 /// The cells of the map's patches not drawn as patches, by block.
 #[derive(Default)]
@@ -41,6 +51,8 @@ pub(crate) struct Cells {
     blocks_x: usize,
     // Per patch of the map (row-major): its cell's slot in its block's list, or `NOT_DRAWN`.
     slots: Vec<u16>,
+    // Per patch of the map: `RESIDENT` and `BLANK`.
+    states: Vec<u8>,
     // Per block: the patches drawing a cell, as `local z x BLOCK_PATCHES + local x`, dense.
     lists: Vec<Vec<u16>>,
     // Per block: its `MultiMesh` and instance, made at its first draw; and whether it draws.
@@ -73,6 +85,7 @@ impl Cells {
         self.grid = Some(grid);
         self.blocks_x = blocks_x;
         self.slots = vec![NOT_DRAWN; cols * map_rows];
+        self.states = vec![0; cols * map_rows];
         self.lists = (0..blocks).map(|_| Vec::with_capacity(CAPACITY)).collect();
         self.objects = vec![None; blocks];
         self.shown = vec![false; blocks];
@@ -95,12 +108,36 @@ impl Cells {
         self.touch_all();
     }
 
-    /// Patch `key` became resident (drawn as a patch: its cell goes) or left (its cell comes).
-    /// `O(1)`.
+    /// Patch `key` became resident or left: its cell goes when it is resident and not blank,
+    /// and comes otherwise. `O(1)`.
     pub(crate) fn set_resident(&mut self, key: PatchKey, resident: bool) {
-        if let Some(index) = self.index(key) {
-            self.set_drawn(index, !resident);
+        self.set_state(key, RESIDENT, resident);
+    }
+
+    /// Resident patch `key` draws nothing (`blank`: its cell comes) or draws again (its cell goes
+    /// while it is resident). A patch that is not resident keeps the bit and draws its cell.
+    /// `O(1)`.
+    pub(crate) fn set_blank(&mut self, key: PatchKey, blank: bool) {
+        self.set_state(key, BLANK, blank);
+    }
+
+    /// Whether patch `key` is drawn as a patch: resident and not blank. `O(1)`.
+    pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
+        self.index(key)
+            .is_some_and(|index| self.states[index] & (RESIDENT | BLANK) == RESIDENT)
+    }
+
+    fn set_state(&mut self, key: PatchKey, bit: u8, on: bool) {
+        let Some(index) = self.index(key) else {
+            return;
+        };
+        if on {
+            self.states[index] |= bit;
+        } else {
+            self.states[index] &= !bit;
         }
+        let drawn_as_patch = self.states[index] & (RESIDENT | BLANK) == RESIDENT;
+        self.set_drawn(index, !drawn_as_patch);
     }
 
     /// Marks block `block` for the next flush (its readiness may have changed). `O(1)`.
