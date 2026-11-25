@@ -16102,6 +16102,31 @@ a world load under a budget of their own (below). The rules and constants are th
   the terrain's residency and built nodes' surface generations inside the same pass. A dirty edit
   keeps the patch's installed step (the core owns it; the control re-evaluated the step at the
   commit). The world editor scene gains a `StreamNode`.
+- **A payload request's life (`TERRAIN-35`, 2026-11-25).** Three books hold a request: the core
+  marks the patch requested (`REQUESTED`, until news), the script tracks it with the generation the
+  payload jobs took it at (`patch_payload_requested`; the water's a set), and the payload jobs
+  (`TerrainPatchPayloadAsyncState`, `WaterPatchPayloadAsyncState`) hold it until they answer. The
+  jobs answer every request exactly once through the script's poll: a current payload (news 1), a
+  retry (news 0: the job failed, the payload's generation moved by the time it was polled, a ready
+  payload went missing, or the request waited behind a job for an older generation of its patch,
+  one job a key, and that job ended, or an undo or a bulldoze dropped the jobs' work), or a
+  refusal (news 2). Only the jobs' generation check retires a request whose patch an edit moved;
+  the script never drops a core request without news. Its other ends are news too: the payload
+  prune (outside the wanted square), a held payload an edit made stale
+  (`_dirty_patch_payload_keys_from_states`), and a world reset (all three books start over). A built patch's own dirty request (`patches.has(key)`) is the script's, retired at
+  the edit and asked again at the new generation; the core never marks a patch with a node
+  requested. Before, the dirty pass dropped an in-flight core request silently, a request made
+  behind an older job was answered by nobody, an undo or a bulldoze cleared every in-flight
+  request without an answer, and the water dropped a stale ready payload without a retry: the
+  patch stayed wanted, requested and missing (sky), and the world never settled.
+  Guard: each poll asserts the core's requested count (`StreamNode.get_patch_requests`) is at most
+  the script's tracked requests and those at most the jobs' (`requested_after_count`), `O(1)`,
+  evaluated in debug builds only (every gate run); a request lost behind the core's back breaks the
+  first at once (the second found the undo's silent clear in `road_builder_test`).
+  `terrain_payload_request_test.gd` commits roads in a fresh 20 km world's first frames: on `dev`
+  `fefcc00cb` 12 patches along the road never drew, now it settles. A later release of patches
+  (`TERRAIN-41` B1) keeps the rule: a released patch's request either stays to be answered or is
+  ended with news, and the asserts check it in every gate run.
 - **Deleted.** `terrain.gd` 3,357 to 2,628 lines and `water.gd` 2,522 to 2,015 (1,479 out, 245
   in): `_sync_patch_residency`, the bounds helpers, both LOD sweeps
   and queues, both prewarm queues, the water's follow-the-terrain pass, 22 terrain and 18 water
