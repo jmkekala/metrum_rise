@@ -76,6 +76,11 @@ Current deterministic rules:
   not a save), gameplay returns to `MainMenu.tscn`, which reopens the Load Game or New Game
   browser with Rust's message in its status line; the in-game Load and New Game do the same over
   the running city, which stays as it was ([terrain contract](terrain.md#1-worldconfig-is-the-authoritative-world-metadata))
+- while a player's load (Load Game, New Game, the in-game Load and New Game) holds the game for
+  its terrain preload (`TERRAIN-59`), one line at the screen's centre reads "Loading terrain: N of
+  M patches" (`load_progress.gd`, shown and freed by the input manager's load flow); the world
+  draws behind it as it fills. A real loading screen is a later item
+  ([the preload](terrain.md#the-loads-terrain-preload-terrain-59-2026-11-26))
 
 MainMenu v1 actions:
 

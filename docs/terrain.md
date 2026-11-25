@@ -21762,6 +21762,126 @@ landed cover with the 64 m normal. No patchwork beyond that shows at this pose; 
 from the lattice normal's one-sided difference shows in the stills (an edge every 8,192 m), not
 measured. Row `TERRAIN-60`.
 
+### The load's terrain preload (`TERRAIN-59`, 2026-11-26)
+
+Ordered by the user (2026-11-25): at a map's load the base terrain is preloaded up to the selected
+Terrain memory target, starting at the camera, and gameplay is shown when the chunks are loaded or
+the target is full; frame rate does not matter while it loads. Before it the load handed over once
+the patches within 2 km drew (`TERRAIN-15`) and the budget's fill followed in the background under
+the 2.0 ms install ledger, paused whenever the view had work (`TERRAIN-51`).
+
+**The hand-over rule.** A *player's* load (Load Game, New Game, the in-game Load and New Game:
+`main_scene.gd`, `input_manager.gd` pass `preload_terrain`) holds the game until, in this order of
+phases (`StreamNode.set_terrain_preload`, `get_terrain_preload`; `terrain.gd` `advance_preload`):
+
+1. **View.** The wanted square's terrain and water patches are built and shown, their water meshes,
+   texture syncs and land covers in (both layers' `has_pending_render_work(false)` false, and the
+   stream node reports a square set by a frame and no patch unit waiting). The fill is held, so
+   the places it fills to are counted from the drawn patches' final extras: the water meshes of
+   the drawn wet patches are the only extras that move at a load with a still camera, and a fill
+   that ran while they arrived built a keep ring that shrank under it (found in this round's first
+   build: 4,236 terrain against 4,356 water patches built at the hand-over on the 60 km map at
+   256 MB, the ring 14 then 13 then 12; with the view first both layers end on ring 12).
+2. **Fill.** Every patch of the keep rectangle the budget's own rule gives (round B1: the wanted
+   square widened by the largest ring whose release rectangle fits the places; the whole map when
+   it fits) is built hidden, terrain and water, nearest the camera first (the fill's sorted list:
+   exact squared ground distance, then key), the fill no longer waiting for the vegetation.
+3. **Done** when the keep rectangle has nothing left to build (`fill_left` 0 for both layers), no
+   patch unit waits, the backdrop is ready (its land covers from the preload's payloads uploaded)
+   and no kept patch's water texture sync waits; and, as before, the patches within 2 km draw and
+   the near ring's road chunks are in. Then the hold ends and gameplay is shown.
+
+"The target is full" is the budget's rule, not a separate estimate: the preload ends when the keep
+rectangle is built, which is where one more ring's release rectangle would not fit. A target below
+the view (`overrun`) keeps ring 0: the preload ends with the wanted square. Water meshes that push
+the count over the target (`TERRAIN-52`) cannot make it loop: the preload waits on `fill_left`, and
+the keep rectangle only shrinks when the extras grow, which the view phase settled before the fill.
+Vegetation and graded tiles are not part of the preload (the target counts base terrain only); the
+2 km hand-over still waits for the graded tiles as before. After the hand-over, with the camera
+still, the fill has nothing left within the target: no build, show or release of either layer
+(`terrain_preload_test`, 120 frames).
+
+**What runs unmetered, and the caps.** While the preload runs:
+
+| Cap | Normally | During the preload | What it is for |
+|---|---|---|---|
+| Patch units (holes, level changes, hides, releases, fill) | 2.0 ms install ledger; the load's hold without a preload: no limit | 50 ms of unit time a frame (`PRELOAD_SLICE_US`), then the frame returns to the engine | the frame rate; during the load only the window's responsiveness (the progress line, quitting) |
+| Payload requests a frame, and the fill's payloads held or in flight (round B1) | terrain 32, water 64 | 256 each (`PRELOAD_REQUESTS`, about 16 MB of held terrain payloads) | jobs in flight and held payloads' memory |
+| Payload poll a frame (`terrain.gd`, `water.gd`) | 64 | 256 (what the layers request) | main-thread time of the poll |
+| Water texture syncs (`terrain.gd`) | 128 and 1.0 ms a frame | 4,096 and 25 ms | main-thread time |
+| The fill's wait for the vegetation (round B1c) | holds the fill | lifted in the fill phase | the workers and the frame the vegetation shares |
+| The water's fill while the terrain has work | holds it | unchanged (the terrain has none in the fill phase) | order |
+| Backdrop uploads, graded tile work | all at once in the hold | unchanged | (already unmetered in the hold) |
+| Water mesh pipeline (8 requests, 4-6 applies, 2.5 ms a frame) | as listed | unchanged: it bounds the view phase (the Kuopio's 956 queued meshes take about 0.9 s) | frame time |
+| Land cover jobs' poll (32) | 32 | unchanged (payloads carry their land cover) | edits only |
+
+The slice is the one place a wall-time rule is honest: what it protects is the window, not a result.
+What is built and in which order does not depend on it: the fill builds only the nearest unbuilt
+patch whose payload is in (`run_prewarm` stops at the first that is not), so a slice or a worker's
+pace changes which frame a build falls in, never the order or the set (Rust test
+`a_preload_builds_the_keep_nearest_first_whatever_the_slice_and_the_workers`: slices of 200 us to
+unlimited, payloads back 1 to 300 a frame, the view phase 0 to 90 frames; equal fill order and built
+set). Frames of the load's hold were already up to 1.0-1.6 s long before the preload (the graded
+renderer's unbudgeted work and first-use pipelines, on the control too); the preload adds none longer.
+
+**What the player sees.** The world draws behind the hold as before; one line at the screen's centre
+reads "Loading terrain: N of M patches" (`load_progress.gd`), terrain and water patches built of those
+the preload builds (`built + left`), freed at the hand-over ([ui](ui.md#0-main-menu)). A real loading
+screen is a later item (the user's).
+
+**The tools keep today's hand-over.** Every test, benchmark and tool loads through the input
+manager's API (`menu_load_game_from_path`, `menu_load_world_definition`, `menu_start_new_game`,
+`_refresh_after_world_load`) without `preload_terrain`, so they hand over as before: the stream
+benchmark, the stills tool (`--gameplay-road-benchmark`, idle matrix), the Godot tests and
+`./run.sh --test`. Unset, nothing of the preload runs (the phase is `Off`: the hold's units stay
+unbudgeted, the request limits and polls stay). The stream benchmark's `METRUM_STREAM_PRELOAD=1`
+loads as a player does (its settles then also wait for the hand-over, and the post-load sample
+records the hand-over's budget, `ready_budget`; the patch digests gain the built sets' digest,
+`built_digest`).
+
+**Measured** (untimed, one run a configuration, report only; release libraries, the stream
+benchmark's `post_load` phase on P-cores, Automatic = 512 MB on this machine; load average 3-12
+from another session's rows). Load to gameplay = the load call plus the hand-over; "old fill done" =
+the control with `METRUM_STREAM_WAIT_FILL=1`, the load's settle waiting for the background fill.
+
+| Map, target | Before: hand-over | Before: view settled | Old fill done | After: hand-over (= settled) | Built at the hand-over, terrain / water | Counted at the hand-over |
+|---|---:|---:|---:|---:|---:|---:|
+| Shipped Kuopio, Automatic (512 MB) | 5.3 s (166 / 128 built) | 7.3 s | nothing to fill (the square holds the map) | 6.8 s | 1,296 / 1,296 (the map) | 101.0 MB |
+| 60 km, 256 MB | 7.7 s (294 / 256) | 10.2 s | 12.9 s | 11.6 s | 3,844 / 3,844 (ring 12) | 224.0 MB |
+| 60 km, 512 MB | 7.4 s | 10.5 s | 18.9 s | 15.8 s | 9,604 / 9,604 (ring 30) | 475.3 MB |
+| 60 km, 1,024 MB | 7.2 s | 10.2 s | 25.1 s | 24.3 s (load 6-12 from another session during the run) | 13,689 / 13,689 (the map) | 653.5 MB |
+| 60 km, Whole map | 7.6 s | 10.2 s | 23.4 s | 18.3 s | 13,689 / 13,689 | 653.5 MB |
+
+The old background fill took 2.7 s (256 MB), 8.4 s (512 MB), 14.9 s (1,024 MB) and 13.2 s (Whole map)
+after the view had settled, with the camera still; it made almost no progress while the camera
+moved (`TERRAIN-51`). The preload's built sets equal what the old fill reached once done (3,844 at
+ring 12, 9,604 at ring 30, the map). On the shipped Kuopio the wanted square holds the whole map, so
+the preload is the view's own work: the hand-over waits about 1.5 s longer, for the water meshes
+(956 queued at the end of the holes, 4-6 applied a frame) and the remaining syncs; the view settles
+0.5 s sooner than before. On the 60 km map the fill builds about 1,000 terrain patches a second with
+frames of 3-13 ms: the payload jobs bound it, not the slice (`TERRAIN-61`). The load's first 0.5 s
+are frames of about 1 ms with no payload ready, then frames of up to 1.0-1.6 s while the holes build,
+on the control as on the branch.
+
+**Proof** (fresh): `terrain_preload_test` (headless, in `./run.sh --test`'s main chain): on a 20 km
+blank world (smaller than every preset) and at a 45 MB target set right after the load call, the
+preload starts with the view, builds no kept patch before the view is in step, hands over with
+`fill_left` 0, the whole map (1,600 + 1,600) or the keep rectangle (900 + 900 within 1,031 places)
+built and the backdrop ready; the console's `terrain` report reads "fill left 0"; the progress line
+showed ("Loading terrain: 1,029 of 3,200 patches"); 120 still frames run no build, show or release;
+a load without the preload never preloads; a 512 m world hands over; a load left in the middle of its
+preload (its scene freed, as a quit to the menu does) and a new player's load after it hand over with
+the `TERRAIN-35` asserts silent and no script error. Rust: the fill's order and set under different
+slices and payload paces (above), nothing built, requested or released after a preload with the eye
+still, the request limit lifted only while the preload runs. Rendered (the stream benchmark, untimed):
+the same preload on 8 workers and on 2 (`--cpus 0,2`) builds equal sets, residency and steps and land
+cover at every settle point on the 60 km map at 256 and 512 MB and on the shipped Kuopio (the patch
+digests' `built_digest`). The tools' path is unchanged: the shipped Kuopio's 12 settle points of the
+branch without the preload against the control are equal in every family (graded, buildings, roads,
+parked cars, vegetation, land cover, water meshes) and in the terrain and water residency at all 12,
+the steps at point 9 (`far_to_ground`) differing as `TERRAIN-45` describes; the streaming core's
+goldens replay with no mismatch (30k 3,144 frames, Kuopio 10,036).
+
 
 ## Implemented Runtime Contract
 
