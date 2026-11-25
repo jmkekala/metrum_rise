@@ -21395,6 +21395,7 @@ and the maximum**. The `jump` median leans to the branch (+0.69 ms against a spr
 against 3.9-4.3 ms) and `far_to_ground` (+0.38 against 0.61): the code these runs execute is the
 same as the control's (the same 1,296 sets, none made, and one comparison a cell effect), the two
 libraries differ in code layout. Load to settled 7.07-7.83 against 7.16-7.44 s (report only).
+
 ### The backdrop's data (`TERRAIN-41` round D1, 2026-11-25)
 
 Round D1 of the item's plan (`PLAN-TERRAIN-41` section 5): the data of a coarse whole-map terrain
