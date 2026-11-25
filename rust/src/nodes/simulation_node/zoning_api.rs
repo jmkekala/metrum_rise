@@ -817,7 +817,7 @@ impl SimulationNode {
             return payload;
         }
         payload.set("queued", true);
-        self.clear_terrain_patch_payload_jobs();
+        self.lock_terrain_patch_payload_jobs().abandon();
         payload
     }
 

@@ -411,6 +411,27 @@ impl TerrainPatchPayloadAsyncState {
         self.orphaned.clear();
         self.worker_perf = TerrainPayloadWorkerPerf::default();
     }
+
+    // Drops every job and result in the same world (an undo or a bulldoze) and hands every held
+    // request back as a retry for the next poll, so whoever asked hears of it and asks again
+    // (`TERRAIN-35`; a bare `clear` ended them silently, and the streaming core never asked for
+    // those patches again). Jobs still running are ignored when they end: nothing matches them.
+    // In key order, so the retries do not follow the map's order. `O(requests log requests)`.
+    pub(in crate::nodes::simulation_node) fn abandon(&mut self) {
+        let mut orphaned = std::mem::take(&mut self.orphaned);
+        orphaned.extend(self.requested.drain().map(|(key, state)| TerrainPatchPayloadRequest {
+            key,
+            request_id: state.request_id,
+            surface_generation: state.surface_generation,
+        }));
+        orphaned.sort_unstable_by_key(|request| {
+            (request.key.patch_z, request.key.patch_x, request.key.render_step_mm)
+        });
+        let worker_perf = self.worker_perf;
+        self.clear();
+        self.orphaned = orphaned;
+        self.worker_perf = worker_perf;
+    }
 }
 
 pub(in crate::nodes::simulation_node) struct WaterPatchPayloadAsyncState {

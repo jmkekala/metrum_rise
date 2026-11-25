@@ -582,3 +582,30 @@ fn water_patch_payload_async_stale_ready_payload_hands_its_request_back() {
     assert_eq!((counts, emitted), ([1, 0, 0], 1));
     assert!(retry.is_empty() && !state.requested.contains_key(&key));
 }
+
+// `TERRAIN-35`: an undo or a bulldoze drops the payload jobs' work; every request held then is
+// handed back as a retry, in key order, instead of ending silently.
+#[test]
+fn terrain_patch_payload_async_abandon_hands_every_request_back() {
+    let mut state = TerrainPatchPayloadAsyncState::new();
+    let keys = [(3, 1), (0, 2), (1, 1)].map(|(patch_x, patch_z)| TerrainPatchPayloadKey {
+        patch_x,
+        patch_z,
+        render_step_mm: 0,
+    });
+    for key in keys {
+        state.request(key, 4);
+    }
+    state.abandon();
+    let orphaned: Vec<_> = state.orphaned.iter().map(|request| request.key).collect();
+    assert_eq!(orphaned, vec![keys[2], keys[0], keys[1]]);
+    assert!(state.requested.is_empty() && state.in_flight.is_empty());
+    // A job of the abandoned set that ends later answers nothing more.
+    state.orphaned.clear();
+    state.ingest_failed(vec![TerrainPatchPayloadRequest {
+        key: keys[0],
+        request_id: 1,
+        surface_generation: 4,
+    }]);
+    assert!(state.orphaned.is_empty());
+}

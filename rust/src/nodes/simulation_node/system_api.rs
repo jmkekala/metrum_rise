@@ -36,7 +36,7 @@ impl SimulationNode {
         if self.cmd_tx.send(SimCommand::Undo).is_err() {
             return false;
         }
-        self.lock_terrain_patch_payload_jobs().clear();
+        self.lock_terrain_patch_payload_jobs().abandon();
         true
     }
 
