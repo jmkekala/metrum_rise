@@ -801,13 +801,6 @@ impl PatchStream {
             .filter_map(move |(index, _)| grid.map(|grid| grid.key(index)))
     }
 
-    /// Whether `key` is resident (drawn as a patch). `O(1)`.
-    pub(crate) fn is_resident(&self, key: PatchKey) -> bool {
-        self.grid
-            .filter(|grid| grid.contains(key))
-            .is_some_and(|grid| self.flags[grid.index(key)] & RESIDENT != 0)
-    }
-
     /// The wanted patches with whether each is resident (drawn) and its payload ready (it
     /// waits for its unit only), for the stream benchmark's drawn probe (`RENDER-32-N`).
     /// `O(grid)`.

@@ -8,6 +8,9 @@
 extends RefCounted
 
 const BACKDROP_SHADER := preload("res://assets/materials/terrain_backdrop.gdshader")
+# The real water's constants: the backdrop's flat water takes its deep colour and Fresnel terms
+# from them (`TERRAIN-41` D3), so the two cannot drift apart.
+const WaterRenderer := preload("res://scripts/renderers/water.gd")
 
 ## The blocks' materials, row-major as the backdrop's blocks.
 var materials: Array[ShaderMaterial] = []
@@ -50,6 +53,9 @@ func setup(stream: Node, scenario: RID, world_size: Vector2, cols: int, rows: in
 				"land_cover_world_bounds", Vector4(origin.x, origin.y, cover_side, cover_side)
 			)
 			material.set_shader_parameter("terrain_debug_lod_step", float(step_cells))
+			material.set_shader_parameter("backdrop_water_color", WaterRenderer.DEEP_WATER_COLOR)
+			material.set_shader_parameter("backdrop_water_fresnel",
+				Vector2(WaterRenderer.WATER_FRESNEL_POWER, WaterRenderer.WATER_FRESNEL_STRENGTH))
 			made.append(material)
 			rids.append(material.get_rid())
 	# Handed over before the old materials are dropped, so no cell names a freed material.
