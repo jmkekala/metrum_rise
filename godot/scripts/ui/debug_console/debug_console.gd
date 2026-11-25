@@ -445,6 +445,10 @@ func _terrain_command() -> void:
 	var choice := GameSettings.get_terrain_memory()
 	var setting := "Automatic" if choice == GameSettings.TERRAIN_MEMORY_AUTOMATIC else (
 		"Whole map" if choice == GameSettings.TERRAIN_MEMORY_WHOLE_MAP else "%d MB" % choice)
+	# The target can differ from the setting: METRUM_TERRAIN_BUDGET_MB, a test, a benchmark.
+	var setting_mb := GameSettings.get_terrain_memory_budget_mb()
+	if (-1 if setting_mb <= 0.0 else int(setting_mb * 1e6)) != target:
+		setting += ", overridden"
 	var lines := PackedStringArray([
 		"Terrain memory (%s): target %s, counted %s MB%s" % [setting,
 			"every patch" if target < 0 else "%.0f MB" % (target / 1e6), mb.call("counted_bytes"),

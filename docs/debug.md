@@ -963,7 +963,8 @@ available in every build and scene.
     use), trips under way by phase, why departure attempts since load drove or walked, and every
     rejected parking spot with its building and reason. The same text goes to `events`.
   - `terrain` (`terrain_memory`) prints the base terrain's memory (`TERRAIN-41`): the Terrain
-    memory setting and its target, the counted bytes and their parts (heights, land cover, water
+    memory setting and its target (marked overridden when `METRUM_TERRAIN_BUDGET_MB`, a test or a
+    benchmark set another), the counted bytes and their parts (heights, land cover, water
     depth, spare textures, water meshes, pooled sets), the places and keep ring (and whether the
     view alone is over the target), the wanted square (its patches and side: only it is drawn,
     built patches beyond it stay hidden whatever the target) and what is drawn of it, built and

@@ -21309,7 +21309,26 @@ Measured (`patch_bytes`, 16 patches, the 60 km flight): terrain 62,002 to 4,360 
 **The 1,024 MB observation on the 60 km map** (`TERRAIN-51`): not a release; the whole map is built
 but only the wanted square is drawn, and the fill pauses while the camera moves. Numbers in the row.
 
-**Rows.** See the round's hand-back until this record is completed.
+**Rows** (`dev` `c6a3e5223` merged in; control: `dev`'s release library with `dev`'s scripts,
+branch: the round's library and scripts, `METRUM_TERRAIN_BUDGET_MB` on both sides; the eight P-cores,
+8 workers). The shipped Kuopio (`turns,pan,zoom,jump`, perf channel off, 512 MB, nothing filled or
+released there), two C B B C sessions: the first read `far_to_ground`'s median (+0.05 / 0.03) and
+`far_zoom_out`'s maximum (+2.30 / 1.84) worse, the second `pan_out`'s maximum (+2.20 / 0.88), none
+in both; **pooled, all 16 phases level at the median and at the maximum**; load to settled level
+(report only). The 60 km `flight_high`, one pair each, report only (the user: the 60 km map is a test
+map): at 512 MB the branch against `dev` frame p50 14.9 / 15.2 ms, missing at most 160 / 188,
+wanted-to-drawn p95 91 / 107 frames, in-view holes 137 / 153, settles 8.5 + 6.5 / 8.7 + 6.7 s; at
+256 MB frame p50 14.8 / 14.6, missing 135 / 129, p95 63 / 61, holes 123 / 119, **settle after the
+turn 6.0 / 8.6 s**, counted bytes' worst frame 282.8 / 272.8 MB. The branch at 256 MB against itself
+at 512 MB: no bar worse (settle after the turn 6.0 / 6.5 s, frame p50 14.8 / 14.9 ms, missing 135 /
+160, p95 63 / 91, holes 123 / 137). These rows ran with `RENDER-78`'s relief light, whose frames are
+slower on both sides than the earlier rounds' (about 15 against 13 ms). Settle digests (untimed): the
+shipped Kuopio's 12 points equal to the fresh control in every family but the terrain and water
+steps at point 9 and the vegetation at point 10, where the two controls on `dev`'s code (the fresh
+run and round L1b's branch run) differ among themselves too (`TERRAIN-45`, `VEG-34`; at point 10 the
+branch equals round L1b's control); the water mesh check 0 mismatches at every point. On the 60 km
+flight the two controls differ among themselves at every point (the fill), report only; its graded,
+buildings, roads, parked and vegetation families equal the fresh control's.
 
 ## Implemented Runtime Contract
 
