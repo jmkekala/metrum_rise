@@ -206,6 +206,10 @@ terrain_grass_visual_debug_mode={
 "type": "int",
 "value": 0
 }
+terrain_relief_light={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
 
 [rendering]
 

@@ -38,7 +38,12 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | parking | dump | clear"
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | relief [<strength> [add|ratio]] | parking | dump | clear"
+# Trial (`RENDER-78`): the ground's relief light, the `terrain_relief_light` shader global
+# (terrain_relief_light.gdshaderinc): x the strength, y the form (0 add, 1 ratio). Zero is
+# today's light. METRUM_TERRAIN_RELIEF sets it at launch as "<strength>" or "<strength>:ratio".
+const RELIEF_GLOBAL := "terrain_relief_light"
+const RELIEF_ENVIRONMENT := "METRUM_TERRAIN_RELIEF"
 # Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
 const SHADER_GLOBAL_MODES := {
 	"terrain_visual": "terrain_visual_debug_mode",
@@ -59,6 +64,8 @@ var _event_logger: Logger
 var _chosen_size := Vector2.ZERO
 # Where the open console's top edge sits, below any keep-clear control at the top.
 var _top := 0.0
+# The relief light as last set (`RELIEF_GLOBAL`).
+var _relief := Vector2.ZERO
 
 func _ready() -> void:
 	layer = 120
@@ -78,6 +85,9 @@ func _ready() -> void:
 	# Launch values reach the shaders here, before the game scene builds its materials.
 	for mode in SHADER_GLOBAL_MODES:
 		_apply_shader_global(mode)
+	var relief_launch := OS.get_environment(RELIEF_ENVIRONMENT)
+	if not relief_launch.is_empty():
+		_set_relief(relief_launch.split(":", false))
 	_view.channel_toggled.connect(_on_channel_toggled)
 	_view.visual_mode_selected.connect(_on_visual_mode_selected)
 	_view.chip_toggled.connect(_on_chip_toggled)
@@ -291,6 +301,8 @@ func _run_command(text: String) -> void:
 			_channel_command(words)
 		"visual", "vis":
 			_visual_command(words)
+		"relief":
+			_relief_command(words)
 		"parking", "park":
 			_parking_command()
 		"dump":
@@ -346,6 +358,23 @@ func _visual_command(words: PackedStringArray) -> void:
 		_view.set_status("Unknown value '%s'. Usage: visual %s %s" % [words[2], mode, values])
 		return
 	_view.set_status("%s = %s" % [mode, MetrumDebug.visual_mode(mode)])
+
+func _relief_command(words: PackedStringArray) -> void:
+	if words.size() > 1 and not _set_relief(words.slice(1)):
+		_view.set_status("Usage: relief [<strength> [add|ratio]]")
+		return
+	_view.set_status("relief %s %s" % [_relief.x, "ratio" if _relief.y > 0.5 else "add"])
+
+# `values`: a strength and optionally the form, `add` (the default) or `ratio`.
+func _set_relief(values: PackedStringArray) -> bool:
+	if values.is_empty() or not values[0].is_valid_float() \
+			or (values.size() > 1 and not values[1].to_lower() in ["add", "ratio"]):
+		return false
+	var ratio := values.size() > 1 and values[1].to_lower() == "ratio"
+	_relief = Vector2(float(values[0]), 1.0 if ratio else 0.0)
+	# Written, never read back: the server's copy of a global is not readable at runtime.
+	RenderingServer.global_shader_parameter_set(RELIEF_GLOBAL, _relief)
+	return true
 
 ## Prints parking supply, car custody, live trip phases, why departures drove or walked, and
 ## every rejected parking spot with its building and reason.

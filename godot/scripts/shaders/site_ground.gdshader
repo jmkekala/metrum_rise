@@ -20,6 +20,7 @@ varying float cloud_sun;
 #include "res://scripts/shaders/ground_grass.gdshaderinc"
 #include "res://scripts/shaders/weather_clouds.gdshaderinc"
 #include "res://scripts/shaders/weather_rain.gdshaderinc"
+#include "res://scripts/shaders/terrain_relief_light.gdshaderinc"
 #include "res://scripts/shaders/ground_paving.gdshaderinc"
 
 void vertex() {
@@ -76,7 +77,7 @@ void light() {
 			clamp(ATTENUATION, 0.0, 1.0)
 		);
 		float facing = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
-		float soft_facing = mix(0.82, 1.0, facing);
+		float soft_facing = terrain_relief_facing(mix(0.82, 1.0, facing), facing, LIGHT, INV_VIEW_MATRIX);
 		// Clouds dim the sun only.
 		DIFFUSE_LIGHT += ALBEDO
 			* LIGHT_COLOR
