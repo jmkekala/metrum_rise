@@ -4,6 +4,7 @@
 //! scripted and random camera walks.
 
 use super::*;
+use crate::nodes::sim::render::stream::schedule::UnitSource;
 use std::collections::{BTreeMap, BTreeSet};
 
 // Kuopio's layout: 36 x 36 patches of 51 cells of 10 m, the last one short.
@@ -394,6 +395,7 @@ fn frame_pair(
         &FixedClock,
         false,
         in_view,
+        None,
     );
     deliver(terrain, land);
     deliver(water, lake);
@@ -938,4 +940,228 @@ fn releases_wait_while_the_other_layer_has_work() {
     layer.hold_releases(false);
     let work = wide_frame(&mut layer, &mut scripts, [12000.0, 800.0, 12000.0], f64::INFINITY);
     assert!(work.releases > work.donors && scripts.released.len() > held);
+}
+
+// `VEG-35` R1: a scripted unit source (the vegetation's waiting holes and replacements in its
+// order), each install a unit of `cost`, recording which ran as which unit of the frame.
+struct Trees {
+    holes: Vec<(Class, f64)>,
+    at: usize,
+    closed: bool,
+    cost: f64,
+    ran: Vec<(usize, u32)>,
+}
+
+impl Trees {
+    fn new(mut holes: Vec<(Class, f64)>, cost: f64) -> Self {
+        holes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        Self { holes, at: 0, closed: false, cost, ran: Vec::new() }
+    }
+}
+
+impl UnitSource for Trees {
+    fn next_unit(&self) -> Option<(Class, f64)> {
+        if self.closed { None } else { self.holes.get(self.at).copied() }
+    }
+    fn install_next(&mut self, budget: &mut FrameBudget, _: &dyn Clock, reserve_us: Option<f64>) -> bool {
+        let upgrade = self.holes[self.at].0 >= Class::UpgradeInView;
+        let admitted = match (upgrade, reserve_us) {
+            (false, _) => budget.admits(self.cost),
+            (true, Some(reserve_us)) => budget.admits_upgrade(self.cost, reserve_us),
+            (true, None) => true,
+        };
+        if !admitted {
+            self.closed = true;
+            return false;
+        }
+        self.ran.push((self.at, budget.units));
+        budget.record(self.cost, self.cost);
+        self.at += 1;
+        true
+    }
+}
+
+// A fresh layer's second frame (its first requested the nearest payloads) with `trees` in the
+// hole order under `budget`: the scripts, the class and distance of each activation in order, and
+// whether the frame held a hole back.
+fn holes_with_trees(
+    trees: Option<&mut Trees>,
+    budget: &mut FrameBudget,
+    in_view: &dyn Fn(PatchKey) -> bool,
+) -> (Scripts, Vec<(Class, f64)>, bool) {
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    let mut scripts = Scripts::default();
+    let eye = [0.0, 800.0, 0.0];
+    frame(&mut layer, &mut scripts, eye, 0.016);
+    layer.set_square(GRID.target(eye, 16000.0, false));
+    let held = frame_layers(
+        &mut [Some(LayerFrame::new(&mut layer, &mut scripts))],
+        Some(eye),
+        0.016,
+        budget,
+        &FixedClock,
+        false,
+        in_view,
+        trees.map(|trees| trees as &mut dyn UnitSource),
+    );
+    let places = scripts
+        .activations
+        .iter()
+        .map(|&(key, _)| {
+            let index = GRID.index(key);
+            let distance = ground_distance_sq(GRID, Some(eye), index);
+            let class = if in_view(key) {
+                Class::HoleInView
+            } else if distance <= NEAR_RING_M * NEAR_RING_M {
+                Class::HoleNear
+            } else {
+                Class::Hole
+            };
+            (class, distance)
+        })
+        .collect();
+    (scripts, places, held)
+}
+
+#[test]
+fn a_vegetation_hole_runs_before_the_farther_patch_holes_of_its_class_and_after_the_nearer() {
+    let nowhere = |_: PatchKey| false;
+    let (_, places, _) = holes_with_trees(None, &mut FrameBudget::new(f64::INFINITY), &nowhere);
+    assert!(places.len() >= 8 && places.is_sorted_by(|a, b| !orders_before(*b, *a)), "{places:?}");
+    // Trees between the patch holes, one tied with a patch hole (it goes after it), and farther
+    // ones of a later class.
+    let near = places.iter().filter(|place| place.0 == Class::HoleNear).count();
+    assert!(near >= 4, "{places:?}");
+    let mut wanted = vec![
+        (Class::HoleNear, 0.0),
+        (Class::HoleNear, (places[1].1 + places[2].1) * 0.5),
+        places[3],
+        (Class::Hole, 0.0),
+    ];
+    wanted.push((Class::Hole, places.last().unwrap().1 + 1.0));
+    let mut trees = Trees::new(wanted, 5.0);
+    let (scripts, with_trees, _) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(f64::INFINITY), &nowhere);
+    assert_eq!(with_trees, places, "the patch holes keep their order");
+    // Each tree runs as the unit after every patch hole ordered before it and the trees before it.
+    for &(at, unit) in &trees.ran {
+        let tree = trees.holes[at];
+        let before = places.iter().filter(|&&place| !orders_before(tree, place)).count();
+        assert_eq!(unit as usize, before + at, "tree {at} {tree:?}");
+    }
+    assert_eq!(trees.ran.len(), trees.holes.len());
+    assert_eq!(scripts.activations.len(), places.len());
+}
+
+#[test]
+fn an_in_view_vegetation_hole_runs_before_an_out_of_view_patch_hole_at_any_distance() {
+    let mut trees = Trees::new(vec![(Class::HoleInView, 1.0e12), (Class::Hole, 0.0)], 5.0);
+    let (_, places, _) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(f64::INFINITY), &|_| false);
+    assert!(places.iter().all(|place| place.0 > Class::HoleInView && place.1 < 1.0e12));
+    assert_eq!(trees.ran[0], (0, 0), "the frame's first unit");
+    assert_eq!(trees.ran[1].1 as usize, 1 + places.iter().filter(|place| place.0 < Class::Hole).count());
+}
+
+#[test]
+fn a_vegetation_hole_the_budget_refuses_waits_and_holds_the_frames_level_changes() {
+    // Nearer patch holes spend the budget (five 200 us builds of 1,000): the farther tree waits,
+    // its source closed for the frame, and is the next hole of the next frame.
+    let mut trees = Trees::new(vec![(Class::Hole, 1.0e12)], 50.0);
+    let (_, places, held) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(1000.0), &|_| false);
+    assert_eq!(places.len(), 5);
+    assert!(held && trees.closed && trees.ran.is_empty());
+    // A settled layer whose level changes are queued (the eye rose 800 m; the square, set by the
+    // 8 km floor, stays): with the frame's room spent before the vegetation's turn, the refused tree holds
+    // every budgeted level change; without it they run.
+    let run = |trees: Option<&mut Trees>| {
+        let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+        layer.reset(Some(GRID));
+        let mut scripts = Scripts::default();
+        for _ in 0..200 {
+            frame(&mut layer, &mut scripts, [0.0, 800.0, 0.0], 0.1);
+        }
+        assert!(!layer.has_pending_work());
+        let eye = [0.0, 1600.0, 0.0];
+        layer.set_square(GRID.target(eye, 16000.0, false));
+        let mut budget = FrameBudget::new(2000.0);
+        budget.record(1900.0, 1900.0);
+        let held = frame_layers(
+            &mut [Some(LayerFrame::new(&mut layer, &mut scripts))],
+            Some(eye),
+            0.1,
+            &mut budget,
+            &FixedClock,
+            false,
+            &|_| false,
+            trees.map(|trees| trees as &mut dyn UnitSource),
+        );
+        (layer.work(), held)
+    };
+    let mut trees = Trees::new(vec![(Class::Hole, 0.0)], 300.0);
+    let (with_trees, held) = run(Some(&mut trees));
+    let (without, held_without) = run(None);
+    assert_eq!((with_trees.activations, without.activations), (0, 0), "no patch hole");
+    assert!(without.lod_changes > 0 && !held_without, "{without:?}");
+    assert!(held && trees.closed && with_trees.lod_changes == 0, "{with_trees:?}");
+}
+
+#[test]
+fn the_same_inputs_give_the_same_units_with_vegetation_holes() {
+    let in_view = |key: PatchKey| key[0] > 18;
+    let run = || {
+        let mut trees = Trees::new(
+            vec![(Class::HoleInView, 1.0e5), (Class::HoleNear, 1.0e6), (Class::HoleNear, 3.0e6), (Class::Hole, 0.0)],
+            120.0,
+        );
+        let (scripts, _, held) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(3000.0), &in_view);
+        (scripts.calls, trees.ran, trees.closed, held)
+    };
+    let first = run();
+    assert!(!first.1.is_empty() && !first.0.is_empty());
+    assert_eq!(run(), first);
+}
+
+#[test]
+fn a_vegetation_replacement_runs_among_the_level_changes_by_class_and_distance() {
+    // A settled layer whose level changes are queued (the eye rose 800 m): a nearer replacement
+    // runs before every level change of its class, a farther one after them, and in a frame that
+    // held a hole back (the source's own) none runs.
+    let run = |trees: &mut Trees, spent: f64| {
+        let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+        layer.reset(Some(GRID));
+        let mut scripts = Scripts::default();
+        for _ in 0..200 {
+            frame(&mut layer, &mut scripts, [0.0, 800.0, 0.0], 0.1);
+        }
+        let eye = [0.0, 1600.0, 0.0];
+        layer.set_square(GRID.target(eye, 16000.0, false));
+        let mut budget = FrameBudget::new(2000.0);
+        if spent > 0.0 {
+            budget.record(spent, spent);
+        }
+        frame_layers(
+            &mut [Some(LayerFrame::new(&mut layer, &mut scripts))],
+            Some(eye),
+            0.1,
+            &mut budget,
+            &FixedClock,
+            false,
+            &|_| false,
+            Some(trees as &mut dyn UnitSource),
+        );
+        (layer.work(), budget.units)
+    };
+    let mut trees = Trees::new(vec![(Class::Upgrade, 0.0), (Class::Upgrade, 1.0e12)], 5.0);
+    let (work, units) = run(&mut trees, 0.0);
+    assert!(work.lod_changes > 2, "{work:?}");
+    assert_eq!(trees.ran, vec![(0, 0), (1, 1 + work.lod_changes as u32)]);
+    assert_eq!(units as usize, work.lod_changes + 2);
+    // A hole that does not fit holds the replacements behind it, but for the first in view of the
+    // frame, which runs as a layer's first in-view level change does.
+    let mut trees = Trees::new(vec![(Class::Hole, 0.0), (Class::Upgrade, 0.0)], 300.0);
+    let (work, _) = run(&mut trees, 1900.0);
+    assert!(trees.closed && trees.ran.is_empty() && work.lod_changes == 0, "{work:?}");
+    let mut trees = Trees::new(vec![(Class::UpgradeInView, 0.0), (Class::UpgradeInView, 1.0), (Class::Upgrade, 0.0)], 300.0);
+    let (work, _) = run(&mut trees, 1900.0);
+    assert_eq!((trees.ran.len(), trees.at, work.lod_changes), (1, 1, 0), "{work:?}");
 }

@@ -44,7 +44,7 @@
 //! Storage is dense per patch, sized once per world; a frame allocates nothing.
 
 use super::super::rings::{Cell, Lattice, RingBand, RingSet};
-use super::super::schedule::{Class, Clock, FrameBudget};
+use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, orders_before};
 
 mod budget;
 mod units;
@@ -1103,7 +1103,7 @@ impl PatchStream {
     fn release_one(
         &mut self,
         grid: PatchGrid,
-        frame: &mut FrameState<'_>,
+        frame: &mut FrameState<'_, '_>,
         predicted_us: f64,
         exec: &mut dyn PatchExecutor,
         busy: &mut Vec<u32>,
@@ -1170,6 +1170,7 @@ impl PatchStream {
             clock,
             unbudgeted,
             in_view,
+            None,
         );
         self.work
     }
@@ -1231,12 +1232,13 @@ impl PatchStream {
             .sort_unstable_by(|a, b| order_cmp(grid, *a, grid, *b));
     }
 
-    // The frame's holes (the head of `order`): activations while the budget admits them. A hole
-    // held back lets a cheaper one behind it run, and marks the frame: no level change runs on
-    // the budget after it. `O(holes)`.
+    // The frame's holes (the head of `order`): activations while the budget admits them, each
+    // after the hole source's holes that order before it (`VEG-35` R1, `FrameState::source_holes`).
+    // A hole held back lets a cheaper one behind it run, and marks the frame: no level change
+    // runs on the budget after it. `O(holes)`, `O(1)` a comparison with the source.
     fn run_holes(
         &mut self,
-        frame: &mut FrameState<'_>,
+        frame: &mut FrameState<'_, '_>,
         exec: &mut dyn PatchExecutor,
         blocked: &mut bool,
         release_blocked: &mut bool,
@@ -1246,10 +1248,11 @@ impl PatchStream {
         };
         let order = std::mem::take(&mut self.order);
         let mut busy = std::mem::take(&mut self.release_busy);
-        for &(class, _, index) in order.iter().take_while(|entry| entry.0 < Class::UpgradeInView) {
+        for &(class, distance, index) in order.iter().take_while(|entry| entry.0 < Class::UpgradeInView) {
             if *blocked {
                 break;
             }
+            frame.source_holes(Some((class, distance)));
             let index = index as usize;
             let key = grid.key(index);
             let (kind, cost) = if self.flags[index] & BUILT != 0 {
@@ -1314,7 +1317,7 @@ impl PatchStream {
     // steps cannot starve behind holes; one unit of `lod_us` a layer a frame). `O(1)`.
     fn run_step(
         &mut self,
-        frame: &mut FrameState<'_>,
+        frame: &mut FrameState<'_, '_>,
         exec: &mut dyn PatchExecutor,
         (class, _, index): (Class, f64, u32),
         in_view_steps: &mut usize,
@@ -1356,7 +1359,7 @@ impl PatchStream {
 
     // Patches that left, farthest first, while the budget admits them; the rest wait. `O(leaving
     // log leaving)`.
-    fn run_hides(&mut self, frame: &mut FrameState<'_>, exec: &mut dyn PatchExecutor) {
+    fn run_hides(&mut self, frame: &mut FrameState<'_, '_>, exec: &mut dyn PatchExecutor) {
         let Some(grid) = self.grid else {
             return;
         };
@@ -1410,7 +1413,7 @@ impl PatchStream {
     // `O(released + R log R)` while candidates exist, nothing otherwise.
     fn run_releases(
         &mut self,
-        frame: &mut FrameState<'_>,
+        frame: &mut FrameState<'_, '_>,
         exec: &mut dyn PatchExecutor,
         release_blocked: &mut bool,
         others_pending: bool,
@@ -1470,7 +1473,7 @@ impl PatchStream {
 
     // Prewarm builds, nearest first, once nothing of the layer waits and no unit of the frame was
     // held back.
-    fn run_prewarm(&mut self, frame: &mut FrameState<'_>, exec: &mut dyn PatchExecutor) {
+    fn run_prewarm(&mut self, frame: &mut FrameState<'_, '_>, exec: &mut dyn PatchExecutor) {
         let Some(grid) = self.grid else {
             return;
         };
@@ -1774,7 +1777,7 @@ impl<'a> LayerFrame<'a> {
 }
 
 // What a frame of the patch layers shares across them.
-struct FrameState<'a> {
+struct FrameState<'a, 'h> {
     eye: Option<[f32; 3]>,
     budget: &'a mut FrameBudget,
     clock: &'a dyn Clock,
@@ -1783,11 +1786,58 @@ struct FrameState<'a> {
     held: bool,
     // A hole of any layer was held back: no level change runs on the budget after it.
     hole_deferred: bool,
+    // Another owner's units in the order (`VEG-35` R1: the vegetation's), and whether its first
+    // in-view replacement of the frame ran.
+    source: Option<&'a mut (dyn UnitSource + 'h)>,
+    source_in_view: bool,
 }
 
-impl FrameState<'_> {
+impl FrameState<'_, '_> {
     fn admits(&self, predicted_us: f64) -> bool {
         self.unbudgeted || self.budget.admits(predicted_us)
+    }
+
+    // The source's next hole (`upgrades` false) or replacement (true). A replacement runs as a
+    // level change does: on the budget only while no hole of the frame was held back, and the
+    // source's first in-view one of the frame always (`exempt_in_view`).
+    fn source_next(&self, upgrades: bool) -> Option<(Class, f64)> {
+        let next = self.source.as_deref()?.next_unit()?;
+        let upgrade = next.0 >= Class::UpgradeInView;
+        (upgrade == upgrades && !(upgrade && self.hole_deferred && !self.exempt_in_view(next.0)))
+            .then_some(next)
+    }
+
+    // Whether a replacement of `class` is the source's first in-view one of the frame.
+    fn exempt_in_view(&self, class: Class) -> bool {
+        class == Class::UpgradeInView && !self.source_in_view
+    }
+
+    // The source's holes that order before a patch hole at `before` (every one with `None`),
+    // each as a unit while the budget admits it. One the budget refuses closes the source for the
+    // pass and marks the frame as a held patch hole does (`held`, `hole_deferred`), so no level
+    // change runs on the budget behind it. `O(1)` a comparison, `O(installed)` units.
+    fn source_holes(&mut self, before: Option<(Class, f64)>) {
+        while let Some(next) = self.source_next(false) {
+            if before.is_some_and(|before| !orders_before(next, before)) {
+                break;
+            }
+            if !self.install_from_source(Some(0.0)) {
+                self.hole_deferred = true;
+                break;
+            }
+        }
+    }
+
+    // Installs the source's next unit (a replacement leaving `reserve_us` for holes, `None`:
+    // whatever the budget); false when the budget refused it (the source closed itself), which
+    // holds the frame's fill.
+    fn install_from_source(&mut self, reserve_us: Option<f64>) -> bool {
+        let Some(source) = self.source.as_deref_mut() else {
+            return false;
+        };
+        let installed = source.install_next(self.budget, self.clock, reserve_us);
+        self.held |= !installed;
+        installed
     }
 }
 
@@ -1797,9 +1847,17 @@ impl FrameState<'_> {
 /// 2. the holes, layer by layer in `layers`' order (the water's, then the terrain's: the water's
 ///    holes are terrain patches resident since the last frame); a hole build takes a donor (the
 ///    farthest releasable kept patch, released inside the build's price) only while the budget
-///    is full; each layer's payload requests right after its holes;
+///    is full; each layer's payload requests right after its holes. `source` (`VEG-35` R1: the
+///    vegetation's waiting products) merges its holes into that sequence: before each patch hole,
+///    its holes that order before it (class, then squared ground distance from the eye; a tie
+///    goes to the patch hole) run while the budget admits them, and its other holes after the last
+///    layer's holes. One it cannot fit closes it for the frame and holds the frame as a held patch
+///    hole does. With no source, or nothing waiting in it, the units are those without it;
 /// 3. every layer's queued level changes merged in one class order (in view first, nearest
-///    first, then key; the earlier layer on a tie);
+///    first, then key; the earlier layer on a tie), with the source's replacements of drawn
+///    patches in the same order (a level change first on a tie), each on the budget less the
+///    holes' reserve while no hole of the frame was held back, its first in-view one always, as
+///    a layer's (`VEG-35` R1);
 /// 4. the hides, layer by layer;
 /// 5. releases on their own (not a donor), layer by layer: only while nothing the view waits for
 ///    is pending (no unit of the frame held back, no hole of the layer, no work of another
@@ -1812,9 +1870,10 @@ impl FrameState<'_> {
 /// when its predicted price fits (the frame's first unit always, a release never), and a layer's
 /// first in-view level change of the frame always runs. `eye` is the view's (none before a
 /// camera); `in_view` orders work only. Returns whether the budget held a hole back (`TERRAIN-41`
-/// L2: the graded book's builds then wait). `O(backlog log backlog)` while a backlog exists,
-/// nothing on a still frame; allocates nothing once the layers' lists have grown. At most 64
-/// layers (a bit each for the pending work).
+/// L2: the graded book's builds then wait; a held vegetation hole included). `O(backlog log
+/// backlog)` while a backlog exists, plus `O(1)` a patch hole for the source, nothing on a still
+/// frame; allocates nothing once the layers' lists have grown. At most 64 layers (a bit each for
+/// the pending work).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn frame_layers(
     layers: &mut [Option<LayerFrame<'_>>],
@@ -1824,6 +1883,7 @@ pub(crate) fn frame_layers(
     clock: &dyn Clock,
     unbudgeted: bool,
     in_view: &dyn Fn(PatchKey) -> bool,
+    source: Option<&mut dyn UnitSource>,
 ) -> bool {
     let mut frame = FrameState {
         eye,
@@ -1832,6 +1892,8 @@ pub(crate) fn frame_layers(
         unbudgeted,
         held: false,
         hole_deferred: false,
+        source,
+        source_in_view: false,
     };
     for at in layers.iter_mut().flatten() {
         at.layer.begin(eye, delta, in_view);
@@ -1845,7 +1907,16 @@ pub(crate) fn frame_layers(
             .order
             .partition_point(|entry| entry.0 < Class::UpgradeInView);
     }
-    // The level changes of every layer, merged: `O(changes x layers)`.
+    // The source's holes behind every patch hole.
+    frame.source_holes(None);
+    // What the replacements leave for holes: the layers' reserve (one value for all).
+    let reserve_us = layers
+        .iter()
+        .flatten()
+        .next()
+        .map_or(0.0, |at| at.layer.upgrade_reserve_us);
+    // The level changes of every layer and the source's replacements, merged: `O(changes x
+    // layers)`.
     loop {
         let mut next: Option<(usize, (Class, f64, u32))> = None;
         for (at, layer) in layers.iter().enumerate() {
@@ -1863,6 +1934,16 @@ pub(crate) fn frame_layers(
             if first {
                 next = Some((at, entry));
             }
+        }
+        // The source's replacement before the patches' next level change (class, nearest; the
+        // level change first on a tie), as an upgrade on the budget less the reserve.
+        if let Some(unit) = frame.source_next(true)
+            && next.is_none_or(|(_, entry)| orders_before(unit, (entry.0, entry.1)))
+        {
+            let exempt = frame.exempt_in_view(unit.0);
+            frame.source_in_view |= unit.0 == Class::UpgradeInView;
+            frame.install_from_source(if exempt { None } else { Some(reserve_us) });
+            continue;
         }
         let Some((at, entry)) = next else {
             break;

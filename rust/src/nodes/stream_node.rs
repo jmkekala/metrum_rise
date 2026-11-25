@@ -60,12 +60,12 @@ use crate::nodes::sim::render::stream::layers::vegetation::residency::{
 };
 use crate::nodes::sim::render::stream::layers::vegetation::{
     Delivery, InstallWaits, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT,
-    VegetationLayer, VegetationRules,
+    VegetationUnits, VegetationLayer, VegetationRules,
 };
 use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::stream::schedule::{
-    FrameBudget, MonotonicClock, OWNERS, Owner, STREAM_BUDGET_US, with_ledger,
+    FrameBudget, UnitSource, MonotonicClock, OWNERS, Owner, STREAM_BUDGET_US, with_ledger,
 };
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{Batch, VegetationProduct};
@@ -1678,13 +1678,16 @@ impl StreamNode {
 
     // The terrain and water patches' frame: the terrain's square from the view, its units, the
     // water's wanted set and halo from the terrain's residency, the water's units; the
-    // vegetation's tiers follow the terrain's residency.
-    fn patch_frame(&mut self) {
+    // vegetation's tiers follow the terrain's residency. The vegetation's waiting products take
+    // their place in the patch units' order (`VEG-35` R1: holes among the holes, replacements among
+    // the level changes); returns whether its cursor ran (the caller ends it and hands its
+    // installs to the residency).
+    fn patch_frame(&mut self) -> bool {
         self.frame_patch_us = 0.0;
         self.frame_patch_units_us = 0.0;
         self.patch_holes_deferred = false;
         let Some(grid) = self.terrain.grid() else {
-            return;
+            return false;
         };
         let start = std::time::Instant::now();
         let units_before = self.budget.measured_us;
@@ -1761,11 +1764,38 @@ impl StreamNode {
         });
         self.terrain.set_budget_full(full);
         self.water.set_budget_full(full);
+        // The vegetation's units in the patch units' order (`VEG-35` R1) while those run on the
+        // frame's budget: the products delivered in the earlier passes, ordered once
+        // (`begin_units`, `O(P log P)`), each placed by class, then squared ground distance from
+        // the eye, the patch unit first on a tie (`frame_layers`). In the post-load window (its own
+        // budget) and the load's hold (unbudgeted) they keep their place after the patch units.
+        // Their frustum is the camera's, computed only while products wait.
+        let vegetation_planes = (!window && !unbudgeted && self.vegetation.pending() > 0)
+            .then(|| self.camera_frustum())
+            .flatten();
+        let vegetation_in_view = |low: [f32; 3], high: [f32; 3]| {
+            vegetation_planes
+                .as_ref()
+                .is_none_or(|planes| box_in_view(planes, low, high))
+        };
+        let vegetation_joins = !window
+            && !unbudgeted
+            && self.backend.is_some()
+            && self.vegetation.begin_units(&vegetation_in_view);
         let budget = if window {
             &mut self.post_load_budget
         } else {
             &mut self.budget
         };
+        let vegetation_before = self.vegetation.install_waits()[1].measured_us;
+        let mut vegetation_units = self
+            .backend
+            .as_mut()
+            .filter(|_| vegetation_joins)
+            .map(|backend| VegetationUnits {
+                layer: &mut self.vegetation,
+                backend,
+            });
         let mut water_exec = self.water_scripts.as_mut().map(ScriptExecutor);
         let mut terrain_exec = self.terrain_scripts.as_mut().map(ScriptExecutor);
         let ran = [water_exec.is_some(), terrain_exec.is_some()];
@@ -1784,7 +1814,12 @@ impl StreamNode {
             &self.clock,
             unbudgeted,
             &in_view,
+            vegetation_units
+                .as_mut()
+                .map(|holes| holes as &mut dyn UnitSource),
         );
+        // The vegetation's units are its own record's (`vegetation`), not the patches'.
+        let vegetation_us = self.vegetation.install_waits()[1].measured_us - vegetation_before;
         if ran[0] {
             self.water_work = self.water.work();
             self.releases_total[1] += self.water_work.releases as u64;
@@ -1810,13 +1845,14 @@ impl StreamNode {
         {
             self.post_load_window = false;
         }
-        self.frame_patch_us = start.elapsed().as_secs_f64() * 1e6;
-        self.frame_patch_units_us = self.budget.measured_us - units_before
+        self.frame_patch_us = start.elapsed().as_secs_f64() * 1e6 - vegetation_us;
+        self.frame_patch_units_us = self.budget.measured_us - units_before - vegetation_us
             + if window {
                 self.post_load_budget.measured_us - window_before
             } else {
                 0.0
             };
+        vegetation_joins
     }
 
     // The road hydration's units under its own budget a frame, nearest first; the executor hears
@@ -1985,7 +2021,17 @@ impl StreamNode {
     fn run_units(&mut self, residency: bool, start: std::time::Instant) {
         self.update_camera();
         if residency {
-            self.patch_frame();
+            // The vegetation's installs among the patch units go to the residency before its
+            // frame, which reads them as drawn (`VEG-35` R1).
+            if self.patch_frame() {
+                let installed = self.vegetation.end_units();
+                self.frame_installs += installed;
+                if installed > 0
+                    && let Some(backend) = self.backend.as_mut()
+                {
+                    self.residency.take_installs(&mut self.vegetation, backend);
+                }
+            }
             let roads = std::time::Instant::now();
             self.road_frame();
             self.frame_road_us = roads.elapsed().as_secs_f64() * 1e6;

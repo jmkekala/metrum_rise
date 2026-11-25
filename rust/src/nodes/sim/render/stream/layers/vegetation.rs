@@ -28,7 +28,7 @@ use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
 };
 use super::super::rings::TravelBuckets;
-use super::super::schedule::{Class, Clock, FrameBudget, predicted_us};
+use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, predicted_us};
 use super::super::status::LayerStatus;
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{
@@ -240,6 +240,12 @@ pub(crate) struct VegetationLayer {
     // setup, this frame and since the last take (`VEG-35` R0).
     frame: u64,
     pass_installs: usize,
+    // The cursor of the frame's patch units (`VEG-35` R1): the next waiting product in the
+    // order, whether the budget closed it for the pass, and whether it ran this pass (the pass's
+    // later `install` keeps its slot-limit count).
+    cursor: usize,
+    cursor_closed: bool,
+    units_ran: bool,
     waits_total: InstallWaits,
     waits_frame: InstallWaits,
     waits_window: InstallWaits,
@@ -278,6 +284,9 @@ impl VegetationLayer {
             status: LayerStatus::default(),
             frame: 0,
             pass_installs: 0,
+            cursor: 0,
+            cursor_closed: false,
+            units_ran: false,
             waits_total: InstallWaits::default(),
             waits_frame: InstallWaits::default(),
             waits_window: InstallWaits::default(),
@@ -675,7 +684,10 @@ impl VegetationLayer {
 
     /// Installs waiting products within the frame's budget (all of them when `unlimited`), in
     /// class order, nearest first, then by key; `in_view` places a patch's box (x, z of its
-    /// square and the heights of its bounds) in the view. Returns the installs.
+    /// square and the heights of its bounds) in the view. Returns the installs. After the cursor
+    /// of the frame's patch units (`VEG-35` R1) this is the rest of the pass: what the cursor
+    /// left (a replacement held back) and the products pulled since. `O(P log P)` the order, P
+    /// products waiting.
     pub(crate) fn install(
         &mut self,
         backend: &mut impl RenderBackend,
@@ -684,39 +696,115 @@ impl VegetationLayer {
         in_view: &impl Fn([f32; 3], [f32; 3]) -> bool,
         unlimited: bool,
     ) -> usize {
-        self.status.blocked = 0;
+        if !std::mem::take(&mut self.units_ran) {
+            self.status.blocked = 0;
+        }
         if self.pending.is_empty() || self.rules.is_none() {
             return 0;
         }
         self.order(in_view);
         let mut done = 0;
-        let mut at = 0;
-        while at < self.pending.len() {
-            let pending = &self.pending[at];
-            let product = &pending.delivery.product;
-            let predicted = predicted_cost(product);
-            if !unlimited && !budget.admits(predicted) {
-                break;
+        for at in 0..self.pending.len() {
+            let admits = |budget: &FrameBudget, predicted| unlimited || budget.admits(predicted);
+            match self.try_install(backend, budget, clock, at, admits) {
+                Some(true) => done += 1,
+                Some(false) => {}
+                None => break,
             }
-            let needed = product.batches.iter().filter(|batch| !batch.proxy).count();
-            let freed = self
-                .installed
-                .get(&pending.delivery.key)
-                .map_or(0, |patch| patch.batches.len());
-            if needed > self.pool.available() + freed {
-                // Every slot of the limit is live: this patch waits; a later one (a replacement
-                // that frees its own slots) may still fit.
-                self.status.blocked += 1;
-                at += 1;
-                continue;
-            }
-            self.install_unit(backend, budget, clock, at, predicted);
-            done += 1;
-            at += 1;
         }
         self.drop_installed();
         self.status.frame = *budget;
         done
+    }
+
+    /// Opens the cursor for the frame's patch units (`VEG-35` R1): the waiting products in the
+    /// install order, holes ([`Class::Hole`] and before) then replacements. False (no cursor)
+    /// when nothing waits or before the rules. One sort, `O(P log P)`, P products waiting;
+    /// nothing allocated.
+    pub(crate) fn begin_units(&mut self, in_view: &impl Fn([f32; 3], [f32; 3]) -> bool) -> bool {
+        if self.pending.is_empty() || self.rules.is_none() {
+            return false;
+        }
+        self.status.blocked = 0;
+        self.order(in_view);
+        self.cursor = 0;
+        self.cursor_closed = false;
+        self.units_ran = true;
+        true
+    }
+
+    // The cursor's next unit: its class and squared ground distance from the eye. `O(1)`.
+    fn next_unit(&self) -> Option<(Class, f64)> {
+        if self.cursor_closed || !self.units_ran {
+            return None;
+        }
+        let pending = self.pending.get(self.cursor)?;
+        Some((pending.class, pending.distance_sq))
+    }
+
+    // Installs the cursor's unit (a hole as any unit, a replacement as an upgrade leaving
+    // `reserve_us`, whatever the budget with `None`), or passes it while the slot limit refuses
+    // it (the `install` rule). False when the budget refused it: the cursor closes for the pass.
+    fn install_next(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        budget: &mut FrameBudget,
+        clock: &dyn Clock,
+        reserve_us: Option<f64>,
+    ) -> bool {
+        let upgrade = self.pending[self.cursor].class >= Class::UpgradeInView;
+        let admits = |budget: &FrameBudget, predicted| match (upgrade, reserve_us) {
+            (false, _) => budget.admits(predicted),
+            (true, Some(reserve_us)) => budget.admits_upgrade(predicted, reserve_us),
+            (true, None) => true,
+        };
+        if self.try_install(backend, budget, clock, self.cursor, admits).is_none() {
+            self.cursor_closed = true;
+            return false;
+        }
+        self.cursor += 1;
+        true
+    }
+
+    /// Closes the cursor: the installed leave the waiting list for the residency to take
+    /// (`take_installs`). Returns the cursor's installs this pass. `O(P)`.
+    pub(crate) fn end_units(&mut self) -> usize {
+        let installed = self.pending.iter().filter(|pending| pending.installed).count();
+        self.drop_installed();
+        self.cursor_closed = true;
+        installed
+    }
+
+    // The waiting product at `at` as one unit when `admits` takes its predicted cost: `None` when
+    // the budget refuses it, `Some(false)` when every slot of the limit is live (it waits; a
+    // later one, a replacement that frees its own slots, may still fit), `Some(true)` installed.
+    fn try_install(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        budget: &mut FrameBudget,
+        clock: &dyn Clock,
+        at: usize,
+        admits: impl Fn(&FrameBudget, f64) -> bool,
+    ) -> Option<bool> {
+        let pending = &self.pending[at];
+        let product = &pending.delivery.product;
+        let predicted = predicted_cost(product);
+        if !admits(budget, predicted) {
+            return None;
+        }
+        let needed = product.batches.iter().filter(|batch| !batch.proxy).count();
+        let freed = self
+            .installed
+            .get(&pending.delivery.key)
+            .map_or(0, |patch| patch.batches.len());
+        if needed > self.pool.available() + freed {
+            // Every slot of the limit is live: this patch waits; a later one (a replacement
+            // that frees its own slots) may still fit.
+            self.status.blocked += 1;
+            return Some(false);
+        }
+        self.install_unit(backend, budget, clock, at, predicted);
+        Some(true)
     }
 
     // Installs the waiting product at `at` as one unit charged to `budget` at `predicted`, with
@@ -725,7 +813,7 @@ impl VegetationLayer {
         &mut self,
         backend: &mut impl RenderBackend,
         budget: &mut FrameBudget,
-        clock: &impl Clock,
+        clock: &dyn Clock,
         at: usize,
         predicted: f64,
     ) {
@@ -974,6 +1062,25 @@ impl VegetationLayer {
                     .set_visible(backend, batch.slot, Role::Reflection, shown);
             }
         }
+    }
+}
+
+/// The vegetation's waiting products as the patch units' source (`VEG-35` R1): the layer's
+/// cursor ([`VegetationLayer::begin_units`]) with the backend its installs draw through.
+pub(crate) struct VegetationUnits<'a, B: RenderBackend> {
+    /// The layer, its cursor open.
+    pub(crate) layer: &'a mut VegetationLayer,
+    /// The backend.
+    pub(crate) backend: &'a mut B,
+}
+
+impl<B: RenderBackend> UnitSource for VegetationUnits<'_, B> {
+    fn next_unit(&self) -> Option<(Class, f64)> {
+        self.layer.next_unit()
+    }
+
+    fn install_next(&mut self, budget: &mut FrameBudget, clock: &dyn Clock, reserve_us: Option<f64>) -> bool {
+        self.layer.install_next(self.backend, budget, clock, reserve_us)
     }
 }
 

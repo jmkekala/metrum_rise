@@ -42,6 +42,31 @@ pub(crate) enum Class {
     Upgrade,
 }
 
+/// Another owner's units in the patch layers' order (`VEG-35` R1, [`frame_layers`]): the
+/// vegetation's waiting products in its own order (class, squared ground distance from the eye,
+/// key), its holes among the patch layers' holes and its replacements of drawn patches among their
+/// level changes. `O(1)` a call.
+///
+/// [`frame_layers`]: super::layers::terrain::frame_layers
+pub(crate) trait UnitSource {
+    /// The next waiting unit's class and squared ground distance from the eye; `None` when none
+    /// waits or the budget closed the source for the pass.
+    fn next_unit(&self) -> Option<(Class, f64)>;
+    /// Installs the next waiting unit within `budget`: a hole as any unit (the frame's first
+    /// always), a replacement as an upgrade leaving `reserve_us` for holes
+    /// ([`FrameBudget::admits_upgrade`]), whatever the budget with `None` (the frame's first in-view
+    /// replacement, as a patch layer's first in-view level change). False when the budget refused
+    /// it, which closes the source for the pass.
+    fn install_next(&mut self, budget: &mut FrameBudget, clock: &dyn Clock, reserve_us: Option<f64>) -> bool;
+}
+
+/// Whether a unit at `a` (class, squared ground distance from the eye) runs before one at `b`:
+/// class, then nearest. On a tie the patch layers' unit runs first (owner order water, terrain,
+/// vegetation; keys never tie across owners).
+pub(crate) fn orders_before(a: (Class, f64), b: (Class, f64)) -> bool {
+    a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
+}
+
 /// A source of monotonic microseconds.
 pub(crate) trait Clock {
     /// Microseconds since an arbitrary fixed point.
@@ -138,7 +163,10 @@ impl FrameBudget {
 }
 
 /// The streaming node's reserve against upgrades installed ahead of it in the frame, while its
-/// last frame left holes waiting (`RENDER-32-Q`): the classes' order across owners.
+/// last frame left holes waiting (`RENDER-32-Q`): the classes' order across owners. The node's
+/// holes are the water's, the terrain's and the vegetation's; since `VEG-35` R1 they spend the
+/// reserve in one order (class, nearest) ahead of the patches' level changes, so the vegetation's
+/// waiting holes, which hold the reserve on, can reach it.
 pub(crate) const HOLE_RESERVE_US: f64 = 1000.0;
 
 /// The frame's install owners (`RENDER-32-Q`), each charging the one ledger. The process order

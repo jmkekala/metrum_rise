@@ -350,6 +350,55 @@ fn installs_take_class_then_distance_then_key_order_within_the_budget() {
 }
 
 #[test]
+fn the_hole_cursor_takes_the_holes_in_the_install_order_and_leaves_the_rest_to_install() {
+    // `VEG-35` R1: the order test's patches; the cursor gives the holes, then the replacement,
+    // in the same order; a pass's later install takes what is left.
+    let mut backend = Recorder::new();
+    let mut layer = layer(1024, 64);
+    let clock = StepClock::new(1.0);
+    layer.deliver(delivery([0, 1, 4], 1, product(10, 0, true, true)));
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    layer.install(&mut backend, &mut budget, &clock, &nowhere, true);
+    layer.clear_events();
+    let keys: [PatchKey; 7] = [[0, 1, 4], [2, 0, 4], [5, 0, 4], [1, 0, 4], [6, 0, 4], [3, 3, 1], [0, 2, 4]];
+    for (serial, &key) in keys.iter().enumerate() {
+        layer.deliver(delivery(key, serial as u64 + 2, product(12, serial, true, true)));
+    }
+    let in_view = |low: [f32; 3], _: [f32; 3]| low[0] >= 5.0 * SPAN && low[2] < SPAN;
+    // A frame without room: the first hole is refused and closes the cursor.
+    let mut full = FrameBudget::new(STREAM_BUDGET_US);
+    full.record(STREAM_BUDGET_US, STREAM_BUDGET_US);
+    assert!(layer.begin_units(&in_view));
+    assert_eq!(layer.next_unit().map(|hole| hole.0), Some(Class::HoleInView));
+    assert!(!layer.install_next(&mut backend, &mut full, &clock, Some(0.0)));
+    assert_eq!(layer.next_unit(), None);
+    assert_eq!((layer.end_units(), layer.pending()), (0, 7));
+    // With room: every hole, nearest first in its class, then nothing.
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    assert!(layer.begin_units(&in_view));
+    let mut classes = Vec::new();
+    while let Some((class, _)) = layer.next_unit().filter(|unit| unit.0 <= Class::Hole) {
+        classes.push(class);
+        assert!(layer.install_next(&mut backend, &mut budget, &clock, Some(0.0)));
+    }
+    assert_eq!(classes, [[Class::HoleInView; 2].as_slice(), &[Class::HoleNear; 3], &[Class::Hole]].concat());
+    assert_eq!(layer.next_unit().map(|unit| unit.0), Some(Class::Upgrade), "the replacement last");
+    assert_eq!((layer.end_units(), layer.pending()), (6, 1));
+    let order: Vec<PatchKey> = layer
+        .events()
+        .as_chunks::<EVENT_LANES>()
+        .0
+        .iter()
+        .map(|event| [event[0] as i32, event[1] as i32, event[2] as i32])
+        .collect();
+    assert_eq!(order, vec![[5, 0, 4], [6, 0, 4], [1, 0, 4], [0, 2, 4], [2, 0, 4], [3, 3, 1]]);
+    layer.clear_events();
+    assert_eq!(layer.install(&mut backend, &mut budget, &clock, &in_view, false), 1);
+    assert_eq!(layer.installed([0, 1, 4]).unwrap().serial, 2, "the upgrade");
+    check_one_version(&layer, &backend);
+}
+
+#[test]
 fn the_install_counters_read_waits_classes_and_stalled_passes() {
     let mut backend = Recorder::new();
     let mut layer = layer(1024, 64);
