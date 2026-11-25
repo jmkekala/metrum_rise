@@ -1485,14 +1485,10 @@ impl StreamNode {
         self.terrain.hold_prewarm(vegetation_waits);
         self.water.hold_releases(vegetation_waits);
         self.terrain.hold_releases(vegetation_waits);
-        // Over the budget, the terrain's releases give the bytes back in the room the frame
-        // left; the water's stay donors and own-class releases (round B1's soft bound, the
-        // margin is the user's).
-        let over = self
-            .terrain_budget
-            .is_some_and(|budget| self.counted_bytes() > budget);
-        self.terrain.set_over_budget(over);
-        // A hole build takes a donor only while one more place would not fit (`TERRAIN-41` B1c).
+        // Over the budget, releases still wait for the view like any release that is not a
+        // donor (`TERRAIN-41` B2: the budget is a target; the count returns to it once the view
+        // is in step, `PatchStream::run_releases`). A hole build takes a donor only while one
+        // more place would not fit (`TERRAIN-41` B1c).
         let [terrain_place, water_place] = place_bytes(&grid);
         let full = self.terrain_budget.is_some_and(|budget| {
             self.counted_bytes() + terrain_place + water_place > budget

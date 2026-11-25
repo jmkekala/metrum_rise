@@ -875,24 +875,34 @@ fn the_same_eyes_give_the_same_units_and_a_still_frame_does_nothing() {
 }
 
 #[test]
-fn over_the_budget_releases_run_while_holes_wait_for_their_payloads() {
-    // A jump: the new square's holes wait for their payloads (no build, so no donor). Within the
-    // budget the old patches wait; over it (the extras grew) they are released in the room the
-    // holes left.
-    for over in [false, true] {
-        let mut layer = wide_layer(Some(3500));
-        let mut scripts = Scripts::default();
-        settle(&mut layer, &mut scripts, [-12000.0, 800.0, -3000.0], f64::INFINITY);
-        layer.set_over_budget(over);
-        let eye = [12000.0, 800.0, 12000.0];
-        layer.set_square(WIDE.target(eye, 1.0e6, false));
-        // Room for every hide and release of the frame.
-        let mut budget = FrameBudget::new(1.0e6);
-        let work = layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
-        assert!(layer.pending()[0] > 0 && work.activations == 0);
-        assert_eq!(work.donors, 0);
-        assert_eq!(work.releases > 0, over, "over the budget: {over}");
+fn over_the_budget_releases_wait_for_the_view_then_return_the_count_within_its_places() {
+    // The extras grew while the view had work, so the places shrank under the built count
+    // (`TERRAIN-41` B2: the budget is a target). A release that is not a donor waits while the
+    // view waits for anything (here the vegetation, then holes waiting for their payloads); once
+    // the view is in step the releases bring the built count within the places.
+    let mut layer = wide_layer(Some(3500));
+    let mut scripts = Scripts::default();
+    let eye = [-12000.0, 800.0, -3000.0];
+    settle(&mut layer, &mut scripts, eye, f64::INFINITY);
+    let places = 2000;
+    assert!(layer.built_count() > places);
+    layer.set_places(Some(places as u64));
+    assert!(!layer.releasable.is_empty());
+    layer.hold_releases(true);
+    for _ in 0..20 {
+        assert_eq!(wide_frame(&mut layer, &mut scripts, eye, f64::INFINITY).releases, 0);
     }
+    layer.hold_releases(false);
+    // A jump: the new square's holes wait for their payloads (no build, so no donor).
+    let far = [12000.0, 800.0, 12000.0];
+    layer.set_square(WIDE.target(far, 1.0e6, false));
+    let mut budget = FrameBudget::new(1.0e6);
+    let work = layer.frame(Some(far), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+    assert!(layer.pending()[0] > 0 && work.activations == 0);
+    assert_eq!(work.releases, 0, "a release ran while holes waited");
+    // In step at the new eye, the count returns within the places, at the frame budget's pace.
+    settle(&mut layer, &mut scripts, far, 2000.0);
+    assert!(layer.built_count() <= places, "{} built", layer.built_count());
 }
 
 #[test]

@@ -505,10 +505,8 @@ pub(crate) struct PatchStream {
     released: Vec<PatchKey>,
     // Candidates a release found busy this frame (scratch, returned to the list at its end).
     release_busy: Vec<u32>,
-    // The other layer's holes wait: releases run only as donors; unless the counted bytes are
-    // over the budget (its extras grew), when releases run in the room the holes left.
+    // The vegetation has patches the view waits for: releases run only as donors.
     releases_held: bool,
-    over_budget: bool,
     // One more place would not fit the budget: a hole build takes a donor (`TERRAIN-41` B1c).
     // True until the stream node says (a layer without a node behaves as round B1's).
     budget_full: bool,
@@ -571,7 +569,6 @@ impl PatchStream {
             released: Vec::new(),
             release_busy: Vec::new(),
             releases_held: false,
-            over_budget: false,
             budget_full: true,
             square: None,
             halo: None,
@@ -683,14 +680,6 @@ impl PatchStream {
     /// waits behind a release).
     pub(crate) fn hold_releases(&mut self, held: bool) {
         self.releases_held = held;
-    }
-
-    /// The counted bytes are over the budget (`TERRAIN-41` B1: the extras grew, so the places
-    /// shrank faster than the donors give back): releases run in the room the frame's holes left,
-    /// holes waiting or not. A release comes after every hole of the frame, so it takes no room a
-    /// hole could have had.
-    pub(crate) fn set_over_budget(&mut self, over: bool) {
-        self.over_budget = over;
     }
 
     /// One more place would not fit the budget (`TERRAIN-41` B1c): only then does a hole build
@@ -1403,8 +1392,14 @@ impl PatchStream {
     // first. They wait while anything the view waits for is pending: a unit of the frame held
     // back, a hole of this layer, work of another layer (`others_pending`, read after its units
     // ran) or the vegetation's (`hold_releases`) (in a frame of holes a release is a build's
-    // donor); unless the counted bytes are over the budget, when they run in the room the frame
-    // left whatever waits (B1's soft bound). Then the busy candidates go back to the list.
+    // donor). Over the budget too (`TERRAIN-41` B2: the budget is a target): run in the room
+    // left whatever waited, they took the vegetation's installs' room, whose holes then kept the
+    // ledger's reserve from the level changes, and a settle at 256 MB waited seconds for that.
+    // They still make progress: once the view is in step nothing holds them, each frame with
+    // room releases at least one, the list is finite and gains entries only when the square or
+    // the places move (finitely often once the view is still), and once it is empty every built
+    // patch lies inside the release rectangle, whose places fit the budget unless the view alone
+    // overruns it. Then the busy candidates go back to the list.
     // `O(released + R log R)` while candidates exist, nothing otherwise.
     fn run_releases(
         &mut self,
@@ -1421,7 +1416,7 @@ impl PatchStream {
             || others_pending
             || frame.held
             || self.missing != self.refused;
-        if !*release_blocked && (self.over_budget || !waits) && !self.releasable.is_empty() {
+        if !*release_blocked && !waits && !self.releasable.is_empty() {
             let eye = frame.eye;
             self.sort_releasable(grid, &|index| ground_distance_sq(grid, eye, index));
             while !self.releasable.is_empty()
@@ -1801,8 +1796,8 @@ impl FrameState<'_> {
 /// 4. the hides, layer by layer;
 /// 5. releases on their own (not a donor), layer by layer: only while nothing the view waits for
 ///    is pending (no unit of the frame held back, no hole of the layer, no work of another
-///    layer, no vegetation hold), or while the counted bytes are over the budget (the terrain's;
-///    then in the room the frame left);
+///    layer, no vegetation hold), over the budget or not (`TERRAIN-41` B2: the budget is a
+///    target the count returns to once the view is in step);
 /// 6. prewarm (the budget's fill), layer by layer, once nothing of the frame was held back, the
 ///    layer has nothing waiting and no release candidate is left.
 ///
