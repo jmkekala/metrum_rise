@@ -130,9 +130,7 @@ fn run(spawner: &BackdropSpawner) {
     let start = Instant::now();
     match previous {
         None => {
-            let blocks = crate::thread_pools::install_background(|| {
-                build_blocks(&taken.terrain, &taken.water, &taken.layout)
-            });
+            let blocks = build_blocks(&taken.terrain, &taken.water, &taken.layout);
             let installed = spawner.shared.install_build(world, taken.layout, blocks);
             let mut state = spawner.shared.state.lock().unwrap();
             state.running = false;

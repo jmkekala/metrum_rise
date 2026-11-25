@@ -240,17 +240,19 @@ pub(crate) fn build_block(
     }
 }
 
-/// Builds every block, in parallel on the calling pool, in block order whatever the workers.
-/// `O(blocks x side^2)` grid reads.
+/// Builds every block, in parallel on the background pool (inline on the caller's pool when it
+/// is a Rayon worker), in block order whatever the workers. `O(blocks x side^2)` grid reads.
 pub(crate) fn build_blocks(
     terrain: &SparseChunkGrid<f32>,
     water: &SparseChunkGrid<f32>,
     layout: &Layout,
 ) -> Vec<Block> {
-    (0..layout.block_count())
-        .into_par_iter()
-        .map(|index| build_block(terrain, water, layout, index))
-        .collect()
+    crate::thread_pools::install_background(|| {
+        (0..layout.block_count())
+            .into_par_iter()
+            .map(|index| build_block(terrain, water, layout, index))
+            .collect()
+    })
 }
 
 /// One lattice point's samples, for a refresh.
