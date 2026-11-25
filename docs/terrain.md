@@ -21330,6 +21330,105 @@ branch equals round L1b's control); the water mesh check 0 mismatches at every p
 flight the two controls differ among themselves at every point (the fill), report only; its graded,
 buildings, roads, parked and vegetation families equal the fresh control's.
 
+### The backdrop's data (`TERRAIN-41` round D1, 2026-11-25)
+
+Round D1 of the item's plan (`PLAN-TERRAIN-41` section 5): the data of a coarse whole-map terrain
+that later rounds draw where a wanted patch is not resident (round D2) so that a slow machine sees
+coarse ground instead of sky after a load or a zoom-out. Nothing is drawn in this round.
+
+**The product** (`stream/layers/backdrop.rs`). The whole map on the 64 m lattice, the base patches'
+detail step 8, in blocks of 16 x 16 patches (8,192 m), three channels a block:
+
+| Channel | Texels a block | Bytes a block | 18,432 m (9 blocks) | 59,904 m (64 blocks) |
+|---|---|---:|---:|---:|
+| Ground height, R32F, 64 m | 129 x 129 | 66,564 | 0.60 MB | 4.26 MB |
+| Water surface, R32F, 64 m | 129 x 129 | 66,564 | 0.60 MB | 4.26 MB |
+| Land cover, R8, 32 m | 257 x 257 | 66,049 | 0.59 MB | 4.23 MB |
+| Sum | | 199,177 | 1,792,593 bytes | 12,747,328 bytes |
+
+The same bytes are held twice: the system-memory copy an edit rewrites and the textures. A ground
+sample is the base heightmap's sample at that lattice point, bit for bit (what a step-8 patch draws
+at that vertex); points beyond the world's last sample (the last blocks of a map that is not a whole
+number of blocks) repeat the edge sample. The water surface is the ground plus the authored depth
+where the depth exceeds 0.001 m (the water shader's wet threshold), else the ground itself, so
+"above the ground" is exactly "wet". The land cover is the mean crown coverage of each 4 x 4 square of
+a patch's 8 m coverage texels, cell-centred, 256 values a block row, plus one overlap row and column
+that repeat the next block's first, so a filter across a block edge reads the same values on both
+sides (the plan's 257 x 257, read as cell-centred with an overlap rather than a vertex lattice: a
+patch's coverage has a one-texel border only, too little for a mean centred on a 32 m lattice
+point). The block size, the steps, the formats and what the water and land cover channels hold are
+one constant each, for round D2 and the user.
+
+**Built and kept.** A sampling job on the background pool (`simulation_node/async_backdrop.rs`) keeps
+the product equal to the heightmap and the authored water. The terrain payload poll, which already
+takes the core under `try_lock` every frame, publishes the sources' key in that hold: the world
+epoch, the terrain's source generation and the address of the water's depth grid (the backdrop
+holds a shared copy of that grid, so every later water write moves the grid to a new allocation:
+`TERRAIN-38`'s in-place updates as much as a fill edit's whole re-solve). The streaming node
+compares the key with the one last sampled once a frame (`O(1)`, no core lock of its own) and starts
+the job when it moved. The job takes the core under `try_lock` (a busy core or a thread waiting at
+the core's turnstile ends it; the next frame asks again) for `O(storage chunks)` pointer copies of
+the terrain's source grid and one `Arc` of the water's, and samples off the core:
+
+- *the build* (a world's first job): every block in parallel on the background pool;
+- *a refresh*: the storage chunks (64 x 64 samples, one patch) whose payload pointers diverged from
+  the grids it last sampled (`SparseChunkGrid::diverged_chunks_since`), terrain and water apart; their
+  lattice points (64 a chunk, and the points beyond the world where a chunk holds the world's last
+  sample) are sampled and compared bitwise with the product under the backdrop's lock, and a block's
+  channel is marked for upload only where a value changed. A sculpt costs `O(dirty chunks x 64)`
+  reads; a water re-solve that rewrites the whole grid costs one comparison pass on the worker and
+  uploads only the blocks whose values changed.
+
+The renderer's dirty patch sets are not used: they are acknowledged by the terrain renderer's
+commit, and road and site changes (which leave the base heightmap alone) mark them too. The land
+cover comes from the terrain payload workers and the land cover jobs (`RENDER-40`) as each coverage
+is baked; a patch whose payload was never built is open ground (0). A world change drops the product
+and moves the backdrop's world serial, so a job, a payload or a land cover job of the old world
+installs nothing.
+
+**Uploads** (`BackdropLayer`, stream node pass). Two calls were added to the stream backend and its
+recorder: `texture_2d_create` (a texture made from its bytes) and `texture_2d_replace` (a new texture
+made the same way and moved under the old handle with `RenderingServer.texture_replace`, so a
+material that binds it in round D2 reads the new texels without a rebind). A texture is never written
+in place: round B1b measured that a texture updated after its creation costs every draw that binds
+it. The upload's image and byte array are made for the call and dropped, so nothing of them stays in
+system memory. One texture is one unit, predicted from its bytes (about 34 us), run only in the room
+the frame's ledger has left after the vegetation (never as a frame's exempt first unit: nothing waits
+for it yet), or all at once while the load holds the frame.
+
+**A step a loading screen can wait for.** `StreamNode.get_backdrop()` reports `built`, `ready` (built
+for the current world, every texture uploaded, no job running), the bytes (`product_bytes`,
+`texture_bytes`), the last build's and refresh's worker time and counts, uploads, and the engine's
+texture and static memory moved around the uploads (`video_delta_bytes`, `static_delta_bytes`). A
+loading screen that keeps the load's hold (`set_terrain_load_settling(true)`, as round B2's preload
+note describes) until `ready` gets the backdrop built and uploaded before the map shows; today's load
+does not wait for it (load time is report only). The stream benchmark records the dictionary in every
+sample (`backdrop`).
+
+**Costs** (a diagnostic probe in the optimized test binary, the eight P-cores, 8 workers, one run,
+the machine not quiet; not acceptance timing): the key read in the payload poll 7 ns; the take under
+the core 0.006 ms on the shipped map (1,369 stored terrain chunks) and 0.060 ms at 60 km (13,924);
+the build 0.5-0.9 ms (9 blocks) and 4.0-4.6 ms (64 blocks) on the background pool; a sculpt (radius
+60 m, 2 m) refreshed in 0.02 ms (1 chunk, 64 points, 4 changed) and 0.26 ms (4 chunks); a whole water
+re-solve that rewrites every chunk with the same values 4.3 ms (1,065 water chunks, 116,665 points
+compared, none changed, no upload) and 24.3 ms at 60 km (7,524 chunks, 550,305 points), all on a
+worker. Uploads: 27 textures on the shipped map once built; the land cover of a block is sent again
+(at most once a frame) while its patches' payloads land after a load (171-187 uploads on a 20 km
+blank world's load in the setting test, all in the ledger's leftover room).
+
+**Proof (Rust, `backdrop/tests.rs`, `async_backdrop.rs`).** Every ground and water sample of every
+block equals the heightmap's and the water's value bit for bit (edge repeats beyond the world); the
+product is the same on 1 and 8 workers; land cover noted in two orders gives one product, and the
+overlap repeats the next block; a brush edit changes only its chunks' blocks and equals a full
+rebuild (also on a block edge, where both blocks change, and at the world's last sample, where the
+points beyond it follow); an edit between lattice points changes nothing; a water re-solve that
+rewrites every chunk with one lake's level moved marks only that lake's block, water channel only;
+the bytes are the table's; uploads through the recorder create each channel once with the product's
+bytes, send nothing when nothing waits, replace only the changed channels under their handles, and
+free everything for another world; a land cover noted before the build reaches its world's product
+only. On a live `SimCore`: a sculpt and an in-place water write (`TERRAIN-38`'s path) move the key,
+refresh only their blocks and land on the full rebuild.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
