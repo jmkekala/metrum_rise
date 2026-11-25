@@ -53,8 +53,11 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn drain_completed_terrain_patch_payload_jobs(
         &self,
     ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
-        let drained =
-            Self::finish_terrain_patch_payload_jobs(&self.core, &self.terrain_patch_payload_jobs);
+        let drained = Self::finish_terrain_patch_payload_jobs(
+            &self.core,
+            &self.terrain_patch_payload_jobs,
+            &self.backdrop,
+        );
         // Patches noted since the last publication reach the road tool's terrain inputs now,
         // not at the next edit's publication (`ROAD-68-E`). `O(noted patches)`, never blocking
         // on the core.
@@ -73,11 +76,16 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn finish_terrain_patch_payload_jobs(
         core: &Mutex<SimCore>,
         jobs: &Mutex<TerrainPatchPayloadAsyncState>,
+        backdrop: &crate::nodes::sim::render::stream::layers::backdrop::BackdropShared,
     ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
         // Workers must not wait for SimCore: its owner may be waiting on Rayon.
-        let Some(_core) = Self::try_lock_shared_core(core) else {
+        let Some(core) = Self::try_lock_shared_core(core) else {
             return (Vec::new(), Vec::new());
         };
+        // The backdrop's sources key, in this poll's hold of the core (every frame's), so the
+        // streaming node learns of a terrain or water change without a core lock of its own
+        // (`TERRAIN-41` D1). `O(1)`.
+        backdrop.publish_key(super::super::async_backdrop::source_key(&core));
         let (completed, failed) = {
             let mut jobs = jobs
                 .lock()

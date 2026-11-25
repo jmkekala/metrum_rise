@@ -557,6 +557,8 @@ pub(crate) struct BackdropState {
     pub(crate) sampled: Sampled,
     /// Whether a sampling job is queued or running.
     pub(crate) running: bool,
+    /// The sources' key as the terrain payload poll last read it.
+    pub(crate) published: Option<SourceKey>,
     /// Counters.
     pub(crate) stats: Stats,
 }
@@ -585,6 +587,14 @@ impl BackdropShared {
         state.product = None;
         state.early_covers.clear();
         state.sampled = Sampled::default();
+    }
+
+    /// Publishes the sources' key read under the core (the terrain payload poll's hold, once a
+    /// frame); a busy state skips this frame's. `O(1)`.
+    pub(crate) fn publish_key(&self, key: SourceKey) {
+        if let Ok(mut state) = self.state.try_lock() {
+            state.published = Some(key);
+        }
     }
 
     /// Notes patch `patch`'s land cover from a payload of world `world`: written into the

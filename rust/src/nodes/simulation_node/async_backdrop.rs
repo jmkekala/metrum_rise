@@ -4,10 +4,11 @@
 //! backdrop's product ([`backdrop`](crate::nodes::sim::render::stream::layers::backdrop)) equal
 //! to the heightmap and the authored water.
 //!
-//! The streaming node asks once a frame ([`check`]): one `try_lock` of the core and an `O(1)`
-//! comparison of the world epoch, the terrain's source generation and the water grid's address
-//! with the key the job last sampled. Only when it moved does a job run, on the background pool,
-//! one at a time. The job takes the core under `try_lock` (a busy core ends it; the next frame
+//! The terrain payload poll, which holds the core under `try_lock` every frame, publishes the
+//! sources' key: the world epoch, the terrain's source generation and the water grid's address
+//! ([`source_key`], `O(1)`). The streaming node compares it once a frame ([`check`]) with the key
+//! the job last sampled; only when it moved does a job run, on the background pool, one at a time.
+//! Nothing here adds a lock of the core to a frame. The job takes the core under `try_lock` (a busy core ends it; the next frame
 //! asks again) for `O(storage chunks)` pointer copies of the terrain's source grid and one `Arc`
 //! of the water's depth grid, and samples off the core:
 //!
@@ -71,30 +72,22 @@ pub(crate) fn source_key(core: &SimCore) -> SourceKey {
     }
 }
 
-/// Once a frame on the main thread: starts the sampling job when the sources moved since it
-/// last sampled them. `O(1)`: the backdrop's lock and the core under `try_lock`; nothing waits.
+/// Once a frame on the main thread: starts the sampling job when the sources' key the terrain
+/// payload poll published this frame differs from the key the job last sampled. `O(1)`: the
+/// backdrop's lock under `try_lock`; no core lock (the poll read the key in its own hold).
 pub(crate) fn check(spawner: &BackdropSpawner) {
-    let last = {
-        let Ok(state) = spawner.shared.state.try_lock() else {
-            return;
-        };
-        if state.running {
-            return;
-        }
-        state.sampled.key
-    };
-    if spawner.turnstile.has_waiter() {
-        return;
-    }
-    let Some(core) = SimulationNode::try_lock_shared_core(&spawner.core) else {
+    let Ok(mut state) = spawner.shared.state.try_lock() else {
         return;
     };
-    let key = source_key(&core);
-    drop(core);
-    if key.layout.is_none() || Some(key) == last {
+    let due = !state.running
+        && state.published.is_some_and(|key| {
+            key.layout.is_some() && state.sampled.key != Some(key)
+        });
+    if !due {
         return;
     }
-    spawner.shared.state.lock().unwrap().running = true;
+    state.running = true;
+    drop(state);
     let next = spawner.clone();
     spawner.async_jobs.spawn(move || run(&next));
 }
