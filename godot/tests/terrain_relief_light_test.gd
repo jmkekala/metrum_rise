@@ -1,17 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Rendered (compatibility): the ground's relief light (`RENDER-78`) is today's light by default.
-## The terrain shader is drawn on a sloped patch and on a flat one under a low sun, beside a copy
-## whose light() uses today's term, mix(0.82, 1, N.L), written out. With the global at its
-## project default, and at strength 0 in every form, the two draw the same bytes; at strength 1
-## the slope changes and flat ground does not, so the comparison is not blind.
+## Rendered (compatibility): the ground's relief light (`RENDER-78`). The terrain shader is drawn
+## on a sloped patch and on a flat one under a low sun, beside a copy whose light() uses the plain
+## term, mix(0.82, 1, N.L), written out. Pinned: the shipped default is (2, ratio); strength 0
+## draws the plain term's bytes in every form, so the light from before stays reachable; at the
+## default the slope facing away darkens, but never below its sky light (the ratio's extrapolated
+## factor is floored at 0), and flat ground keeps the plain light.
 extends SceneTree
 
 const SURFACE := "res://scripts/shaders/terrain_surface.gdshaderinc"
 const WRAPPER := "res://assets/materials/terrain.gdshader"
 const RELIEF_CALL := "terrain_relief_facing(mix(0.82, 1.0, facing), facing, LIGHT, INV_VIEW_MATRIX)"
-const TODAY_TERM := "mix(0.82, 1.0, facing)"
+const PLAIN_TERM := "mix(0.82, 1.0, facing)"
 const GLOBAL := "terrain_relief_light"
+# The user's pick, 2026-11-25: ratio form, strength 2, sun and moon.
+const SHIPPED := Vector2(2.0, 1.0)
 
 var _failures := 0
 
@@ -29,13 +32,13 @@ func _capture(viewport: SubViewport) -> Image:
 	await RenderingServer.frame_post_draw
 	return viewport.get_texture().get_image()
 
-# Today's shader: the wrapper with the surface include inlined and the relief call replaced by
+# The plain shader: the wrapper with the surface include inlined and the relief call replaced by
 # the term it wraps. Every other include is read from its file, as the real shader reads it.
-func _today_shader() -> Shader:
+func _plain_shader() -> Shader:
 	var surface := FileAccess.get_file_as_string(SURFACE)
 	_expect(surface.count(RELIEF_CALL) == 1, "light() must call the relief term exactly once")
 	var code := FileAccess.get_file_as_string(WRAPPER).replace(
-		'#include "%s"' % SURFACE, surface.replace(RELIEF_CALL, TODAY_TERM))
+		'#include "%s"' % SURFACE, surface.replace(RELIEF_CALL, PLAIN_TERM))
 	var shader := Shader.new()
 	shader.code = code
 	return shader
@@ -63,7 +66,7 @@ func _material(shader: Shader, heightmap: Texture2D) -> ShaderMaterial:
 	material.set_shader_parameter("watermap", ImageTexture.create_from_image(dry))
 	material.set_shader_parameter("world_size", Vector2(24.0, 24.0))
 	material.set_shader_parameter("patch_world_size_m", Vector2(24.0, 24.0))
-	material.set_shader_parameter("ground_shadow_ambient", 0.0)
+	material.set_shader_parameter("ground_shadow_ambient", 0.3)
 	material.set_shader_parameter("ground_shadow_sun_strength", 1.0)
 	return material
 
@@ -73,7 +76,7 @@ func _run() -> void:
 		quit(2)
 		return
 	var default: Variant = ProjectSettings.get_setting("shader_globals/%s" % GLOBAL, {}).get("value")
-	_expect(default == Vector2.ZERO, "the relief light's project default must be (0, 0), today's light: %s" % [default])
+	_expect(default == SHIPPED, "the relief light's project default must be %s (ratio at 2, sun and moon): %s" % [SHIPPED, default])
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(64, 64)
 	viewport.own_world_3d = true
@@ -100,32 +103,36 @@ func _run() -> void:
 	mesh.mesh = plane
 	viewport.add_child(mesh)
 	var relief: Shader = load(WRAPPER)
-	var today := _today_shader()
+	var plain := _plain_shader()
 	var shots := {}
 	for ground in ["slope", "flat"]:
 		var heightmap := _heightmap(4.0 if ground == "slope" else 0.0)
-		mesh.material_override = _material(today, heightmap)
-		RenderingServer.global_shader_parameter_set(GLOBAL, Vector2.ZERO)
-		shots["%s/today" % ground] = await _capture(viewport)
+		mesh.material_override = _material(plain, heightmap)
+		shots["%s/plain" % ground] = await _capture(viewport)
+		sun.visible = false
+		shots["%s/no sun" % ground] = await _capture(viewport)
+		sun.visible = true
 		mesh.material_override = _material(relief, heightmap)
-		for setting in [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 3.0), Vector2(1.0, 0.0), Vector2(1.0, 1.0)]:
+		for setting in [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 3.0), Vector2(1.0, 0.0), SHIPPED]:
 			RenderingServer.global_shader_parameter_set(GLOBAL, setting)
 			shots["%s/%s" % [ground, setting]] = await _capture(viewport)
-	RenderingServer.global_shader_parameter_set(GLOBAL, Vector2.ZERO)
+	RenderingServer.global_shader_parameter_set(GLOBAL, SHIPPED)
 	for ground in ["slope", "flat"]:
-		var today_bytes: PackedByteArray = shots["%s/today" % ground].get_data()
+		var plain_bytes: PackedByteArray = shots["%s/plain" % ground].get_data()
 		for setting in [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 3.0)]:
-			_expect(shots["%s/%s" % [ground, setting]].get_data() == today_bytes,
-				"%s ground at relief %s must draw today's bytes" % [ground, setting])
-		var centre_today: Color = shots["%s/today" % ground].get_pixel(32, 32)
-		for setting in [Vector2(1.0, 0.0), Vector2(1.0, 1.0)]:
+			_expect(shots["%s/%s" % [ground, setting]].get_data() == plain_bytes,
+				"%s ground at relief %s must draw the plain term's bytes" % [ground, setting])
+		var centre_plain: Color = shots["%s/plain" % ground].get_pixel(32, 32)
+		var centre_no_sun: Color = shots["%s/no sun" % ground].get_pixel(32, 32)
+		for setting in [Vector2(1.0, 0.0), SHIPPED]:
 			var centre: Color = shots["%s/%s" % [ground, setting]].get_pixel(32, 32)
-			print("terrain_relief %s %s today=%s relief=%s" % [ground, setting, centre_today, centre])
+			print("terrain_relief %s %s plain=%s relief=%s no_sun=%s" % [ground, setting, centre_plain, centre, centre_no_sun])
 			if ground == "slope":
-				_expect(centre.g < centre_today.g - 0.01, "a slope facing away from the sun must darken at strength 1")
+				_expect(centre.g < centre_plain.g - 0.01, "a slope facing away from the sun must darken at %s" % [setting])
+				_expect(centre.g >= centre_no_sun.g - 1.5 / 255.0, "the sun must never take light away (%s)" % [setting])
 			else:
-				_expect(shots["%s/%s" % [ground, setting]].get_data() == today_bytes,
-					"flat ground must keep today's light at strength 1")
+				_expect(shots["%s/%s" % [ground, setting]].get_data() == plain_bytes,
+					"flat ground must keep the plain light at %s" % [setting])
 	if _failures == 0:
 		print("terrain_relief_light_test: PASS")
 	quit(1 if _failures else 0)

@@ -41,7 +41,8 @@ const DUMP_DIR := "user://debug"
 const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | relief [<strength> [add|ratio] [sun|all]] | parking | dump | clear"
 # The ground's relief light (`RENDER-78`), the `terrain_relief_light` shader global
 # (terrain_relief_light.gdshaderinc): x the strength, y the form (0 add, 1 ratio, plus 2 for the
-# sun only, the moon keeping today's light). Strength 0, the default, is today's light.
+# sun only, the moon keeping the plain light). The project default is (2, 1), ratio at strength 2;
+# strength 0 is the plain light from before.
 # METRUM_TERRAIN_RELIEF sets it at launch as the command's words joined by ":", e.g. "1:ratio:sun".
 const RELIEF_GLOBAL := "terrain_relief_light"
 const RELIEF_ENVIRONMENT := "METRUM_TERRAIN_RELIEF"
@@ -65,8 +66,8 @@ var _event_logger: Logger
 var _chosen_size := Vector2.ZERO
 # Where the open console's top edge sits, below any keep-clear control at the top.
 var _top := 0.0
-# The relief light as last set (`RELIEF_GLOBAL`).
-var _relief := Vector2.ZERO
+# The relief light as last set (`RELIEF_GLOBAL`), starting at the project's default.
+var _relief: Vector2 = ProjectSettings.get_setting("shader_globals/%s" % RELIEF_GLOBAL, {}).get("value", Vector2.ZERO)
 
 func _ready() -> void:
 	layer = 120

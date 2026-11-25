@@ -54,10 +54,12 @@ const PATHS := [
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
 # The relief_* variants are the full frame with the ground's relief light (`RENDER-78`) at that
-# strength and form; `relief_0` sets today's light explicitly, the run's own noise floor.
+# strength and form (x strength, y form: 0 add, 1 ratio); `relief_0` is the light before it.
+# Every other variant draws the project's default.
 const RELIEF_VARIANTS := {"relief_0": Vector2(0.0, 0.0), "relief_05": Vector2(0.5, 0.0),
-	"relief_10": Vector2(1.0, 0.0), "relief_ratio": Vector2(1.0, 1.0)}
-const VARIANTS := ["full", "relief_0", "relief_05", "relief_10", "relief_ratio", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
+	"relief_10": Vector2(1.0, 0.0), "relief_ratio": Vector2(1.0, 1.0), "relief_ratio2": Vector2(2.0, 1.0)}
+const RELIEF_GLOBAL := "terrain_relief_light"
+const VARIANTS := ["full", "relief_0", "relief_05", "relief_10", "relief_ratio", "relief_ratio2", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
 const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
 # This matrix's names for the shared shadow variants; any other variant keeps full shadows.
 const SHADOW_VARIANTS := {"no_shadows": "none", "minimal": "none", "no_blend_splits": "no_blend"}
@@ -376,7 +378,8 @@ func _apply_variant(variant: String) -> void:
 	_terrain.visible = variant != "no_terrain"
 	# The cloud pass and the receivers' cloud lookups, measured apart.
 	_lighting._cloud_effect.enabled = not (minimal or variant == "no_clouds")
-	RenderingServer.global_shader_parameter_set("terrain_relief_light", RELIEF_VARIANTS.get(variant, Vector2.ZERO))
+	var relief_default: Vector2 = ProjectSettings.get_setting("shader_globals/%s" % RELIEF_GLOBAL, {}).get("value", Vector2.ZERO)
+	RenderingServer.global_shader_parameter_set(RELIEF_GLOBAL, RELIEF_VARIANTS.get(variant, relief_default))
 	if minimal:
 		_lighting.cloud_shadows_allowed = false
 
