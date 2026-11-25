@@ -96,6 +96,9 @@
 ## budget (unset: the Terrain memory setting's default, Automatic, `TERRAIN-41` B2; 0: every patch
 ## fits); each sample records the budget's state (`terrain_budget`), and
 ## METRUM_STREAM_WAIT_FILL=1 makes every settle wait for the budget's fill as well.
+## METRUM_STREAM_PRELOAD=1 (`TERRAIN-59`, an untimed run) loads as a player's load does: the hand-over
+## waits for the base terrain's preload within the target; the hand-over frame's budget state is
+## recorded (`ready_budget`). Unset, the load hands over as before the preload (the tools' load).
 ## METRUM_STREAM_TAIL_FRAMES=<n> (`TERRAIN-41` B2) records n more frames after a flight's last settle
 ## (`<phase>_tail`): the budget's background releases and fill, which a settle does not wait for.
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
@@ -183,6 +186,8 @@ var _digests := false
 # budget's fill (the kept terrain and water patches built hidden), so a phase starts on a filled
 # budget.
 var _wait_fill := false
+# METRUM_STREAM_PRELOAD=1 (`TERRAIN-59`): the load preloads, and a settle waits for its hand-over.
+var _preload := false
 var _settle_points := 0
 # Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so,
 # and the wanted set of the last frame.
@@ -255,6 +260,7 @@ func run(bench: Node) -> void:
 		_camera = bench.camera
 	_digests = OS.get_environment("METRUM_STREAM_DIGESTS") == "1"
 	_wait_fill = OS.get_environment("METRUM_STREAM_WAIT_FILL") == "1"
+	_preload = OS.get_environment("METRUM_STREAM_PRELOAD") == "1"
 	_gpu_profile = OS.get_environment("METRUM_STREAM_GPU_PASSES") == "1"
 	var shadows: Array = Array(OS.get_environment("METRUM_STREAM_SHADOWS").split(",", false))
 	for variant: String in shadows:
@@ -289,7 +295,11 @@ func run(bench: Node) -> void:
 	var load_begin_ms := Time.get_ticks_msec()
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
 	var loaded: bool
-	if not str(_report.save_path).is_empty():
+	if _preload:
+		loaded = (bench.input_manager.menu_load_game_from_path(str(_report.save_path), true)
+			if not str(_report.save_path).is_empty()
+			else bench.input_manager.menu_load_world_definition(bench.world_path, true))
+	elif not str(_report.save_path).is_empty():
 		loaded = bench.input_manager.menu_load_game_from_path(str(_report.save_path))
 	else:
 		loaded = bench._load_benchmark_world()
@@ -796,7 +806,8 @@ static func _counter_delta(before: Array, after: Array) -> Array:
 
 func _is_settled(bench: Node) -> bool:
 	return (bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
-		and (_roads == null or not _roads.is_pending()) and not (_wait_fill and _fill_left() > 0))
+		and (_roads == null or not _roads.is_pending()) and not (_wait_fill and _fill_left() > 0)
+		and (not _preload or bench.input_manager.is_world_ready()))
 
 # The base terrain budget's fill still to build, both layers (`TERRAIN-41` B1; 0 without the
 # method).
@@ -980,8 +991,14 @@ func _record_patch_digest() -> void:
 			lines.append("%d,%d,%d,%d" % [key.x, key.y, int(patch.get("lod_step", -1)),
 				1 if node != null and node.visible else 0])
 		lines.sort()
+		# The built set's keys too (`TERRAIN-59`: a preload's set must not depend on timing).
+		var built := PackedStringArray()
+		for key: Vector2i in renderer.patches:
+			built.append("%d,%d" % [key.x, key.y])
+		built.sort()
 		entry[layer] = {"resident": lines.size(), "built": renderer.patches.size(),
-			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
+			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines,
+			"built_digest": _sha("\n".join(built).to_utf8_buffer())}
 	entry["land_cover"] = _land_cover_digest()
 	entry["water_meshes"] = _water_mesh_check()
 	_report.patch_digests.append(entry)
@@ -1262,6 +1279,7 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 	var settle_frames := -1
 	# The hand-over (`TERRAIN-15`): the first frame the input manager reports the world ready.
 	var ready_ms := -1.0
+	var ready_budget := {}
 	var half_second_shot := false
 	while rows.size() < max_frames and stable < SETTLED_FRAMES:
 		await bench.get_tree().process_frame
@@ -1275,6 +1293,10 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 			_save_shot(label + "_0500ms")
 		if ready_ms < 0.0 and bench.input_manager.is_world_ready():
 			ready_ms = bench._elapsed_ms(start_us)
+			# The budget at the hand-over (`TERRAIN-59`: what a preload built).
+			var budget_node := bench.get_parent().get_node_or_null("StreamNode")
+			if budget_node != null:
+				ready_budget = budget_node.get_terrain_budget()
 		if _is_settled(bench):
 			if stable == 0:
 				settle_ms = bench._elapsed_ms(start_us)
@@ -1284,7 +1306,7 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 			stable = 0
 	var sample := _finish(label, 0.0, rows)
 	sample.merge({"settled": stable >= SETTLED_FRAMES, "settle_ms": settle_ms, "settle_frames": settle_frames,
-		"ready_ms": ready_ms})
+		"ready_ms": ready_ms, "ready_budget": ready_budget})
 	if stable >= SETTLED_FRAMES:
 		_record_digest(label)
 		_save_shot(label + "_settled")
