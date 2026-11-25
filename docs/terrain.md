@@ -20419,7 +20419,7 @@ terrain patch each frame (`_terrain.patches`, hidden ones included): its pre-dra
 6-7 ms a frame at 2,300-3,100 built patches and 12 ms at 5,459 (instrumented), about 2 us a built
 patch, the largest main-thread item of every flight frame; it grows with the distance travelled
 (`RENDER-75`). The `terrain_stream` record's `terrain_wanted_changes` is a running total, not a
-frame's count (`PatchStream::frame` carries it over). (`RENDER-75` fixed in round R75,
+frame's count (`PatchStream::frame` carries it over; a frame's count since `TERRAIN-41` round L2). (`RENDER-75` fixed in round R75,
 [below](#the-water-reflection-follows-the-patches-events-render-75-round-r75-2026-11-24).)
 
 **Setting changes alone** (the poll 256 a frame and `STREAM_BUDGET_US` 6.0 ms, a local build not
@@ -20600,6 +20600,145 @@ a quarter of the resident count, ten repeated frames read and project nothing, a
 mesh events keep it equal. Against the old script (adapted only to its two-argument call) it fails
 28 checks: a camera move read 4,754 patch records and ten idle frames 47,540. The Rust book has
 its own unit tests (hull against a brute-force boundary through events, shared corners).
+
+### Base terrain: water meshes and graded builds behind holes (`TERRAIN-41` round L2, 2026-11-25)
+
+Round L2 of the item's plan (`PLAN-TERRAIN-41`), landed alone on `dev`: the water's meshes by
+cause, upgrades inside the install ledger's room, no new mesh for a shown water patch that holds
+its own, and graded cell set builds that no shown tile waits for held while the patch frame's
+budget holds a hole back; with round L1's measurement counters, without round L1's behaviour.
+The rendered rows below are diagnostic (perf channel on, the eight P-cores, 8 workers), not
+acceptance timing.
+
+**Round L1 is held, awaiting the user's decision.** L1 (one order across the terrain's and the
+water's units, the units' measured prices, an in-view level change a layer a frame that a backlog
+of holes cannot hold back) keeps the vegetation and the near ground at their detail during a fast
+flight, which `dev` leaves coarse until the flight ends. That costs the draw: on the 60 km
+`flight_high` row L1 with L2 runs about 0.3 ms slower at the frame median than `dev` (13.8-13.9
+against 13.5-13.6 ms; render CPU 3.92-3.95 against 3.40-3.44 ms, 0.4 M more primitives, 1.14 M
+against 0.73-0.77 M), while its backlog is smaller (missing at most 158-163 against 206-217,
+terrain wanted-to-drawn p95 78-88 against 134-137 frames). Correct detail during flight for that
+cost is the user's choice; until then the level changes and the vegetation stay starved during a
+fast flight, as on `dev` before this round.
+
+**Counters** (round L1's, measurement only). The `terrain_stream` record carries, by layer, each
+unit kind's count, measured microseconds and longest unit a frame (`<layer>_<kind>_units`, `_us`,
+`_max_us`; kinds `show` a built patch shown again, `build`, `hide`, `step` a level change,
+`prewarm`) and the holes the budget held back (`<layer>_holes_deferred`). The stream node keeps a
+one-microsecond histogram a kind (`take_patch_unit_times`), which the stream benchmark reads at
+each sample's end (`patch_units`), and `tools/stream_benchmark.py flight` prints both, with a line
+a second. `terrain_wanted_changes` is now the frame's count. None of it is read by a decision: the
+unit prices and the order are `dev`'s.
+
+**Water meshes by cause** (`water.gd`). A water patch records the mesh its node draws (`held_mesh`:
+step, cover generation, depth signature; cleared where the node gets the empty mesh). A patch shown
+again asks for a mesh only when it lacks the one for its step, cover and depth, and a level change
+back to the step its node draws asks for none and drops the request in flight. A request is a
+**hole** when the node draws no mesh of the patch's cover and depth (a new or re-covered patch, an
+edit) and an **upgrade** when it draws one at another step. Holes and upgrades queue apart: holes
+are submitted first; upgrades are submitted, and applied, only while the install ledger's upgrade
+room (`StreamNode.get_install_room_us`: the 2.0 ms ledger less the hole reserve while holes wait
+less what the frame's owners before the streaming node spent; the patch units' prices are charged
+after the water's turn, so the room means the same with any unit prices) is above zero, the
+pipeline's work charged to the ledger before each check, so each upgrade is charged before the
+next is admitted. The apply queue sorts holes first; when the room is gone its upgrades go back to
+their requests (the bake cache answers them again), so an upgrade never holds a hole's mesh back
+in the queue. The pipeline's own caps stay as upper bounds. `O(1)` a decision; the return walks
+the apply queue (at most 16).
+
+**Graded builds behind holes** (`graded/book/frame.rs`, `book/results.rs`). Each patch layer's
+frame (`PatchStream::frame`) counts the holes its budget refused (`PatchWork::holes_deferred`,
+`O(1)` at the existing refusal; holes skipped for a payload or behind a blocked activation are not
+counted, and nothing changes the order or the admission of any unit); the stream node writes
+whether the water's or the terrain's frame refused one to the frame's install ledger
+(`holes_deferred`), and the graded book's next frame holds a queued cell set build that no shown
+tile waits for while it is set. The ledger's older flag (holes waiting, behind the hole reserve) is
+wrong for this: a hole that waits for anything but the budget (a payload, a layer without scripts,
+as in the graded renderer test) would hold the builds for ever, and holding them frees nothing for
+it. The hold is the budget's answer at the build's check (`over_or`), so a trace records it as the
+budget's and a replay reads it back: no input of its own (plan probe P5: a trace records every
+budget answer as an input, `< budget 0|1`, in order, and a replay returns the recorded answers).
+Builds a shown tile waits for, the variant builds and the load's unbudgeted settle are unchanged.
+
+**Counters.** The water record: `mesh_hole_submitted_count`, `mesh_upgrade_submitted_count`,
+`mesh_upgrade_submit_held_count`, `mesh_hole_applied_count`, `mesh_upgrade_applied_count`,
+`mesh_upgrade_returned_count`, `mesh_reshow_kept_count`, `mesh_upgrade_queue_count`. The graded
+frame parts: `builds_held` (1 when a build waited) and `builds_queued`. The stream benchmark checks
+at every settle point that every wet resident water patch draws a mesh of its own step
+(`patch_digests[].water_meshes`); `tools/stream_benchmark.py digests` reports it as the
+`water_meshes` family and `flight` prints the causes and the held builds.
+
+**Measured, 60 km `flight_high`** (C B B C; control `dev` `e306ccc95` with `dev`'s scripts and the
+round's benchmark script; load 1.6-2.8):
+
+| | `dev` | this round |
+|---|---|---|
+| fps, frame p50 ms | 76, 13.4 | 77, 13.1 |
+| missing at most | 195-205 | 144-172 |
+| terrain wanted-to-drawn p50 / p95 / max frames | 7 / 120-123 / 463-512 | 6 / 86-110 / 366-504 |
+| most in-view holes in a frame | 157-168 | 129-145 |
+| builds a frame | 1.97 | 1.98-2.04 |
+| ledger ms a frame: graded / water / stream / measured | 0.30 / 0.55 / 0.84 / 1.80-1.82 | 0.25 / 0.63 / 0.85-0.87 / 1.81-1.86 |
+| render CPU ms, primitives | 3.38-3.45, 0.74-0.76 M | 3.31, 0.72-0.73 M |
+
+By the compare tool's rule (delta of the means against the same-binary spread) the frame median is
+better (-0.3 ms, spread 0.0), missing at most better (-42, spread 28), most in-view holes better
+(-25.5, spread 16), terrain wanted-to-drawn p95 level (-23.5, spread 24). By phase: the flight's
+start better at its maximum, the turn better, the settle level; the flight itself better at the
+median and worse at its single slowest frame (22-23 against 19-20 ms, the main thread's process
+time in both). The water's meshes in the flight: 939-962 holes and 1,536-1,585 upgrades
+submitted, 1,249-1,271 upgrades applied, 256-328 returned for want of room, 108-129 shown patches
+kept their mesh; the graded builds held in 528-534 of 642-645 frames.
+
+**Measured, shipped Kuopio** (turns, pan, zoom, jump; C B B C): terrain wanted-to-drawn p95 2-4 to 2
+frames on the pan back, 8-9 to 6 on the far zoom-out, 18 to 12 on the far zoom to the ground and
+26-27 to 19-21 on the jump back. Frame medians within 0.4 ms of `dev`'s; by the compare tool's rule
+worse at the median on the 0.5 s turn's repeat (+0.4), the repeated zoom-in and the far zoom-out
+(+0.2), and on the 1 s turn back, the pan back and its repeat (+0.1 against a 0.1 spread), the rest
+level; worse at the maximum on the 0.5 s turn back (+1.3 ms), the 1 s turn out (13 against 9-10 ms),
+the far zoom-out (16 against 13-14) and the jump (12 against 11); single maxima of 15-20 ms on the
+pan out, the repeated zoom-in and the far zoom to the ground (controls 9-13) read level by the
+spread. The jumps' maxima stay at 10-12 ms (L1 with L2 read 17).
+
+**Proof.**
+
+- Rust: `cargo test --lib` adds three tests: the units' histogram, a book test (a hidden set's
+  rebuild for a new step waits in a held frame, `builds_held` counted) and a patch layer test (a
+  frame counts the holes its budget refused, none that wait for a payload or behind a blocked
+  activation, none without a budget). The full golden recordings of the patch layer replay
+  unchanged (30k 3,144 frames, Kuopio 10,036 frames, every square, gate and candidate equal). The
+  graded traces (the tracked goldens, the zoning reference's, the bridge trace) replay without
+  being recorded again (`./run.sh --test`).
+- Settle digests (`--digests`, untimed, two `dev` runs and one of the round): on the 60 km flight
+  (4 points) and the shipped Kuopio (12) terrain and water residency with their steps, graded,
+  buildings, roads and parked cars equal at every point. Where they differ, two `dev` runs differ
+  too: the built sets after the 60 km turn (path dependent: `dev` runs here and in rounds L1 and L2
+  built 5,459-5,481 terrain and 5,775-5,781 water patches; the round 5,474 and 5,776) with their
+  land cover and vegetation, the steps at Kuopio's first far-to-ground settle (two `dev` runs: 9
+  patches; a moving zoom's settle keeps the steps of the last level check's eye, which frame timing
+  moves), and four patches' vegetation band flags at Kuopio's second far-to-ground settle (equal
+  to an earlier `dev` run's). On the 30k pond (16 points) terrain and water residency and steps
+  equal except at the first far-to-ground settle, where the two `dev` runs differ from each other
+  too (one patch's step, a third value in the round); graded tiles differ only where the `dev` runs
+  differ between them, each such tile equal to one of them (`TERRAIN-27`).
+- The water mesh check: 0 mismatches at every settle point of every map on both sides (1,004 to
+  1,947 wet resident patches on the 60 km world, 927-1,028 on Kuopio, 3 on the pond).
+- The drag probe's display rule passes.
+
+**Level F timing** (`./run.sh --timing --level F`, control `dev` `e306ccc95`'s release test binary,
+the eight P-cores; the headless benchmark runs none of the round's code): 32x C B B C level on every
+compared metric (mean -0.1 %, p99 -0.9 %, p99.9 -0.3 %, worst unpreempted frame -0.7 %), every row
+passing the acceptance (worst unpreempted 7.54-7.72 ms); 1x one day a side level on every metric
+but the worst unpreempted frame, which reads better (3.87 against 4.34 ms; the control's day reused
+from the same boot's calibrated session).
+
+**Not met of the plan's proof for L2 on this tree:** the water's ledger in the flight rises from
+`dev`'s 0.55 to 0.63 ms a frame (the plan's under 0.3 in the re-show seconds: most re-shown patches
+come back at another step, so they are upgrades, which the room admits; 108-129 kept their mesh),
+while the graded book's falls from 0.30 to 0.25; terrain built a frame stays at `dev`'s (1.98-2.04
+against 1.97; the plan's 3.5 or more in the seconds that need builds), the patch units' share of the
+ledger being `dev`'s (0.85-0.87 against 0.84 ms). Met: the water mesh check, the digests, the
+traces, and the landing's four flight bars (none worse than `dev`).
 
 ## Implemented Runtime Contract
 
