@@ -58,6 +58,10 @@ pub(crate) trait UnitSource {
     /// replacement, as a patch layer's first in-view level change). False when the budget refused
     /// it, which closes the source for the pass.
     fn install_next(&mut self, budget: &mut FrameBudget, clock: &dyn Clock, reserve_us: Option<f64>) -> bool;
+    /// The squared ground distance from the eye beyond which a patch hole lies where the source
+    /// draws nothing (`VEG-35` R1b): a hole held back beyond it does not hold the source's
+    /// replacements.
+    fn reach_sq(&self) -> f64;
 }
 
 /// Whether a unit at `a` (class, squared ground distance from the eye) runs before one at `b`:
@@ -65,6 +69,12 @@ pub(crate) trait UnitSource {
 /// vegetation; keys never tie across owners).
 pub(crate) fn orders_before(a: (Class, f64), b: (Class, f64)) -> bool {
     a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
+}
+
+/// The later in the order of `last` and `unit` (class, squared ground distance from the eye;
+/// [`orders_before`]): the frame's last hole unit so far (`VEG-35` R1b). `O(1)`.
+pub(crate) fn later_hole(last: Option<(Class, f64)>, unit: (Class, f64)) -> Option<(Class, f64)> {
+    Some(last.filter(|last| orders_before(unit, *last)).unwrap_or(unit))
 }
 
 /// A source of monotonic microseconds.

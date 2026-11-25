@@ -379,6 +379,61 @@ fn the_tiers_and_bands_equal_the_rule_on_random_walks() {
     }
 }
 
+#[test]
+fn a_product_kept_before_the_patch_units_is_still_wanted_after_the_frames_evaluation() {
+    // `VEG-35` R1b: the stream node asks `keeps` before the patch units, which run before the
+    // terrain's news reach the residency and before its evaluation. On random walks with products
+    // delivered between frames, every waiting product it keeps is still wanted once the frame
+    // evaluated; a block the frame takes out of the terrain's residency is one that does not stay
+    // (a hide, outside the terrain's wanted square).
+    let (mut kept_count, mut left_count) = (0, 0);
+    for seed in 0..3 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut resident = all_blocks();
+        let mut world = World::new(resident.iter().copied());
+        let mut camera = [rng.gen_range(-3000.0..3000.0f32), rng.gen_range(-3000.0..3000.0f32)];
+        for step in 0..400 {
+            let (dx, dz) = match rng.gen_range(0..30) {
+                0 => (rng.gen_range(-3000.0..3000.0), rng.gen_range(-3000.0..3000.0)),
+                1..=4 => (0.0, 0.0),
+                _ => (rng.gen_range(-200.0..200.0), rng.gen_range(-200.0..200.0)),
+            };
+            camera = [
+                (camera[0] + dx).clamp(-5000.0, 5000.0),
+                (camera[1] + dz).clamp(-5000.0, 5000.0),
+            ];
+            let toggled = (rng.gen_range(0..10) == 0).then(|| [rng.gen_range(0..20), rng.gen_range(0..20)]);
+            let removed = toggled.filter(|block| resident.contains(block));
+            let pending: Vec<PatchKey> = world.layer.pending.iter().map(|p| p.delivery.key).collect();
+            let kept: Vec<PatchKey> = pending
+                .iter()
+                .copied()
+                .filter(|&key| world.residency.keeps(key, Some(camera), |block| Some(block) != removed))
+                .collect();
+            if let Some(block) = toggled {
+                let now = !resident.contains(&block);
+                if now {
+                    resident.insert(block);
+                } else {
+                    resident.remove(&block);
+                }
+                world.residency.set_resident(block, now);
+                world.residency.revise_residency();
+            }
+            world.frame(eye(camera[0], camera[1]), |_| false);
+            let wanted: BTreeSet<PatchKey> = world.residency.wanted().collect();
+            for key in &kept {
+                assert!(wanted.contains(key), "seed {seed} step {step}: {key:?} kept and dropped");
+            }
+            kept_count += kept.len();
+            left_count += pending.iter().filter(|&key| !wanted.contains(key)).count();
+            // Products land between frames and wait for the next one.
+            world.jobs.complete(&mut world.layer, |_| rng.gen_range(0..3) > 0);
+        }
+    }
+    assert!(kept_count > 1000 && left_count > 10, "{kept_count} kept, {left_count} left");
+}
+
 // Every drawn patch whose record's bands differ from the rule at `camera` is queued or in flight.
 fn check_bands(world: &World, camera: [f32; 2]) {
     let settings = settings();

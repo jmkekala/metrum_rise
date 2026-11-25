@@ -377,6 +377,58 @@ impl VegetationResidency {
         ]
     }
 
+    /// Whether this frame's residency keeps `key` wanted, asked before its evaluation (`VEG-35`
+    /// R1b: the vegetation's units among the patch units admit only such a product): `key` is
+    /// wanted now, its terrain block is resident and `stays` resident through the frame (the
+    /// terrain's wanted square: hides and releases take only patches outside it), and the tier
+    /// rule (`block_state`) wants it at `camera`, this frame's. An evaluation this frame, at a
+    /// crossing or a residency change, takes it at that camera over the blocks then resident,
+    /// which keep this one; without an evaluation the wanted set holds. So a kept product is
+    /// still wanted after this frame's evaluation; one not kept waits for the install after it.
+    /// `O(subdivision²)`.
+    pub(crate) fn keeps(
+        &self,
+        key: PatchKey,
+        camera: Option<[f32; 2]>,
+        stays: impl Fn(Cell) -> bool,
+    ) -> bool {
+        let (Some(settings), Some(camera)) = (self.settings, camera) else {
+            return false;
+        };
+        let block = owner(key);
+        if !self.enabled
+            || self.terrain_span <= 0.0
+            || !self.wanted.contains(&key)
+            || !self.resident.contains(&block)
+            || !stays(block)
+        {
+            return false;
+        }
+        let state = block_state(&settings, self.terrain_span, &self.resident, block, camera);
+        let divisor = settings.subdivision;
+        match (state.tier, key[2] > 1) {
+            (Tier::Coarse, false) => true,
+            (Tier::Fine, true) if key[2] == divisor => {
+                let at = (key[0] - block[0] * divisor) * divisor + (key[1] - block[1] * divisor);
+                state.fine & (1 << at) != 0
+            }
+            _ => false,
+        }
+    }
+
+    /// The ground distance from the camera to a terrain patch's centre beyond which the patch
+    /// carries no wanted vegetation patch (`VEG-35` R1b; `None` before the settings): a coarse
+    /// block is wanted within the far range and a side of its centre, a fine block within the fine
+    /// radius and a half-diagonal (`block_state`). Half a diagonal more covers the terrain grid's
+    /// short last patches, whose centre the terrain measures inside the short patch and the
+    /// vegetation at the full side's. `O(1)`.
+    pub(crate) fn reach(&self) -> Option<f64> {
+        let settings = self.settings.filter(|_| self.terrain_span > 0.0)?;
+        let span = self.terrain_span;
+        let tiers = (settings.product.far_m + span).max(settings.fine_radius() + span * HALF_DIAGONAL);
+        Some(tiers + span * HALF_DIAGONAL)
+    }
+
     /// The wanted patches (tests, the benchmark's wanted-to-drawn).
     pub(crate) fn wanted(&self) -> impl Iterator<Item = PatchKey> + '_ {
         self.wanted.iter().copied()

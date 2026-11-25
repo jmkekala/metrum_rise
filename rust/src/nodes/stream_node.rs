@@ -1744,6 +1744,9 @@ impl StreamNode {
         // use) falls inside the load like the terrain's.
         self.water
             .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
+        // A water patch whose ground left the terrain's square takes no level change: it is
+        // hidden with its ground (`TERRAIN-50`).
+        self.water.set_step_square(self.terrain.square());
         // The budget's background work (the fill, and releases that are not a build's donor)
         // also waits while the vegetation has patches the view waits for (`TERRAIN-41` B1c): its
         // installs share this frame budget and its products the payload workers the fill's
@@ -1780,16 +1783,31 @@ impl StreamNode {
                 .as_ref()
                 .is_none_or(|planes| box_in_view(planes, low, high))
         };
+        // Only products this frame's residency keeps wanted (`VEG-35` R1b): the residency's
+        // evaluation runs after the patch units, at this camera, over the terrain patches resident
+        // then; a patch of the terrain's wanted square stays resident through the patch units.
+        // `O(subdivision²)` a waiting product.
+        let camera = self.view.map(|view| [view.eye[0], view.eye[2]]);
+        let square = self.terrain.square();
+        let stays = |block: [i32; 2]| {
+            square.is_some_and(|[x0, z0, x1, z1]| {
+                (x0..=x1).contains(&block[0]) && (z0..=z1).contains(&block[1])
+            })
+        };
+        let residency = &self.residency;
+        let kept = |key: PatchKey| residency.keeps(key, camera, stays);
         let vegetation_joins = !window
             && !unbudgeted
             && self.backend.is_some()
-            && self.vegetation.begin_units(&vegetation_in_view);
+            && self.vegetation.begin_units(&vegetation_in_view, &kept);
         let budget = if window {
             &mut self.post_load_budget
         } else {
             &mut self.budget
         };
         let vegetation_before = self.vegetation.install_waits()[1].measured_us;
+        // Holes held beyond the vegetation's reach do not hold its replacements (`VEG-35` R1b).
+        let reach_sq = self.residency.reach().map_or(f64::INFINITY, |reach| reach * reach);
         let mut vegetation_units = self
             .backend
             .as_mut()
@@ -1797,6 +1815,7 @@ impl StreamNode {
             .map(|backend| VegetationUnits {
                 layer: &mut self.vegetation,
                 backend,
+                reach_sq,
             });
         let mut water_exec = self.water_scripts.as_mut().map(ScriptExecutor);
         let mut terrain_exec = self.terrain_scripts.as_mut().map(ScriptExecutor);
@@ -1832,6 +1851,15 @@ impl StreamNode {
         if ran[1] {
             self.terrain_work = self.terrain.work();
             self.releases_total[0] += self.terrain_work.releases as u64;
+        }
+        // The installs after the patch units place a product pulled since by the frame's order
+        // (`VEG-35` R1b), where the patch units run on the frame's budget.
+        if !window && !unbudgeted {
+            for (ran, work) in ran.into_iter().zip([self.water_work, self.terrain_work]) {
+                if ran {
+                    self.vegetation.note_patch_holes(work.last_hole);
+                }
+            }
         }
         self.follow_terrain();
         // The window closes when the patches first settle with residents, or after

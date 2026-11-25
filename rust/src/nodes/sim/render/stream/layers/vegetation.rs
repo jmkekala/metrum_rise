@@ -28,7 +28,7 @@ use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
 };
 use super::super::rings::TravelBuckets;
-use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, predicted_us};
+use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, later_hole, orders_before, predicted_us};
 use super::super::status::LayerStatus;
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{
@@ -134,6 +134,8 @@ struct Pending {
     installed: bool,
     // The process frame it was delivered in (`VEG-35`: its wait for the install).
     delivered: u64,
+    // This frame's residency keeps it wanted (`VEG-35` R1b): the cursor's units take only these.
+    kept: bool,
 }
 
 /// What the vegetation's installs waited and cost (`VEG-35` R0): counters only, they never decide.
@@ -246,6 +248,9 @@ pub(crate) struct VegetationLayer {
     cursor: usize,
     cursor_closed: bool,
     units_ran: bool,
+    // The last hole unit of this frame's patch units in the order, the cursor's own included
+    // (`VEG-35` R1b): a hole product pulled after them that orders before it takes its place.
+    frame_last_hole: Option<(Class, f64)>,
     waits_total: InstallWaits,
     waits_frame: InstallWaits,
     waits_window: InstallWaits,
@@ -287,6 +292,7 @@ impl VegetationLayer {
             cursor: 0,
             cursor_closed: false,
             units_ran: false,
+            frame_last_hole: None,
             waits_total: InstallWaits::default(),
             waits_frame: InstallWaits::default(),
             waits_window: InstallWaits::default(),
@@ -298,6 +304,7 @@ impl VegetationLayer {
     pub(crate) fn begin_pass(&mut self, frame: u64) {
         if frame != self.frame {
             self.waits_frame = InstallWaits::default();
+            self.frame_last_hole = None;
         }
         self.frame = frame;
         self.pass_installs = 0;
@@ -353,6 +360,7 @@ impl VegetationLayer {
             heights,
             installed: false,
             delivered: self.frame,
+            kept: false,
         });
     }
 
@@ -682,12 +690,24 @@ impl VegetationLayer {
         }
     }
 
+    /// The last hole unit the frame's patch units ran (`PatchWork::last_hole`, the later of the
+    /// layers'), for the installs after them (`VEG-35` R1b). `O(1)`.
+    pub(crate) fn note_patch_holes(&mut self, last: Option<(Class, f64)>) {
+        if let Some(last) = last {
+            self.frame_last_hole = later_hole(self.frame_last_hole, last);
+        }
+    }
+
     /// Installs waiting products within the frame's budget (all of them when `unlimited`), in
     /// class order, nearest first, then by key; `in_view` places a patch's box (x, z of its
     /// square and the heights of its bounds) in the view. Returns the installs. After the cursor
     /// of the frame's patch units (`VEG-35` R1) this is the rest of the pass: what the cursor
-    /// left (a replacement held back) and the products pulled since. `O(P log P)` the order, P
-    /// products waiting.
+    /// left (a replacement held back) and the products pulled since. A hole product that orders
+    /// before the last hole unit the frame's patch units ran (`note_patch_holes`, the cursor's
+    /// own included) installs whatever the room (`VEG-35` R1b): the frame's order is decided
+    /// once, in its first pass, and the product, pulled after it, takes the place its order gives
+    /// it, ahead of a unit that already ran. Such products are at most those pulled since the
+    /// patch units, each at its own price. `O(P log P)` the order, P products waiting.
     pub(crate) fn install(
         &mut self,
         backend: &mut impl RenderBackend,
@@ -705,7 +725,11 @@ impl VegetationLayer {
         self.order(in_view);
         let mut done = 0;
         for at in 0..self.pending.len() {
-            let admits = |budget: &FrameBudget, predicted| unlimited || budget.admits(predicted);
+            let unit = (self.pending[at].class, self.pending[at].distance_sq);
+            let placed = unit.0 <= Class::Hole
+                && self.frame_last_hole.is_some_and(|last| orders_before(unit, last));
+            let admits =
+                |budget: &FrameBudget, predicted| unlimited || placed || budget.admits(predicted);
             match self.try_install(backend, budget, clock, at, admits) {
                 Some(true) => done += 1,
                 Some(false) => {}
@@ -718,19 +742,37 @@ impl VegetationLayer {
     }
 
     /// Opens the cursor for the frame's patch units (`VEG-35` R1): the waiting products in the
-    /// install order, holes ([`Class::Hole`] and before) then replacements. False (no cursor)
-    /// when nothing waits or before the rules. One sort, `O(P log P)`, P products waiting;
-    /// nothing allocated.
-    pub(crate) fn begin_units(&mut self, in_view: &impl Fn([f32; 3], [f32; 3]) -> bool) -> bool {
+    /// install order, holes ([`Class::Hole`] and before) then replacements, each only while
+    /// `kept` says this frame's residency still wants it (`VEG-35` R1b: the patch units run before
+    /// the residency's evaluation, so a product of a patch the camera has since left would install
+    /// and then be put away in the same pass; it waits for the install after the evaluation,
+    /// which drops it). False (no cursor) when nothing waits or before the rules. One sort,
+    /// `O(P log P)`, P products waiting, and `kept` once a product; nothing allocated.
+    pub(crate) fn begin_units(
+        &mut self,
+        in_view: &impl Fn([f32; 3], [f32; 3]) -> bool,
+        kept: &impl Fn(PatchKey) -> bool,
+    ) -> bool {
         if self.pending.is_empty() || self.rules.is_none() {
             return false;
         }
         self.status.blocked = 0;
         self.order(in_view);
+        for pending in &mut self.pending {
+            pending.kept = kept(pending.delivery.key);
+        }
         self.cursor = 0;
         self.cursor_closed = false;
         self.units_ran = true;
+        self.skip_unkept();
         true
+    }
+
+    // Moves the cursor past the products this frame's residency does not keep. `O(passed)`.
+    fn skip_unkept(&mut self) {
+        while self.pending.get(self.cursor).is_some_and(|pending| !pending.kept) {
+            self.cursor += 1;
+        }
     }
 
     // The cursor's next unit: its class and squared ground distance from the eye. `O(1)`.
@@ -758,11 +800,16 @@ impl VegetationLayer {
             (true, Some(reserve_us)) => budget.admits_upgrade(predicted, reserve_us),
             (true, None) => true,
         };
-        if self.try_install(backend, budget, clock, self.cursor, admits).is_none() {
+        let Some(installed) = self.try_install(backend, budget, clock, self.cursor, admits) else {
             self.cursor_closed = true;
             return false;
+        };
+        if installed && !upgrade {
+            let unit = &self.pending[self.cursor];
+            self.frame_last_hole = later_hole(self.frame_last_hole, (unit.class, unit.distance_sq));
         }
         self.cursor += 1;
+        self.skip_unkept();
         true
     }
 
@@ -1072,6 +1119,9 @@ pub(crate) struct VegetationUnits<'a, B: RenderBackend> {
     pub(crate) layer: &'a mut VegetationLayer,
     /// The backend.
     pub(crate) backend: &'a mut B,
+    /// The squared ground distance from the eye beyond which no terrain patch carries a wanted
+    /// vegetation patch ([`residency::VegetationResidency::reach`]).
+    pub(crate) reach_sq: f64,
 }
 
 impl<B: RenderBackend> UnitSource for VegetationUnits<'_, B> {
@@ -1081,6 +1131,10 @@ impl<B: RenderBackend> UnitSource for VegetationUnits<'_, B> {
 
     fn install_next(&mut self, budget: &mut FrameBudget, clock: &dyn Clock, reserve_us: Option<f64>) -> bool {
         self.layer.install_next(self.backend, budget, clock, reserve_us)
+    }
+
+    fn reach_sq(&self) -> f64 {
+        self.reach_sq
     }
 }
 

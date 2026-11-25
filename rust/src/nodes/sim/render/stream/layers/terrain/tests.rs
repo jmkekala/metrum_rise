@@ -228,7 +228,9 @@ fn level_checks_queue_exactly_the_patches_the_scripts_sweep_finds() {
         if step % 50 == 25 {
             eye[1] = (eye[1] + ((walk.next() - 0.5) * 2000.0) as f32).clamp(60.0, 3000.0);
         }
-        layer.set_square(GRID.target(eye, 16000.0, false));
+        let square = GRID.target(eye, 16000.0, false);
+        layer.set_square(square);
+        let wanted = square_keys(square);
         let installed: BTreeMap<_, _> = scripts.resident.clone();
         let mut budget = FrameBudget::new(f64::INFINITY);
         // An unbounded budget: a check's queue runs in its own frame, at the check's eye.
@@ -239,9 +241,13 @@ fn level_checks_queue_exactly_the_patches_the_scripts_sweep_finds() {
         }
         checks += 1;
         // The scripts' sweep: every resident patch whose installed step differs from the rule at
-        // the check's eye; each then takes the eye's step (here the same eye).
+        // the check's eye; each then takes the eye's step (here the same eye). Since `TERRAIN-50`
+        // only the patches still in the wanted square: one that left it is hidden in this same
+        // frame (the budget is unbounded), so its change would be work for a patch that draws
+        // nothing from this frame on.
         let expected: BTreeMap<_, _> = installed
             .iter()
+            .filter(|&(key, _)| wanted.contains(key))
             .filter(|&(key, step)| lod_step(lod_distance(eye, GRID.centre(*key))) != *step)
             .map(|(key, _)| (*key, lod_step(lod_distance(eye, GRID.centre(*key)))))
             .collect();
@@ -370,6 +376,57 @@ fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
     assert!(halo.iter().all(|key| lake.built.contains(key)));
 }
 
+#[test]
+fn a_water_patch_whose_ground_left_the_square_takes_no_level_change() {
+    // `TERRAIN-50`: settled at one eye, then the terrain's square moves 7.5 km while its leaving
+    // patches are still resident (the terrain does not run here), so the water still wants them.
+    // Only the water patches inside the square take a level change; the others keep their entries
+    // and run them once their ground is back in the square.
+    let mut terrain = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    let mut water = PatchStream::new(WATER_LIMITS, COSTS);
+    terrain.reset(Some(GRID));
+    water.reset(Some(GRID));
+    let (mut land, mut lake) = (Scripts::default(), Scripts::default());
+    let water_frame = |water: &mut PatchStream, lake: &mut Scripts, eye: [f32; 3]| {
+        let mut budget = FrameBudget::new(f64::INFINITY);
+        let work = water.frame(Some(eye), 0.25, &mut budget, &FixedClock, false, &|_| false, lake);
+        deliver(water, lake);
+        let _ = water.take_changes().count();
+        work
+    };
+    let eye = [-4000.0_f32, 800.0, 2000.0];
+    for _ in 0..120 {
+        frame(&mut terrain, &mut land, eye, 0.25);
+        for (key, resident) in terrain.take_changes() {
+            water.set_wanted(key, resident);
+        }
+        water_frame(&mut water, &mut lake, eye);
+    }
+    assert!(!water.has_pending_work());
+    let eye = [3000.0_f32, 800.0, -2500.0];
+    let square = GRID.target(eye, 16000.0, false);
+    let inside = square_keys(square);
+    water.set_step_square(Some(square));
+    lake.lod_changes.clear();
+    for _ in 0..4 {
+        water_frame(&mut water, &mut lake, eye);
+    }
+    let outside = |key: &PatchKey| !inside.contains(key);
+    assert!(!lake.lod_changes.is_empty());
+    assert!(!lake.lod_changes.iter().any(|(key, _)| outside(key)), "a change outside the square");
+    let waiting = water.resident_keys().filter(outside).filter(|key| {
+        water.installed_step(*key) != Some(lod_step(lod_distance(eye, GRID.centre(*key))))
+    });
+    assert!(waiting.count() > 0, "no patch outside the square waits for a change");
+    // Its ground back in the square: the queued change runs without a new check.
+    water.set_step_square(None);
+    let work = water_frame(&mut water, &mut lake, eye);
+    assert_eq!(work.lod_checks, 0);
+    for key in water.resident_keys() {
+        assert_eq!(water.installed_step(key), Some(lod_step(lod_distance(eye, GRID.centre(key)))), "{key:?}");
+    }
+}
+
 // Both layers in one frame (`frame_layers`): the water's holes, the terrain's, then both layers'
 // level changes; the water follows the terrain's residency as the stream node feeds it. Returns
 // both layers' work and whether the budget held a hole back.
@@ -471,7 +528,14 @@ fn a_queued_in_view_step_runs_within_a_frame_while_holes_wait() {
     let eye = [3000.0, 800.0, 1500.0];
     let mut frames_with_both = 0;
     for _ in 0..400 {
-        let [holes, _, queued] = layer.pending();
+        // Queued changes that can run: of patches still wanted (`TERRAIN-50`: a patch that left
+        // the square keeps its entry until its hide but takes no change).
+        let [holes, ..] = layer.pending();
+        let queued = layer
+            .queue
+            .iter()
+            .filter(|&&index| layer.flags[index as usize] & (WANTED | QUEUED) == WANTED | QUEUED)
+            .count();
         let work = run(&mut layer, &mut scripts, eye, 1.0);
         if queued > 0 && work.holes_deferred_in_view > 0 {
             assert_eq!(work.lod_changes, 1, "{holes} holes, {queued} queued: {work:?}");
@@ -950,12 +1014,13 @@ struct Trees {
     closed: bool,
     cost: f64,
     ran: Vec<(usize, u32)>,
+    reach_sq: f64,
 }
 
 impl Trees {
     fn new(mut holes: Vec<(Class, f64)>, cost: f64) -> Self {
         holes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        Self { holes, at: 0, closed: false, cost, ran: Vec::new() }
+        Self { holes, at: 0, closed: false, cost, ran: Vec::new(), reach_sq: f64::INFINITY }
     }
 }
 
@@ -978,6 +1043,9 @@ impl UnitSource for Trees {
         budget.record(self.cost, self.cost);
         self.at += 1;
         true
+    }
+    fn reach_sq(&self) -> f64 {
+        self.reach_sq
     }
 }
 
@@ -1103,6 +1171,30 @@ fn a_vegetation_hole_the_budget_refuses_waits_and_holds_the_frames_level_changes
     assert_eq!((with_trees.activations, without.activations), (0, 0), "no patch hole");
     assert!(without.lod_changes > 0 && !held_without, "{without:?}");
     assert!(held && trees.closed && with_trees.lod_changes == 0, "{with_trees:?}");
+}
+
+#[test]
+fn a_replacement_runs_behind_held_holes_only_when_they_lie_beyond_the_sources_reach() {
+    // `VEG-35` R1b: five 200 us builds spend 1,000 of 1,100 us and the farther holes are held.
+    // A replacement waits behind them while they lie within the source's reach; when every held
+    // hole lies beyond it, the replacement takes the room left (without the reserve) and the
+    // patch holes are the same. One that does not fit that room still waits.
+    let (_, places, _) = holes_with_trees(None, &mut FrameBudget::new(1100.0), &|_| false);
+    assert_eq!(places.len(), 5);
+    let beyond = places[4].1 * (1.0 - 1e-9);
+    let mut trees = Trees::new(vec![(Class::Upgrade, 0.0)], 50.0);
+    let (_, within, held) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(1100.0), &|_| false);
+    assert!(held && trees.ran.is_empty() && !trees.closed, "held within the reach");
+    assert_eq!(within, places);
+    let mut trees = Trees::new(vec![(Class::Upgrade, 0.0)], 50.0);
+    trees.reach_sq = beyond;
+    let (_, far, held) = holes_with_trees(Some(&mut trees), &mut FrameBudget::new(1100.0), &|_| false);
+    assert!(held && trees.ran == vec![(0, 5)], "{:?}", trees.ran);
+    assert_eq!(far, places);
+    let mut trees = Trees::new(vec![(Class::Upgrade, 0.0)], 150.0);
+    trees.reach_sq = beyond;
+    holes_with_trees(Some(&mut trees), &mut FrameBudget::new(1100.0), &|_| false);
+    assert!(trees.ran.is_empty() && trees.closed);
 }
 
 #[test]

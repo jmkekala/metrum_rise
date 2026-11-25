@@ -44,7 +44,7 @@
 //! Storage is dense per patch, sized once per world; a frame allocates nothing.
 
 use super::super::rings::{Cell, Lattice, RingBand, RingSet};
-use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, orders_before};
+use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, later_hole, orders_before};
 
 mod budget;
 mod units;
@@ -460,6 +460,10 @@ pub(crate) struct PatchWork {
     pub(crate) unit_us: [f64; UNIT_KINDS],
     /// The longest unit by kind, microseconds.
     pub(crate) unit_max_us: [f64; UNIT_KINDS],
+    /// The last of the frame's holes in the order that ran (class, squared ground distance from
+    /// the eye): a vegetation product pulled after the patch units that orders before it takes
+    /// its place in the order (`VEG-35` R1b).
+    pub(crate) last_hole: Option<(Class, f64)>,
 }
 
 /// One layer's patches: terrain's (wanted: the square) or water's (wanted: terrain's resident).
@@ -469,6 +473,9 @@ pub(crate) struct PatchStream {
     costs: UnitCosts,
     // What the level changes (upgrades) leave for the frame's holes (`RENDER-32-Q`).
     upgrade_reserve_us: f64,
+    // The square a resident patch must lie in for its level change to run (`TERRAIN-50`): the
+    // water's is the terrain's wanted square ([`Self::set_step_square`]); none, every wanted patch.
+    step_square: Option<[i32; 4]>,
     flags: Vec<u8>,
     // The installed step of a resident patch; the ring's step at the last check.
     step: Vec<u8>,
@@ -543,6 +550,7 @@ impl PatchStream {
             limits,
             costs,
             upgrade_reserve_us: 0.0,
+            step_square: None,
             flags: Vec::new(),
             step: Vec::new(),
             ring_step: Vec::new(),
@@ -870,6 +878,13 @@ impl PatchStream {
         };
         self.mark_wanted(grid.index(key), wanted);
         self.prewarm_dirty = true;
+    }
+
+    /// Sets the square outside which a resident patch takes no level change (`TERRAIN-50`; the
+    /// water's: the terrain's wanted square, so a water patch whose ground is leaving keeps its
+    /// step until it is hidden with it). `O(1)`.
+    pub(crate) fn set_step_square(&mut self, square: Option<[i32; 4]>) {
+        self.step_square = square;
     }
 
     /// Sets the prewarm square directly (water: terrain's halo).
@@ -1213,6 +1228,13 @@ impl PatchStream {
         queue.retain(|&index| self.flags[index as usize] & (RESIDENT | QUEUED) == RESIDENT | QUEUED);
         for &index in &queue {
             let key = grid.key(index as usize);
+            // A patch no longer wanted (`TERRAIN-50`) draws only until its hide: its level change
+            // and the graded cell set that follows it would be work for a patch about to draw
+            // nothing. Its entry stays queued as the scripts' sweep queued it, so a patch that
+            // comes back before its hide runs the change it was queued for. `O(1)`.
+            if !self.steps_run(key, index as usize) {
+                continue;
+            }
             let class = if in_view(key) {
                 Class::UpgradeInView
             } else {
@@ -1223,6 +1245,15 @@ impl PatchStream {
         self.queue = queue;
         self.order
             .sort_unstable_by(|a, b| order_cmp(grid, *a, grid, *b));
+    }
+
+    // Whether a resident patch's queued level change runs (`TERRAIN-50`): it is wanted, and
+    // within the step square when one is set.
+    fn steps_run(&self, key: PatchKey, index: usize) -> bool {
+        self.flags[index] & WANTED != 0
+            && self.step_square.is_none_or(|[x0, z0, x1, z1]| {
+                (x0..=x1).contains(&key[0]) && (z0..=z1).contains(&key[1])
+            })
     }
 
     // The frame's holes (the head of `order`): activations while the budget admits them, each
@@ -1257,6 +1288,7 @@ impl PatchStream {
                 self.work.deferred += 1;
                 frame.held = true;
                 frame.hole_deferred = true;
+                frame.reach_hole_deferred |= frame.within_reach(distance);
                 self.work.holes_deferred_in_view += usize::from(class == Class::HoleInView);
                 continue;
             }
@@ -1281,6 +1313,7 @@ impl PatchStream {
             let start = frame.clock.now_us();
             let (done, generation) = exec.activate(key, step);
             self.account(frame.budget, kind, cost, frame.clock.now_us() - start);
+            self.work.last_hole = later_hole(self.work.last_hole, (class, distance));
             if done == Activation::Done && self.flags[index] & BUILT == 0 {
                 self.generations.push((key, generation));
             }
@@ -1783,6 +1816,9 @@ struct FrameState<'a, 'h> {
     // in-view replacement of the frame ran.
     source: Option<&'a mut (dyn UnitSource + 'h)>,
     source_in_view: bool,
+    // A hole held back within the source's reach (`UnitSource::reach_sq`; a source hole counts):
+    // what holds the source's replacements (`VEG-35` R1b).
+    reach_hole_deferred: bool,
 }
 
 impl FrameState<'_, '_> {
@@ -1791,13 +1827,30 @@ impl FrameState<'_, '_> {
     }
 
     // The source's next hole (`upgrades` false) or replacement (true). A replacement runs as a
-    // level change does: on the budget only while no hole of the frame was held back, and the
-    // source's first in-view one of the frame always (`exempt_in_view`).
+    // level change does: on the budget only while no hole of the frame within the source's reach
+    // was held back (`VEG-35` R1b: a held hole beyond it lies where the source draws nothing),
+    // and the source's first in-view one of the frame always (`exempt_in_view`).
     fn source_next(&self, upgrades: bool) -> Option<(Class, f64)> {
         let next = self.source.as_deref()?.next_unit()?;
         let upgrade = next.0 >= Class::UpgradeInView;
-        (upgrade == upgrades && !(upgrade && self.hole_deferred && !self.exempt_in_view(next.0)))
+        (upgrade == upgrades && !(upgrade && self.reach_hole_deferred && !self.exempt_in_view(next.0)))
             .then_some(next)
+    }
+
+    // Whether a patch hole at squared ground distance `distance_sq` from the eye lies within the
+    // source's reach (every hole without a source). `O(1)`.
+    fn within_reach(&self, distance_sq: f64) -> bool {
+        self.source
+            .as_deref()
+            .is_none_or(|source| distance_sq <= source.reach_sq())
+    }
+
+    // What a replacement of the source leaves for holes: the layers' reserve while no hole of the
+    // frame was held back; nothing behind held holes beyond the source's reach (`VEG-35` R1b):
+    // every waiting hole was tried, and each held one met a room smaller than its price, which
+    // only grew since, so the room left is room none of them takes this frame.
+    fn source_reserve(&self, reserve_us: f64) -> f64 {
+        if self.hole_deferred { 0.0 } else { reserve_us }
     }
 
     // Whether a replacement of `class` is the source's first in-view one of the frame.
@@ -1816,6 +1869,7 @@ impl FrameState<'_, '_> {
             }
             if !self.install_from_source(Some(0.0)) {
                 self.hole_deferred = true;
+                self.reach_hole_deferred = true;
                 break;
             }
         }
@@ -1850,7 +1904,12 @@ impl FrameState<'_, '_> {
 ///    first, then key; the earlier layer on a tie), with the source's replacements of drawn
 ///    patches in the same order (a level change first on a tie), each on the budget less the
 ///    holes' reserve while no hole of the frame was held back, its first in-view one always, as
-///    a layer's (`VEG-35` R1);
+///    a layer's (`VEG-35` R1). A held hole beyond the source's reach (`UnitSource::reach_sq`:
+///    ground the source draws nothing on) does not hold its replacements, which then take the
+///    room left as the holes do, without the reserve: every waiting hole was tried and none of
+///    the held ones fits that room this frame (`VEG-35` R1b). The level changes' rule is
+///    unchanged; with no source the units are those without it. A level change runs only for a
+///    patch still wanted and inside the layer's step square (`TERRAIN-50`);
 /// 4. the hides, layer by layer;
 /// 5. releases on their own (not a donor), layer by layer: only while nothing the view waits for
 ///    is pending (no unit of the frame held back, no hole of the layer, no work of another
@@ -1887,6 +1946,7 @@ pub(crate) fn frame_layers(
         hole_deferred: false,
         source,
         source_in_view: false,
+        reach_hole_deferred: false,
     };
     for at in layers.iter_mut().flatten() {
         at.layer.begin(eye, delta, in_view);
@@ -1935,7 +1995,8 @@ pub(crate) fn frame_layers(
         {
             let exempt = frame.exempt_in_view(unit.0);
             frame.source_in_view |= unit.0 == Class::UpgradeInView;
-            frame.install_from_source(if exempt { None } else { Some(reserve_us) });
+            let reserve = frame.source_reserve(reserve_us);
+            frame.install_from_source(if exempt { None } else { Some(reserve) });
             continue;
         }
         let Some((at, entry)) = next else {

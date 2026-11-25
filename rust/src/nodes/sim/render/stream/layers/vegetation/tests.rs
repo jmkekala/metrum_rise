@@ -368,14 +368,14 @@ fn the_hole_cursor_takes_the_holes_in_the_install_order_and_leaves_the_rest_to_i
     // A frame without room: the first hole is refused and closes the cursor.
     let mut full = FrameBudget::new(STREAM_BUDGET_US);
     full.record(STREAM_BUDGET_US, STREAM_BUDGET_US);
-    assert!(layer.begin_units(&in_view));
+    assert!(layer.begin_units(&in_view, &|_| true));
     assert_eq!(layer.next_unit().map(|hole| hole.0), Some(Class::HoleInView));
     assert!(!layer.install_next(&mut backend, &mut full, &clock, Some(0.0)));
     assert_eq!(layer.next_unit(), None);
     assert_eq!((layer.end_units(), layer.pending()), (0, 7));
     // With room: every hole, nearest first in its class, then nothing.
     let mut budget = FrameBudget::new(STREAM_BUDGET_US);
-    assert!(layer.begin_units(&in_view));
+    assert!(layer.begin_units(&in_view, &|_| true));
     let mut classes = Vec::new();
     while let Some((class, _)) = layer.next_unit().filter(|unit| unit.0 <= Class::Hole) {
         classes.push(class);
@@ -396,6 +396,71 @@ fn the_hole_cursor_takes_the_holes_in_the_install_order_and_leaves_the_rest_to_i
     assert_eq!(layer.install(&mut backend, &mut budget, &clock, &in_view, false), 1);
     assert_eq!(layer.installed([0, 1, 4]).unwrap().serial, 2, "the upgrade");
     check_one_version(&layer, &backend);
+}
+
+#[test]
+fn a_hole_pulled_after_the_patch_units_takes_its_place_in_the_frames_order() {
+    // `VEG-35` R1b: the frame's patch units ran holes up to a near one out of view; with the
+    // room spent, the holes pulled since that order before it (the two in view) install, the
+    // rest wait; the next frame starts without the place.
+    let mut backend = Recorder::new();
+    let mut layer = layer(1024, 64);
+    let clock = StepClock::new(1.0);
+    let keys: [PatchKey; 6] = [[2, 0, 4], [5, 0, 4], [1, 0, 4], [6, 0, 4], [3, 3, 1], [0, 2, 4]];
+    for (serial, &key) in keys.iter().enumerate() {
+        layer.deliver(delivery(key, serial as u64 + 2, product(12, serial, true, true)));
+    }
+    let in_view = |low: [f32; 3], _: [f32; 3]| low[0] >= 5.0 * SPAN && low[2] < SPAN;
+    let full = || {
+        let mut full = FrameBudget::new(STREAM_BUDGET_US);
+        full.record(STREAM_BUDGET_US, STREAM_BUDGET_US);
+        full
+    };
+    layer.begin_pass(1);
+    layer.note_patch_holes(Some((Class::HoleNear, 0.0)));
+    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 2);
+    assert!(layer.installed([5, 0, 4]).is_some() && layer.installed([6, 0, 4]).is_some());
+    layer.begin_pass(1);
+    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 0, "the same frame");
+    layer.note_patch_holes(Some((Class::Hole, 0.0)));
+    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 3, "before a later hole");
+    layer.begin_pass(2);
+    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 0, "a new frame");
+    assert_eq!(layer.pending(), 1);
+}
+
+#[test]
+fn the_cursor_passes_the_products_the_frames_residency_does_not_keep() {
+    // `VEG-35` R1b: the order test's patches with two of them no longer kept (the camera left
+    // them): the cursor gives the others in the same order and leaves those two waiting.
+    let mut backend = Recorder::new();
+    let mut layer = layer(1024, 64);
+    let clock = StepClock::new(1.0);
+    let keys: [PatchKey; 6] = [[2, 0, 4], [5, 0, 4], [1, 0, 4], [6, 0, 4], [3, 3, 1], [0, 2, 4]];
+    for (serial, &key) in keys.iter().enumerate() {
+        layer.deliver(delivery(key, serial as u64 + 2, product(12, serial, true, true)));
+    }
+    let in_view = |low: [f32; 3], _: [f32; 3]| low[0] >= 5.0 * SPAN && low[2] < SPAN;
+    let left = [[5, 0, 4], [0, 2, 4]];
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    assert!(layer.begin_units(&in_view, &|key| !left.contains(&key)));
+    while layer.next_unit().is_some() {
+        assert!(layer.install_next(&mut backend, &mut budget, &clock, Some(0.0)));
+    }
+    assert_eq!((layer.end_units(), layer.pending()), (4, 2));
+    let order: Vec<PatchKey> = layer
+        .events()
+        .as_chunks::<EVENT_LANES>()
+        .0
+        .iter()
+        .map(|event| [event[0] as i32, event[1] as i32, event[2] as i32])
+        .collect();
+    assert_eq!(order, vec![[6, 0, 4], [1, 0, 4], [2, 0, 4], [3, 3, 1]]);
+    // Nothing kept: no unit at all.
+    layer.clear_events();
+    assert!(layer.begin_units(&in_view, &|_| false));
+    assert_eq!(layer.next_unit(), None);
+    assert_eq!(layer.end_units(), 0);
 }
 
 #[test]
