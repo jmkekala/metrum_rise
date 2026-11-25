@@ -381,7 +381,7 @@ impl KeptFill {
                 }
             }
         }
-        (count > 0).then(|| AuthoredWaterPatchFillDebug {
+        (count > 0).then_some(AuthoredWaterPatchFillDebug {
             kind: self.source.kind,
             fill_index: self.source.fill_index,
             preview: self.source.preview,
