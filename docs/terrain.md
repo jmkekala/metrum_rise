@@ -16126,7 +16126,11 @@ a world load under a budget of their own (below). The rules and constants are th
   `terrain_payload_request_test.gd` commits roads in a fresh 20 km world's first frames: on `dev`
   `fefcc00cb` 12 patches along the road never drew, now it settles. A later release of patches
   (`TERRAIN-41` B1) keeps the rule: a released patch's request either stays to be answered or is
-  ended with news, and the asserts check it in every gate run.
+  ended with news, and the asserts check it in every gate run. Measured on the shipped Kuopio
+  stream row (turns, pan, zoom, jump; two C B B C sessions against `fefcc00cb`, pooled, four runs
+  a side): every phase level at the median and the maximum; the settle digests equal `dev`'s
+  wherever two `dev` runs agree (all points but the first far-to-ground settle, where they differ
+  from each other); the stream goldens replay unchanged.
 - **Deleted.** `terrain.gd` 3,357 to 2,628 lines and `water.gd` 2,522 to 2,015 (1,479 out, 245
   in): `_sync_patch_residency`, the bounds helpers, both LOD sweeps
   and queues, both prewarm queues, the water's follow-the-terrain pass, 22 terrain and 18 water
