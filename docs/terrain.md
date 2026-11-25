@@ -18156,7 +18156,10 @@ so no timing level.
 a water edit replaces `WaterSystem` whole and restarts that generation, so two edits in a row
 left equal generations and the view kept the first edit's water. The view now keys the copy by
 `SimCore::water_copy_key` (world epoch, render generation, surface stamp), the key the published
-surface's `shared_water_copy` uses, and shares that copy. The key moves with every road edit's
+surface's `shared_water_copy` uses, and shares that copy. Since `TERRAIN-38` (2026-11-25) a terrain
+edit updates the water in place instead of replacing it: the generation then advances by one
+when any depth changed, so the key still moves with every water change
+([section 9](#9-water-uses-sparse-baseline-depth-storage)). The key moves with every road edit's
 surface stamp too, so a road edit's publication may now take the shared copy (`O(storage
 chunks)` handles, made once per key for both readers).
 
@@ -21352,16 +21355,94 @@ Current deterministic rules:
   every fill (an edge-escaping lake included) two zeroed world-sized buffers (depth, visited) and
   two scans of the world (the merge, the debug cache), `O(fills x W)`; the products are bitwise
   equal
-  (`authored_water_solve_matches_the_dense_reference_bitwise`). Every terrain edit still
-  re-solves every fill (`finish_terrain_authoring_edit_in_pool`, once per gameplay sculpt
-  frame); an exact per-fill re-solve is not done. Diagnostic release runs (one each, machine
-  shared, not acceptance; an uncommitted probe in the release `$TEST_BINARY`): the shipped Kuopio of round `A4b` (110 fills, 5.31 M
-  samples) solves in 0.070 s instead of 1.157 s and a sculpt edit beside its water takes
-  0.065-0.071 s instead of 0.86-0.94 s; the retired 18,000 m Kuopio (23 fills, 3.24 M samples)
-  0.043 s instead of 0.138 s. What remains is the `O(W)` part: the dense copy, the zeroed
-  buffers' page faults and the sparse rebuild
+  (`authored_water_solve_matches_the_dense_reference_bitwise`). Diagnostic release runs of that
+  round (one each, machine shared, not acceptance): the shipped Kuopio of round `A4b` (110 fills,
+  5.31 M samples) solves in 0.070 s instead of 1.157 s; the retired 18,000 m Kuopio (23 fills,
+  3.24 M samples) 0.043 s instead of 0.138 s
+- the full solve runs at a world load and after every fill edit (commit, removal, preview). It
+  replaces the water whole: a new `WaterSystem`, its render generation count restarted, every
+  render patch dirty
+- a terrain change updates the water in place (`TERRAIN-38`, round T38, 2026-11-25): every brush
+  edit, a stroke's end and the undo of either go through one entry,
+  `refresh_authored_water_after_terrain_change`. The full solve keeps a book
+  (`AuthoredWaterBook`, `world_definition/water_update.rs`): per fill its flooded samples as
+  64 x 64 bit tiles, its flood report, whether its kind accepted it and the render patches of its
+  debug entries; and the source terrain it read, as shared chunk pointers. The update compares the
+  live terrain with the book's (`SparseChunkGrid::changed_cells_since`: a pointer comparison a
+  storage chunk, a cell scan of the chunks that diverged) and re-solves only the fills that read
+  a changed sample. A fill reads the terrain only at its seed, its flooded samples and their
+  4-neighbours, so every other fill floods, is accepted and reports exactly as before. A fill that
+  read a change is first updated locally (`KeptFill::update_locally`) when that is exact: its seed
+  did not change, and the samples a raise lifts above its level leave the rest connected, which a
+  search within 32 samples of them shows (every part of a split fill holds a neighbour of a
+  removed sample, so when those neighbours join up the fill is whole); the fill is then its old
+  samples less the removed ones, plus what floods from the changed samples newly at or below its
+  level beside it (`FillFlood::grow`), and its debug entries are rescanned only in the patches
+  owning a removed, grown or changed sample. Otherwise (the seed changed, the check cannot show
+  the rest connected, or the kind would accept the fill differently: a drain to the edge, a
+  closed leak) the fill is flooded again from its seed. The depth
+  is then recomputed over the re-solved fills' old and new flooded samples only, from every
+  accepted fill holding them (the deepest wins, as in the full solve), and the samples whose bits
+  differ are written in place (`WaterSystem::write_baseline_depth_samples`). A sample outside
+  those sets is held by the same unchanged fills on unchanged ground, so it cannot change. The
+  result equals a full solve bit for bit: depth, stored chunks and the debug cache
+  (`in_place_water_updates_equal_a_full_solve_after_every_edit`: 60 edits, among them shore
+  cuts, a raise that splits a fill and a lowering that joins two, edits far from water and on a
+  fill's seed, a rim cut that drains a lake to the world edge and joins open water to its basin,
+  a stroke, undos and a pseudo-random walk; `in_place_water_updates_do_not_depend_on_the_worker_count`:
+  the same bytes on one and four workers). Cost: `O(storage chunks)` pointer comparisons and
+  pointer copies (the book's terrain), a scan of the chunks the change wrote, `O(1)` a fill to rule
+  it out by bounds or `O(changed x log tiles)` to test it; per locally updated fill the split
+  check's window (`(64 + removed span)^2` samples, only after a raise), the grown samples and
+  the patches rescanned (`O(patch samples)` each); per fill flooded again `O(k)` for its old and
+  new `k` flooded samples (flood, row-major sort, tiles, debug entries); and the depth pass over
+  the touched tiles. No dense terrain copy, no zeroed world buffer, no sparse rebuild. The
+  update is serial (one flood at a time over one visit bit array; the work is the brush's
+  neighbourhood). With a fill preview active the update is a
+  full solve (a preview is re-evaluated by every solve) and no book is kept. The book is derived
+  state: never saved, dropped at a load (a saved game holds no fills, `clear_world_transient_state`)
+  and when an undo record restores the water itself, rebuilt by the next full solve. It holds
+  the fills' tiles, one visit bit a sample and the terrain's chunk pointers: 1.5 MB on the shipped
+  Kuopio (107 fills, 5.31 M samples), 14.0 MB on the 60 km Kuopio copy (1,251 fills, 56.1 M
+  samples); the flood's work lists are freed after each solve and update
+- measured (round T38, release test binary with an uncommitted probe, one run a side, under the
+  timing lock, pinned to the 8 P-cores, load average under 2; control `dev` `f959970ab`). A
+  gameplay sculpt edit on the shipped Kuopio, beside the big lake's shore (a cut, a dam, the
+  probe's sites of round `A4c`), on a small lake and far from water: 0.058-0.060 s each on
+  `dev`, 0.13-0.50 ms on the branch; a held button (21 edits of -0.25 m at the shore) median
+  0.059 s against 0.21 ms, far from water 0.059 s against 0.04 ms. Water patches marked dirty an
+  edit: 1,296 on `dev`, 0-2 on the branch. On the 60 km copy the same small-lake edit takes
+  0.40 s on `dev` and 0.35-0.62 ms on the branch, with equal local products (the depth and ground
+  of the 97 x 97 samples around it, before and after); the 0.3 ms more than on Kuopio is the
+  `O(storage chunks)` pointer pass (13,689 chunks against 1,296). Setup: the load's full solve
+  takes 0.058 s on `dev` and 0.061-0.065 s with the book (60 km: 0.40 s and 0.42-0.44 s). Every
+  product (depth hash, debug cache hash, wet count) is equal to `dev`'s after every edit, and a
+  full solve after the edits equals the in-place state on both worlds. Level F (`./run.sh --timing --level
+  F`, control the release test executable of `f959970ab`, the branch's of `15fadf75f`): 30k 32x
+  (C B B C) and K22 level; one row a side misses the 8.0 ms worst unpreempted frame (control 8.10,
+  branch 8.07 ms), as in round B1's session on the same control. 30k 1x: every mean, percentile
+  and component level, both pass acceptance; the runner flags the worst unpreempted frame (control
+  4.13 and 4.16 ms, branch 5.01 and 4.57 ms over two days a side), which no changed code explains:
+  the day has no authored fills and no terrain edit
+- the in-place update keeps the `WaterSystem` and changes what `ROAD-114` relied on as follows.
+  Before: every water change (fill edits and terrain edits alike) replaced the water whole, so its
+  render generation restarted (equal counts across two edits) and every patch was marked dirty;
+  the road tool's view and the published surface therefore key their water copy by the world
+  epoch, the render generation and the surface stamp every water edit bumps
+  (`water_copy_key`). Now: fill edits and loads still replace it whole (unchanged, and
+  `the_road_tool_view_follows_two_water_edits_in_a_row` still holds); a terrain edit that changes
+  any depth advances the render generation by one (it never restarts there), gives that
+  generation to exactly the render patches whose texture (owned samples and the one-texel border
+  ring) reads a changed sample, leaves every other patch's generation and dirtiness alone, and
+  bumps the surface stamp; a terrain edit that changes no depth changes neither. The key moves
+  whenever the depth moved, so every reader sees the same water as before; what changed is how
+  much is re-sent: the renderer re-requests only the patches whose water changed instead of all
+  of them (1,296 on Kuopio), and payload requests in flight across the edit are answered as
+  failed and asked again (`TERRAIN-35`), as after any water change
 - the debug cache (`get_water_patch_authored_fill_debug`: per render patch, which fills put water
   there) is read only by the road-geometry debug dump in `water.gd`, and is built by every solve
+  and kept current by every in-place update (the re-solved fills' entries replaced, the patches
+  they touch re-sorted under a total order that equals the solve's)
 - water save/load persists one dense row-major baseline-depth snapshot at the serialization boundary
 - no source/sink, velocity, or flux state exists in the shipped runtime
 
@@ -22528,6 +22609,12 @@ Current repository state:
   terrain record costs `O(chunks)` pointers to take and `O(edited chunks)` memory as later brush
   writes copy the chunks they touch (`Arc::make_mut`), a water record one `Arc`; the restore and
   its whole-world resets (lanes, roadbed, payload generations, height reset) are unchanged
+- the authored water follows an undone terrain edit (`TERRAIN-37`, 2026-11-25): a brush record
+  holds no water, and the restore of its terrain runs the edit's own water update
+  (`refresh_authored_water_after_terrain_change`, the one entry every terrain change takes), so
+  after the undo the depth and the debug cache equal a fresh solve on the restored ground
+  (`undoing_a_shore_cut_leaves_the_water_a_fresh_solve`, which fails on `dev` `f959970ab`). The
+  simulation has no redo, and a load clears the undo history, so no undo crosses a save or load
 
 Required direction:
 

@@ -280,6 +280,10 @@ pub struct SimCore {
     /// Cached authored-water fill debug summaries keyed by water render patch.
     pub(crate) authored_water_patch_fill_debug_cache:
         HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
+    /// What the last full water solve kept for the in-place updates after terrain changes
+    /// (`TERRAIN-38`); `None` until a solve with fills and no preview runs. Derived, never saved.
+    pub(crate) authored_water_book:
+        Option<Box<crate::nodes::sim::world_definition::AuthoredWaterBook>>,
     /// True while the world editor is accumulating one terrain brush stroke.
     pub(crate) terrain_stroke_active: bool,
     /// True once the active terrain brush stroke has applied at least one terrain mutation.
@@ -473,6 +477,7 @@ impl SimCore {
             agriculture: AgricultureSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
+            authored_water_book: None,
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
             terrain_dirty: true,

@@ -643,6 +643,8 @@ impl SimCore {
             self.watermap
                 .replace_baseline_depth_from_snapshot(w_data.baseline_depth)
                 .expect("undo baseline water snapshot must match the live water dimensions");
+            // The water no longer is what the kept book solved (`TERRAIN-38`).
+            self.authored_water_book = None;
             self.water_dirty = true;
             self.bump_road_tool_query_generation();
         }
@@ -765,6 +767,11 @@ impl SimCore {
             self.remove_buildings_of_removed_roads(
                 (!fronting_stale).then_some(fronting.as_slice()),
             );
+        }
+        // The authored water follows the restored ground through the edit's own update
+        // (`TERRAIN-37`).
+        if restored_dense_terrain {
+            self.refresh_authored_water_after_terrain_change();
         }
         if charged > 0.0 {
             self.treasury.refund_build_cost(charged);

@@ -192,6 +192,42 @@ impl WaterSystem {
         Ok(())
     }
 
+    /// The baseline depth grid, for a reader comparing new depths with the stored ones. O(1).
+    pub(crate) fn baseline_depth_grid(&self) -> &SparseChunkGrid<f32> {
+        &self.baseline.depth
+    }
+
+    /// Writes changed depth samples in place (`(row-major sample index, depth)`) and marks
+    /// dirty, under one new render generation, exactly the render patches whose texture (owned
+    /// samples and border ring) holds a written sample; every other patch keeps its generation
+    /// and its dirtiness (`TERRAIN-38`). Nothing changes for an empty `writes`. O(writes +
+    /// chunks a default write reached x chunk samples), plus `O(chunks)` pointer copies once
+    /// when a reader still shares the grid (an undo record, a published water copy).
+    pub(crate) fn write_baseline_depth_samples(&mut self, writes: &[(usize, f32)]) {
+        if writes.is_empty() {
+            return;
+        }
+        let width = self.width;
+        Arc::make_mut(&mut self.baseline.depth).set_many(
+            writes
+                .iter()
+                .map(|&(index, depth)| (index % width, index / width, depth)),
+        );
+        self.render_generation_counter = self.render_generation_counter.wrapping_add(1).max(1);
+        let generation = self.render_generation_counter;
+        let interval = self.render_patch_interval_cells;
+        let (cols, rows) = (self.render_patch_cols(), self.render_patch_rows());
+        for &(index, _) in writes {
+            for patch_z in texel_patches(index / width, interval, rows) {
+                for patch_x in texel_patches(index % width, interval, cols) {
+                    self.dirty_render_patches.insert((patch_x, patch_z));
+                    self.render_patch_generations
+                        .insert((patch_x, patch_z), generation);
+                }
+            }
+        }
+    }
+
     /// Returns the full water-map extent in metres.
     pub(crate) fn world_size(&self) -> (f32, f32) {
         (
@@ -591,6 +627,16 @@ fn depth_at_world(
 
 fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
     ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
+}
+
+// The patches along one axis whose texture reads sample `coord`: patch `p` reads
+// `p * interval - 1 ..= p * interval + interval + 1`, clamped to the grid (its owned span and the
+// border ring, `border_source_index`), so `p` runs from `ceil((coord - 1 - interval) / interval)`
+// to `(coord + 1) / interval`, within the patch count.
+fn texel_patches(coord: usize, interval: usize, count: usize) -> std::ops::RangeInclusive<usize> {
+    let first = coord.saturating_sub(1 + interval).div_ceil(interval);
+    let last = ((coord + 1) / interval).min(count.saturating_sub(1));
+    first..=last
 }
 
 // Border texels hold the neighbouring patch's real samples, clamped only at the world edge, as

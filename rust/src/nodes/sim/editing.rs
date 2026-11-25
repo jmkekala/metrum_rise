@@ -740,15 +740,7 @@ impl SimCore {
         // not repeatedly observe a newer source generation paired with the previous mesh.
         self.precompute_road_mesh_data();
         self.rebuild_building_entrances_internal();
-        if self.has_authored_water_internal()
-            && let Err(err) = self.rebuild_authored_water_preview_internal()
-        {
-            debug_log!(
-                "world-editor",
-                "rebuild_authored_water_after_sculpt failed: {}",
-                err
-            );
-        }
+        self.refresh_authored_water_after_terrain_change();
     }
 
     /// Begins one batched terrain brush stroke.
