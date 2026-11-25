@@ -166,8 +166,21 @@ varying float var_view_distance_m;
 varying float var_backdrop_wet;
 // The skirt's drop below a cell's edge, metres: it hides the seam against a finer neighbour.
 const float BACKDROP_SKIRT_M = 48.0;
-// The backdrop's flat water (linear albedo): no reflection, waves or second pass.
-const vec3 BACKDROP_WATER_ALBEDO = vec3(0.020, 0.070, 0.120);
+// The backdrop's flat water (`TERRAIN-41` D3): no reflection, waves or second pass, but the real
+// water's own inputs, so the two cannot drift apart: its deep colour and its Fresnel power and
+// strength (terrain_backdrop.gd sets them from water.gd's DEEP_WATER_COLOR, WATER_FRESNEL_POWER and
+// WATER_FRESNEL_STRENGTH, the constants the water's materials take).
+uniform vec4 backdrop_water_color : source_color = vec4(0.018, 0.066, 0.092, 0.97);
+uniform vec2 backdrop_water_fresnel = vec2(5.0, 1.0);
+// The water's ripples once a pixel spans them all (water.gdshader's WATER_RIPPLES): their summed
+// slope variance at unit amplitude (half the steepnesses squared) and the mean of their gust gate
+// (0.35 to 1 over the gust field), giving the water's far roughness at the weather's sea state.
+const float BACKDROP_RIPPLE_VARIANCE = 0.0002615;
+const float BACKDROP_RIPPLE_GUST = 0.6;
+// water.gdshader's WATER_MAX_ALPHA: deep water's opacity once its absorption saturates.
+const float BACKDROP_WATER_MAX_ALPHA = 0.98;
+// 1 where the fragment is backdrop water: light() lights it as the water is lit.
+varying float backdrop_water;
 #endif
 // Share of direct sunlight the clouds let through, from fragment() to light().
 varying float var_cloud_sun;
@@ -674,6 +687,9 @@ float quad_mixed(float v) {
 }
 
 void fragment() {
+#ifdef TERRAIN_BACKDROP
+	backdrop_water = 0.0;
+#endif
 #ifdef TERRAIN_GRADED
 	// The seam test only flags the fragment; it is discarded at the end, after every lane of its
 	// quad has run the shading the others take derivatives from (its own result is never drawn).
@@ -1131,11 +1147,30 @@ void fragment() {
 			SPECULAR = 0.08;
 #ifdef TERRAIN_BACKDROP
 			// Flat water where the cell lies under it (half way between a wet and a dry lattice
-			// point), lit as the ground is.
+			// point): the real water's opaque terms as a far pixel draws them (water.gdshader), its
+			// deep colour darkened by its Schlick Fresnel against the level surface; the engine's
+			// sky ambient and sky reflection (IRRADIANCE and RADIANCE with alpha 0: the engine's
+			// own, as the water leaves them) at water's reflectance (0.25 in Godot's encoding); the
+			// roughness of its unresolved ripples at the sea state. Left out: its screen and planar
+			// reflections, the reflected moving clouds, the sun glitter and the waves' shading
+			// (`TERRAIN-41` D3); the bed through its last 2 % of opacity is the ground's albedo.
 			if (var_backdrop_wet > 0.5) {
-				ALBEDO = BACKDROP_WATER_ALBEDO;
-				EMISSION = ALBEDO * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
-				ROUGHNESS = 0.2;
+				vec3 up_view = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+				float fresnel = 0.02 + 0.98 * pow(
+					1.0 - clamp(dot(up_view, normalize(-VERTEX)), 0.0, 1.0), backdrop_water_fresnel.x);
+				NORMAL = up_view;
+				float fresnel_mix = clamp(fresnel * backdrop_water_fresnel.y, 0.0, 1.0);
+				// The bed shows through the water's last share of opacity: deep water's absorption
+				// saturates, so its opacity is water.gdshader's ceiling (WATER_MAX_ALPHA).
+				ALBEDO = mix(color, backdrop_water_color.rgb * (1.0 - fresnel_mix), BACKDROP_WATER_MAX_ALPHA);
+				EMISSION = vec3(0.0);
+				IRRADIANCE = vec4(0.0);
+				RADIANCE = vec4(0.0);
+				float sea = clamp(weather_wind.y, 0.0, 4.0);
+				float sigma = sqrt(BACKDROP_RIPPLE_VARIANCE) * BACKDROP_RIPPLE_GUST * sea * sqrt(sea);
+				ROUGHNESS = clamp(max(0.08, sqrt(1.414 * sigma)), 0.05, 0.45);
+				SPECULAR = 0.25;
+				backdrop_water = 1.0;
 			}
 #endif
 		}
@@ -1207,6 +1242,32 @@ void fragment() {
 }
 
 void light() {
+#ifdef TERRAIN_BACKDROP
+	if (backdrop_water > 0.5) {
+		// Backdrop water is lit as the real water is (`TERRAIN-41` D3): water.gdshader has no
+		// light(), so the engine's own Lambert diffuse and Schlick-GGX specular at the water's
+		// reflectance (standard_light.gdshaderinc's light_compute() of Godot 4.7.2 with specular
+		// 0.25; the engine multiplies the diffuse by ALBEDO after light()), unshadowed
+		// (shadows_disabled) and without the clouds' dimming.
+		float attenuation = LIGHT_IS_DIRECTIONAL ? 1.0 : ATTENUATION;
+		float n_dot_l = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
+		float n_dot_v = max(dot(NORMAL, VIEW), 1e-4);
+		DIFFUSE_LIGHT += LIGHT_COLOR * (n_dot_l / PI) * attenuation;
+		vec3 half_vector = normalize(VIEW + LIGHT);
+		float n_dot_h = clamp(dot(NORMAL, half_vector), 0.0, 1.0);
+		float l_dot_h = clamp(dot(LIGHT, half_vector), 0.0, 1.0);
+		float alpha_ggx = ROUGHNESS * ROUGHNESS;
+		float a = n_dot_h * alpha_ggx;
+		float k = alpha_ggx / (1.0 - n_dot_h * n_dot_h + a * a);
+		float d = clamp(k * k / PI, 0.0, 65504.0);
+		float g = clamp(0.5 / mix(2.0 * n_dot_l * n_dot_v, n_dot_l + n_dot_v, alpha_ggx), 0.0, 65504.0);
+		float f0 = 0.16 * 0.25 * 0.25;
+		float f90 = clamp(f0 * 50.0, 0.0, 1.0);
+		float m = 1.0 - l_dot_h;
+		float fresnel = f0 + (f90 - f0) * (m * m * m * m * m);
+		SPECULAR_LIGHT += n_dot_l * d * fresnel * g * LIGHT_COLOR * attenuation * SPECULAR_AMOUNT;
+	} else {
+#endif
 	// Clouds dim the sun only; the moon and every other light pass untouched.
 	float cloud = LIGHT_IS_DIRECTIONAL ? var_cloud_sun : 1.0;
 	// Local lights (street lamps) light the ground physically: Lambert with their own distance and
@@ -1234,4 +1295,7 @@ void light() {
 			* soft_facing
 			* cloud;
 	}
+#ifdef TERRAIN_BACKDROP
+	}
+#endif
 }
