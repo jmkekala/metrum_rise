@@ -350,6 +350,42 @@ fn installs_take_class_then_distance_then_key_order_within_the_budget() {
 }
 
 #[test]
+fn the_install_counters_read_waits_classes_and_stalled_passes() {
+    let mut backend = Recorder::new();
+    let mut layer = layer(1024, 64);
+    let clock = StepClock::new(2500.0);
+    layer.begin_pass(10);
+    layer.deliver(delivery([1, 0, 4], 1, product(12, 0, true, true)));
+    layer.deliver(delivery([2, 0, 4], 2, product(12, 1, true, true)));
+    // Frame 13: one 2,500 us unit fills the budget; the other hole waits: not a stalled pass.
+    layer.begin_pass(13);
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    assert_eq!(layer.install(&mut backend, &mut budget, &clock, &nowhere, false), 1);
+    layer.end_pass();
+    // The frame's second pass has no room: a hole waits and nothing installs.
+    layer.begin_pass(13);
+    assert_eq!(layer.install(&mut backend, &mut budget, &clock, &nowhere, false), 0);
+    layer.end_pass();
+    let [total, frame] = layer.install_waits();
+    assert_eq!((total.installs, total.wait_frames_sum, total.stalled_passes), (1, 3, 1));
+    assert_eq!(total, frame);
+    assert_eq!(total.by_class[Class::HoleNear as usize], 1);
+    // Frame 20: the second installs after ten frames, past the bar.
+    layer.begin_pass(20);
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    layer.install(&mut backend, &mut budget, &clock, &nowhere, false);
+    layer.end_pass();
+    let window = layer.take_install_waits();
+    assert_eq!(
+        (window.installs, window.wait_frames_max, window.waited_over_bar, window.stalled_passes),
+        (2, 10, 1, 1)
+    );
+    assert_eq!(window.measured_us, 5000.0);
+    assert_eq!(layer.install_waits()[1].installs, 1, "a new frame starts its counts");
+    assert_eq!(layer.take_install_waits(), InstallWaits::default());
+}
+
+#[test]
 fn the_pool_limit_blocks_the_farthest_and_frees_resume_it() {
     let mut backend = Recorder::new();
     let one = product(64, 0, true, true);

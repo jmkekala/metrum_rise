@@ -59,8 +59,8 @@ use crate::nodes::sim::render::stream::layers::vegetation::residency::{
     PREPARED_CAP_BYTES, PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
 };
 use crate::nodes::sim::render::stream::layers::vegetation::{
-    Delivery, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT, VegetationLayer,
-    VegetationRules,
+    Delivery, InstallWaits, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT,
+    VegetationLayer, VegetationRules,
 };
 use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::view::CameraSample;
@@ -629,6 +629,23 @@ impl StreamNode {
         self.vegetation.is_drawn(patch_key(key))
     }
 
+    /// The stream benchmark's near ring (`VEG-35` R0): of the wanted vegetation patches whose
+    /// centre lies within `radius` metres of `centre` (x, z), how many there are and how many draw
+    /// themselves. Benchmark only, `O(wanted)`.
+    #[func]
+    pub fn count_vegetation_drawn_near(&self, centre: Vector2, radius: f64) -> Vector2i {
+        let mut counts = Vector2i::ZERO;
+        for (key, [x0, z0, x1, z1], _) in self.residency.probe_wanted() {
+            let dx = f64::from((x0 + x1) * 0.5 - centre.x);
+            let dz = f64::from((z0 + z1) * 0.5 - centre.y);
+            if dx * dx + dz * dz < radius * radius {
+                counts.x += 1;
+                counts.y += i32::from(self.vegetation.is_drawn(key));
+            }
+        }
+        counts
+    }
+
     /// The stream benchmark's drawn probe (`RENDER-32-N`): layer `name`'s installed set this
     /// frame as `stream::probe` records (`terrain`, `water`, `vegetation_coarse`, `vegetation_fine`,
     /// `terrain_map` (every patch of the map, `TERRAIN-41` D2), and through the attached book
@@ -769,7 +786,9 @@ impl StreamNode {
     /// slots live, spare, created and freed, installs, and this frame's units with their
     /// predicted and measured microseconds and the longest unit; the vegetation's prepared set
     /// (`prepared`, `prepared_bytes`, `prepared_cap_bytes`, `preparing`, `prepared_over_cap`,
-    /// `prepared_used`, `prepared_dropped`, `prepared_replaced`).
+    /// `prepared_used`, `prepared_dropped`, `prepared_replaced`); the installs' waits and costs
+    /// since setup (`VEG-35` R0, [`Self::take_vegetation_install_waits`]'s fields with `install_`
+    /// before each).
     #[func]
     pub fn get_stream_status(&self) -> VarDictionary {
         let status = self.vegetation.status();
@@ -798,6 +817,8 @@ impl StreamNode {
         layer.set("prepared_used", used);
         layer.set("prepared_dropped", dropped);
         layer.set("prepared_replaced", replaced);
+        let [waits, _] = self.vegetation.install_waits();
+        set_install_waits(&mut layer, "install_", &waits);
         let mut out = VarDictionary::new();
         out.set("vegetation", layer);
         out.set("budget_us", STREAM_BUDGET_US);
@@ -1167,6 +1188,19 @@ impl StreamNode {
     pub fn get_patch_requests(&self) -> Vector2i {
         let count = |layer: &PatchStream| i32::try_from(layer.requested_count()).unwrap_or(i32::MAX);
         Vector2i::new(count(&self.terrain), count(&self.water))
+    }
+
+    /// The vegetation's installs since the last call, then starts over (`VEG-35` R0, the stream
+    /// benchmark's samples): `installs`, `wait_frames_sum`, `wait_frames_max` (process frames from a
+    /// product's delivery to its install), `waited_over_bar` (more than 5 frames), `hole_in_view`,
+    /// `hole_near`, `hole`, `upgrade_in_view`, `upgrade` (installs by the class of the pass that
+    /// installed them), `stalled_passes` (passes that ended with a hole product waiting and no
+    /// install), `predicted_us` and `measured_us` (the installs' units). `O(1)`.
+    #[func]
+    pub fn take_vegetation_install_waits(&mut self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        set_install_waits(&mut out, "", &self.vegetation.take_install_waits());
+        out
     }
 
     /// The terrain's and the water's patch units by kind since the last call, then starts over
@@ -1859,6 +1893,7 @@ impl StreamNode {
     fn run_pass(&mut self, residency: bool) {
         let start = std::time::Instant::now();
         self.open_ledger();
+        self.vegetation.begin_pass(self.ledger_frame);
         self.run_units(residency, start);
         self.backdrop_pass(residency);
         self.close_ledger();
@@ -1997,6 +2032,7 @@ impl StreamNode {
         self.frame_installs +=
             self.vegetation
                 .install(backend, &mut self.budget, &self.clock, &test, false);
+        self.vegetation.end_pass();
         self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
         let free_us = backend.take_free_us();
@@ -2192,6 +2228,9 @@ impl StreamNode {
         details.set("pulled", self.frame_pulled as i64);
         details.set("refreshed", self.frame_refreshed as i64);
         details.set("stream_pending", status.pending as i64);
+        // This frame's installs' waits and costs (`VEG-35` R0), apart from the patch units'.
+        let [_, waits] = self.vegetation.install_waits();
+        set_install_waits(&mut details, "install_", &waits);
         details.set("stream_blocked", status.blocked as i64);
         details.set("slots_live", status.slots_live as i64);
         details.set("slots_spare", status.slots_spare as i64);
@@ -2296,6 +2335,21 @@ impl StreamNode {
             ],
         );
     }
+}
+
+// The vegetation's install counters (`VEG-35` R0) as `<prefix><name>` fields.
+fn set_install_waits(out: &mut VarDictionary, prefix: &str, waits: &InstallWaits) {
+    const CLASS_NAMES: [&str; 5] = ["hole_in_view", "hole_near", "hole", "upgrade_in_view", "upgrade"];
+    out.set(format!("{prefix}installs"), waits.installs as i64);
+    out.set(format!("{prefix}wait_frames_sum"), waits.wait_frames_sum as i64);
+    out.set(format!("{prefix}wait_frames_max"), waits.wait_frames_max as i64);
+    out.set(format!("{prefix}waited_over_bar"), waits.waited_over_bar as i64);
+    for (name, count) in CLASS_NAMES.iter().zip(waits.by_class) {
+        out.set(format!("{prefix}{name}"), count as i64);
+    }
+    out.set(format!("{prefix}stalled_passes"), waits.stalled_passes as i64);
+    out.set(format!("{prefix}predicted_us"), waits.predicted_us);
+    out.set(format!("{prefix}measured_us"), waits.measured_us);
 }
 
 fn patch_key(key: Vector3i) -> PatchKey {

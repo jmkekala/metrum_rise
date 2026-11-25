@@ -132,6 +132,47 @@ struct Pending {
     // The heights its batches' bounds reach, for the frustum test.
     heights: [f32; 2],
     installed: bool,
+    // The process frame it was delivered in (`VEG-35`: its wait for the install).
+    delivered: u64,
+}
+
+/// What the vegetation's installs waited and cost (`VEG-35` R0): counters only, they never decide.
+/// A wait is counted in process frames from the product's delivery to its install.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct InstallWaits {
+    /// Installs.
+    pub(crate) installs: u64,
+    /// Their waits summed, frames.
+    pub(crate) wait_frames_sum: u64,
+    /// The longest wait, frames.
+    pub(crate) wait_frames_max: u64,
+    /// Installs that waited more than [`WAIT_BAR_FRAMES`].
+    pub(crate) waited_over_bar: u64,
+    /// Installs by the [`Class`] of the pass that installed them, in `Class` order.
+    pub(crate) by_class: [u64; CLASSES],
+    /// Passes that ended with a hole product waiting and no install.
+    pub(crate) stalled_passes: u64,
+    /// The installs' predicted cost, microseconds.
+    pub(crate) predicted_us: f64,
+    /// Their measured time, microseconds.
+    pub(crate) measured_us: f64,
+}
+
+/// The install classes counted ([`Class`]'s variants).
+pub(crate) const CLASSES: usize = 5;
+/// `VEG-35`'s bar: a product waits at most this many frames from delivery to install.
+pub(crate) const WAIT_BAR_FRAMES: u64 = 5;
+
+impl InstallWaits {
+    fn add_install(&mut self, wait: u64, class: Class, predicted_us: f64, measured_us: f64) {
+        self.installs += 1;
+        self.wait_frames_sum += wait;
+        self.wait_frames_max = self.wait_frames_max.max(wait);
+        self.waited_over_bar += u64::from(wait > WAIT_BAR_FRAMES);
+        self.by_class[class as usize] += 1;
+        self.predicted_us += predicted_us;
+        self.measured_us += measured_us;
+    }
 }
 
 /// One batch of an installed patch.
@@ -195,6 +236,13 @@ pub(crate) struct VegetationLayer {
     due: Vec<PatchKey>,
     subdivision: i32,
     status: LayerStatus,
+    // The process frame of the current pass, its installs so far, and the installs' waits since
+    // setup, this frame and since the last take (`VEG-35` R0).
+    frame: u64,
+    pass_installs: usize,
+    waits_total: InstallWaits,
+    waits_frame: InstallWaits,
+    waits_window: InstallWaits,
 }
 
 /// Slots the vegetation may hold. A canopy instance that hands over takes instance uniform
@@ -228,7 +276,43 @@ impl VegetationLayer {
             due: Vec::new(),
             subdivision: 1,
             status: LayerStatus::default(),
+            frame: 0,
+            pass_installs: 0,
+            waits_total: InstallWaits::default(),
+            waits_frame: InstallWaits::default(),
+            waits_window: InstallWaits::default(),
         }
+    }
+
+    /// Starts a pass of process frame `frame` (`VEG-35` R0's counters): a new frame starts the
+    /// frame's counts. `O(1)`.
+    pub(crate) fn begin_pass(&mut self, frame: u64) {
+        if frame != self.frame {
+            self.waits_frame = InstallWaits::default();
+        }
+        self.frame = frame;
+        self.pass_installs = 0;
+    }
+
+    /// Ends a pass: one stalled pass when a hole product still waits and the pass installed
+    /// nothing (by the classes of the pass's last order). `O(pending)`.
+    pub(crate) fn end_pass(&mut self) {
+        if self.pass_installs == 0 && self.holes_waiting() {
+            for waits in [&mut self.waits_total, &mut self.waits_frame, &mut self.waits_window] {
+                waits.stalled_passes += 1;
+            }
+        }
+    }
+
+    /// The installs' waits and costs since setup and in this frame.
+    pub(crate) fn install_waits(&self) -> [InstallWaits; 2] {
+        [self.waits_total, self.waits_frame]
+    }
+
+    /// The installs' waits and costs since the last call, then starts over (the stream
+    /// benchmark's samples).
+    pub(crate) fn take_install_waits(&mut self) -> InstallWaits {
+        std::mem::take(&mut self.waits_window)
     }
 
     /// Sets the draw rules; nothing installs before them.
@@ -259,6 +343,7 @@ impl VegetationLayer {
             distance_sq: 0.0,
             heights,
             installed: false,
+            delivered: self.frame,
         });
     }
 
@@ -625,36 +710,60 @@ impl VegetationLayer {
                 at += 1;
                 continue;
             }
-            let start = clock.now_us();
-            self.install_one(backend, at);
-            let elapsed = clock.now_us() - start;
-            budget.record(predicted, elapsed);
-            let pending = &mut self.pending[at];
-            pending.installed = true;
-            let delivery = &pending.delivery;
-            let [x, y, z] = delivery.key;
-            let event: [i64; EVENT_LANES] = [
-                i64::from(x),
-                i64::from(y),
-                i64::from(z),
-                delivery.serial as i64,
-                delivery.product.tree_count,
-                elapsed as i64,
-            ];
-            self.events.extend_from_slice(&event);
+            self.install_unit(backend, budget, clock, at, predicted);
             done += 1;
             at += 1;
         }
-        // The order is rebuilt each pass, so the installed leave by swapping.
+        self.drop_installed();
+        self.status.frame = *budget;
+        done
+    }
+
+    // Installs the waiting product at `at` as one unit charged to `budget` at `predicted`, with
+    // its event and its wait counted. `O(batches + instances)`.
+    fn install_unit(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        budget: &mut FrameBudget,
+        clock: &impl Clock,
+        at: usize,
+        predicted: f64,
+    ) {
+        let start = clock.now_us();
+        self.install_one(backend, at);
+        let elapsed = clock.now_us() - start;
+        budget.record(predicted, elapsed);
+        let pending = &mut self.pending[at];
+        pending.installed = true;
+        let wait = self.frame.saturating_sub(pending.delivered);
+        let class = pending.class;
+        let delivery = &pending.delivery;
+        let [x, y, z] = delivery.key;
+        let event: [i64; EVENT_LANES] = [
+            i64::from(x),
+            i64::from(y),
+            i64::from(z),
+            delivery.serial as i64,
+            delivery.product.tree_count,
+            elapsed as i64,
+        ];
+        self.events.extend_from_slice(&event);
+        for waits in [&mut self.waits_total, &mut self.waits_frame, &mut self.waits_window] {
+            waits.add_install(wait, class, predicted, elapsed);
+        }
+        self.pass_installs += 1;
+        self.status.installs_total += 1;
+    }
+
+    // The installed leave the waiting list by swapping (the order is rebuilt each pass).
+    // `O(pending)`.
+    fn drop_installed(&mut self) {
         for at in (0..self.pending.len()).rev() {
             if self.pending[at].installed {
                 let pending = self.pending.swap_remove(at);
                 self.retained.push(pending.delivery);
             }
         }
-        self.status.installs_total += done as u64;
-        self.status.frame = *budget;
-        done
     }
 
     // Classes and distances from the camera, then the order.
