@@ -132,6 +132,7 @@ func _test_run_time_change() -> void:
 	if console != null:
 		console._run_command("terrain")
 		var text: String = console._view._status.text
+		print("[terrain_memory_setting] console:\n%s" % text)
 		_expect(text.contains("target 45 MB") and text.contains("Places %d" % places)
 			and text.contains("water depth"), "the console's terrain command shows the budget: %s" % text)
 	stream.set_terrain_budget_mb(0.0)
