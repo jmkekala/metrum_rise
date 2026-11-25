@@ -148,7 +148,7 @@ fn every_patch_draws_exactly_one_of_patch_and_cell_on_scripted_and_shuffled_sequ
         let changes = walk.next() % 60;
         for _ in 0..changes {
             let key = keys[(walk.next() % keys.len() as u64) as usize];
-            let on = walk.next() % 2 == 0;
+            let on = walk.next().is_multiple_of(2);
             layer.set_resident(key, on);
             if on {
                 resident.insert(key);
