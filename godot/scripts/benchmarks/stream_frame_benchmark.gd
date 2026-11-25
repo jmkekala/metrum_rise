@@ -785,7 +785,7 @@ func _is_settled(bench: Node) -> bool:
 
 # The base terrain budget's fill still to build (`TERRAIN-41` B1; 0 without the method).
 func _fill_left() -> int:
-	var budget_node: Node = _terrain.get("_stream")
+	var budget_node: Node = _terrain.get("_stream") if _terrain != null else null
 	if budget_node == null or not budget_node.has_method("get_terrain_budget"):
 		return 0
 	return int((budget_node.get_terrain_budget() as Dictionary).get("fill_left", 0))
@@ -1453,7 +1453,7 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		"frame_ms": stats(times), "rows": rows, "memory": _memory()}
 	# The base terrain's budget at the sample's end (`TERRAIN-41` B1): built patches of both layers,
 	# counted bytes, places, the keep ring and what the fill has left.
-	var budget_node: Node = _terrain.get("_stream")
+	var budget_node: Node = _terrain.get("_stream") if _terrain != null else null
 	if budget_node != null and budget_node.has_method("get_terrain_budget"):
 		sample["terrain_budget"] = budget_node.get_terrain_budget()
 	if _proxy_checking:
