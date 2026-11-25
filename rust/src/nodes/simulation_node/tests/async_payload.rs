@@ -491,3 +491,94 @@ fn a_request_outside_the_world_is_refused_not_retried() {
             .is_err_and(|deferral| deferral == PayloadDeferral::Refused("patch_outside_world")),
     );
 }
+
+// `TERRAIN-35`: a request made while the job for an older generation of its patch still runs
+// waits behind that job, tracked, and is handed back as a retry when the job ends (completed or
+// failed), so its asker hears of it and asks again; before, it was answered by nobody.
+#[test]
+fn terrain_patch_payload_async_request_behind_a_stale_job_is_handed_back_when_it_ends() {
+    let key = TerrainPatchPayloadKey {
+        patch_x: 5,
+        patch_z: 6,
+        render_step_mm: 0,
+    };
+    for completed in [true, false] {
+        let mut state = TerrainPatchPayloadAsyncState::new();
+        let stale_request_id = state.request(key, 1);
+        state.drop_stale_key_for_generation(key, 2);
+        state.wait_behind(key, 2);
+        assert!(state.has_current_request(key, 2) && state.has_in_flight(key));
+        if completed {
+            state.ingest_completed(vec![TerrainPatchPayload {
+                key,
+                request_id: stale_request_id,
+                surface_generation: 1,
+                data: TerrainPatchPayloadData::Regular {
+                    patch: test_patch(),
+                    height_bytes: Vec::new(),
+                },
+                mask_bytes: Vec::new(),
+                land_cover: None,
+            }]);
+        } else {
+            state.ingest_failed(vec![TerrainPatchPayloadRequest {
+                key,
+                request_id: stale_request_id,
+                surface_generation: 1,
+            }]);
+        }
+        let orphaned: Vec<_> = state
+            .orphaned
+            .drain(..)
+            .map(|request| (request.key, request.surface_generation))
+            .collect();
+        assert_eq!(orphaned, vec![(key, 2)], "completed {completed}");
+        assert!(!state.requested.contains_key(&key) && !state.has_in_flight(key));
+        assert!(!state.ready_lookup.contains(&key), "the stale payload never becomes ready");
+        // Asked again, the request gets a job of its own.
+        state.request(key, 2);
+        assert!(state.has_current_request(key, 2) && state.has_in_flight(key));
+    }
+}
+
+// `TERRAIN-35`: a ready water payload whose generation moved ends the request it answered, and
+// that request is handed back for a retry; before, it was dropped silently, the renderer kept it
+// pending and the streaming core never asked again.
+#[test]
+fn water_patch_payload_async_stale_ready_payload_hands_its_request_back() {
+    let core = test_core_with_flat_terrain(0.0);
+    let key = WaterPatchPayloadKey {
+        patch_x: 0,
+        patch_z: 0,
+    };
+    let (source, surface) = (core.watermap.render_generation(), core.cached_road_mesh_generation);
+    let mut state = WaterPatchPayloadAsyncState::new();
+    let request_id = state.request(key, source, surface);
+    let request = WaterPatchPayloadRequest {
+        key,
+        request_id,
+        source_generation: source,
+        surface_generation: surface,
+    };
+    let payload = SimulationNode::water_patch_payload_for_request(&core, request).unwrap();
+    state.ingest_completed(vec![payload]);
+    let mut retry = Vec::new();
+    let mut emitted = 0;
+    let counts = state.take_ready(4, source, surface + 1, &mut retry, |_| emitted += 1);
+    assert_eq!((counts, emitted), ([0, 1, 0], 0));
+    assert_eq!(retry, vec![key]);
+    assert!(!state.has_current_pending_or_ready(key, source, surface));
+
+    // A current payload is emitted and ends its request without a retry.
+    let request_id = state.request(key, source, surface);
+    let payload = SimulationNode::water_patch_payload_for_request(
+        &core,
+        WaterPatchPayloadRequest { request_id, ..request },
+    )
+    .unwrap();
+    state.ingest_completed(vec![payload]);
+    retry.clear();
+    let counts = state.take_ready(4, source, surface, &mut retry, |_| emitted += 1);
+    assert_eq!((counts, emitted), ([1, 0, 0], 1));
+    assert!(retry.is_empty() && !state.requested.contains_key(&key));
+}

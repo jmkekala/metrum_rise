@@ -1182,6 +1182,11 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 		patch_payload_requested.erase(key)
 		_stream.water_payload(key, 1)
 		accepted_count += 1
+	# The request books agree (`TERRAIN-35`, as terrain.gd's poll). Debug builds only; O(1).
+	assert(_stream.get_patch_requests().y <= patch_payload_requested.size(),
+		"TERRAIN-35: the streaming core waits on a water payload request no longer tracked")
+	assert(patch_payload_requested.size() <= int(result.get("requested_after_count", patch_payload_requested.size())),
+		"TERRAIN-35: a tracked water payload request the payload jobs no longer hold")
 	return accepted_count
 
 func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dictionary:

@@ -212,8 +212,10 @@ impl SimulationNode {
 
     /// Returns ready async water patch payloads without blocking on patch extraction.
     ///
-    /// Failed request keys are returned as flat `(patch_x, patch_z)` pairs and become
-    /// eligible for a later retry after their matching request state is cleared.
+    /// Failed request keys, and those of requests whose ready payload went stale (its
+    /// generations moved) or missing (`TERRAIN-35`), are returned as flat `(patch_x, patch_z)`
+    /// pairs and become eligible for a later retry after their matching request state is
+    /// cleared.
     #[func]
     pub fn poll_ready_water_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
         let (completed_payloads, failed_payloads) = self.drain_completed_water_patch_payload_jobs();
@@ -246,7 +248,18 @@ impl SimulationNode {
         if !completed_payloads.is_empty() {
             jobs.ingest_completed(completed_payloads);
         }
-        let failed_keys = jobs.ingest_failed(failed_payloads);
+        let mut failed_keys = jobs.ingest_failed(failed_payloads);
+        let ready_before_count = jobs.ready.len();
+        let requested_before_count = jobs.requested.len();
+        let [emitted_count, stale_ready_count, missing_ready_count] = jobs.take_ready(
+            max_patches,
+            source_generation,
+            surface_generation,
+            &mut failed_keys,
+            |payload| {
+                patches.push(&Self::water_patch_payload_dict(&payload).to_variant());
+            },
+        );
         let mut failed_patch_keys = PackedInt32Array::new();
         for key in &failed_keys {
             failed_patch_keys.push(i32::try_from(key.patch_x).unwrap_or(i32::MAX));
@@ -257,8 +270,6 @@ impl SimulationNode {
             i64::try_from(failed_keys.len()).unwrap_or(i64::MAX),
         );
         stats.set("failed_patch_keys", failed_patch_keys);
-        let ready_before_count = jobs.ready.len();
-        let requested_before_count = jobs.requested.len();
         if max_patches == 0 {
             stats.set(
                 "ready_before_count",
@@ -273,39 +284,6 @@ impl SimulationNode {
                 i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
             );
             return stats;
-        }
-
-        let mut emitted_count = 0_usize;
-        let mut stale_ready_count = 0_usize;
-        let mut missing_ready_count = 0_usize;
-        while emitted_count < max_patches {
-            let Some(key) = jobs.ready.pop() else {
-                break;
-            };
-            jobs.ready_lookup.remove(&key);
-            let Some(payload) = jobs.payloads.remove(&key) else {
-                missing_ready_count += 1;
-                jobs.requested.remove(&key);
-                continue;
-            };
-            let payload_state = WaterPatchPayloadRequestState {
-                request_id: payload.request_id,
-                source_generation: payload.source_generation,
-                surface_generation: payload.surface_generation,
-            };
-            if payload.source_generation != source_generation
-                || payload.surface_generation != surface_generation
-                || jobs.requested.get(&key).copied() != Some(payload_state)
-            {
-                stale_ready_count += 1;
-                if jobs.requested.get(&key).copied() == Some(payload_state) {
-                    jobs.requested.remove(&key);
-                }
-                continue;
-            }
-            jobs.requested.remove(&key);
-            patches.push(&Self::water_patch_payload_dict(&payload).to_variant());
-            emitted_count += 1;
         }
 
         stats.set("patches", patches.to_variant());

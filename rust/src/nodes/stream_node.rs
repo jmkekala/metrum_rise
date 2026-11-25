@@ -877,6 +877,15 @@ impl StreamNode {
         out
     }
 
+    /// The terrain's (x) and the water's (y) patches marked requested and not yet answered by
+    /// payload news (`TERRAIN-35`): each must be a request its script still tracks, so neither
+    /// may exceed the script's count of tracked requests. `O(1)`.
+    #[func]
+    pub fn get_patch_requests(&self) -> Vector2i {
+        let count = |layer: &PatchStream| i32::try_from(layer.requested_count()).unwrap_or(i32::MAX);
+        Vector2i::new(count(&self.terrain), count(&self.water))
+    }
+
     /// The terrain's and the water's patch units by kind since the last call, then starts over
     /// (`TERRAIN-41` L1, the stream benchmark's samples): `<layer>_<kind>` (kinds `show`,
     /// `build`, `hide`, `step`, `prewarm`) -> `{count, mean_us, p50_us, p95_us, p99_us, max_us}`,

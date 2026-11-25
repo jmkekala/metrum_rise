@@ -1691,9 +1691,15 @@ func _dirty_patch_payload_keys_from_states(
 		)
 		var generation := int(flat_states[index * 3 + 2])
 		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
+		var built := patches.has(key)
 		keys.append(key)
 		dirty_patch_payload_generations[key] = generation
-		if patch_payload_requested.has(key) and (
+		# A built patch's request is this commit's own: retired here, asked again at the new
+		# generation. A patch without a node was asked for by the streaming core, which keeps it
+		# requested until it hears the request's end (`TERRAIN-35`): that request stays tracked,
+		# and the payload jobs (Rust), which check each payload's generation, answer it as a retry
+		# on arrival, relayed to the core as Dropped news by the poll.
+		if built and patch_payload_requested.has(key) and (
 			int(patch_payload_requested.get(key, -1)) != render_step_mm
 			or int(patch_payload_requested_generation.get(key, -1)) != generation
 		):
@@ -1706,6 +1712,9 @@ func _dirty_patch_payload_keys_from_states(
 				or int(ready_patch_data.get("surface_generation", -1)) != generation
 			):
 				patch_payload_ready.erase(key)
+				# The core counted on this payload for a patch without a node: ask again.
+				if not built:
+					_stream.terrain_payload(key, 0)
 	return keys
 
 func _acknowledge_terrain_batch(flat_states: PackedInt64Array) -> bool:
@@ -1903,6 +1912,15 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		patch_payload_requested_generation.erase(key)
 		_stream.terrain_payload(key, 1)
 		accepted_count += 1
+	# The request books agree (`TERRAIN-35`): each patch the streaming core marks requested is a
+	# request tracked here, and each request tracked here one the payload jobs still hold. A
+	# request dropped here without news to the core breaks the first (the patch is never asked
+	# for again), one the jobs end unreported the second. Debug builds only: an assert is not
+	# evaluated in a release export. O(1).
+	assert(_stream.get_patch_requests().x <= patch_payload_requested.size(),
+		"TERRAIN-35: the streaming core waits on a terrain payload request no longer tracked")
+	assert(patch_payload_requested.size() <= int(result.get("requested_after_count", patch_payload_requested.size())),
+		"TERRAIN-35: a tracked terrain payload request the payload jobs no longer hold")
 	return accepted_count
 
 # Sums one poll's answer into the perf channel's counts (`TERRAIN-41`).

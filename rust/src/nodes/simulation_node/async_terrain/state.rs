@@ -187,6 +187,10 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
     pub(in crate::nodes::simulation_node) failed: Vec<TerrainPatchPayloadRequest>,
     // Requests refused by contract with the reason, for the next poll.
     pub(in crate::nodes::simulation_node) refused: Vec<(TerrainPatchPayloadRequest, &'static str)>,
+    // Requests that waited behind a job for an older generation of their patch (`wait_behind`)
+    // and that no job answers now that it ended, for the next poll to hand back as retries
+    // (`TERRAIN-35`).
+    pub(in crate::nodes::simulation_node) orphaned: Vec<TerrainPatchPayloadRequest>,
     // The payload jobs' worker times while the perf channel is on (`TERRAIN-41`), since the last
     // poll took them.
     pub(in crate::nodes::simulation_node) worker_perf: TerrainPayloadWorkerPerf,
@@ -226,6 +230,7 @@ impl TerrainPatchPayloadAsyncState {
             completed: Vec::new(),
             failed: Vec::new(),
             refused: Vec::new(),
+            orphaned: Vec::new(),
             worker_perf: TerrainPayloadWorkerPerf::default(),
         }
     }
@@ -249,6 +254,42 @@ impl TerrainPatchPayloadAsyncState {
         self.in_flight.insert(key, state);
         self.remove_ready_payload(key);
         request_id
+    }
+
+    // A request for `key` at `surface_generation` while the physical job for an older
+    // generation still runs (one job a key): tracked, with no job of its own. When that job ends
+    // the request is handed back as a retry (`orphaned`), so whoever asked hears of it and asks
+    // again (`TERRAIN-35`; before, it was answered by nobody). `O(1)`.
+    pub(in crate::nodes::simulation_node) fn wait_behind(
+        &mut self,
+        key: TerrainPatchPayloadKey,
+        surface_generation: u64,
+    ) {
+        debug_assert!(self.in_flight.contains_key(&key));
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        self.requested.insert(
+            key,
+            TerrainPatchPayloadRequestState {
+                request_id,
+                surface_generation,
+            },
+        );
+    }
+
+    // After `key`'s job ended: a request still held for it that no job will answer (it waited
+    // behind the job, `wait_behind`) is handed back for a retry. `O(1)`.
+    fn release_orphan(&mut self, key: TerrainPatchPayloadKey) {
+        if self.in_flight.contains_key(&key) {
+            return;
+        }
+        if let Some(state) = self.requested.remove(&key) {
+            self.orphaned.push(TerrainPatchPayloadRequest {
+                key,
+                request_id: state.request_id,
+                surface_generation: state.surface_generation,
+            });
+        }
     }
 
     pub(in crate::nodes::simulation_node) fn queue_ready(&mut self, key: TerrainPatchPayloadKey) {
@@ -330,6 +371,7 @@ impl TerrainPatchPayloadAsyncState {
                 self.in_flight.remove(&key);
             }
             if self.requested.get(&key).copied() != Some(completed_state) {
+                self.release_orphan(key);
                 continue;
             }
             self.payloads.insert(key, payload);
@@ -351,6 +393,8 @@ impl TerrainPatchPayloadAsyncState {
             }
             if self.requested.get(&request.key).copied() == Some(state) {
                 self.requested.remove(&request.key);
+            } else {
+                self.release_orphan(request.key);
             }
         }
     }
@@ -364,6 +408,7 @@ impl TerrainPatchPayloadAsyncState {
         self.completed.clear();
         self.failed.clear();
         self.refused.clear();
+        self.orphaned.clear();
         self.worker_perf = TerrainPayloadWorkerPerf::default();
     }
 }
@@ -502,6 +547,57 @@ impl WaterPatchPayloadAsyncState {
             self.payloads.insert(key, payload);
             self.queue_ready(key);
         }
+    }
+
+    // Pops ready payloads, handing up to `max` current ones to `emit`. A payload whose
+    // generations moved, or a ready key whose payload is gone, is dropped; when it held its key's
+    // request, that request ended with it and the key goes to `retry`, so the renderer hears of
+    // it and asks again (`TERRAIN-35`; before, such a request was dropped silently, the renderer
+    // kept it pending and the streaming core never asked again). Returns the emitted, stale and
+    // missing counts. `O(popped)`.
+    pub(in crate::nodes::simulation_node) fn take_ready(
+        &mut self,
+        max: usize,
+        source_generation: u64,
+        surface_generation: u64,
+        retry: &mut Vec<WaterPatchPayloadKey>,
+        mut emit: impl FnMut(WaterPatchPayload),
+    ) -> [usize; 3] {
+        let [mut emitted, mut stale, mut missing] = [0; 3];
+        while emitted < max {
+            let Some(key) = self.ready.pop() else {
+                break;
+            };
+            self.ready_lookup.remove(&key);
+            let Some(payload) = self.payloads.remove(&key) else {
+                missing += 1;
+                if self.requested.remove(&key).is_some() {
+                    retry.push(key);
+                }
+                continue;
+            };
+            let payload_state = WaterPatchPayloadRequestState {
+                request_id: payload.request_id,
+                source_generation: payload.source_generation,
+                surface_generation: payload.surface_generation,
+            };
+            let held = self.requested.get(&key).copied() == Some(payload_state);
+            if !held
+                || payload.source_generation != source_generation
+                || payload.surface_generation != surface_generation
+            {
+                stale += 1;
+                if held {
+                    self.requested.remove(&key);
+                    retry.push(key);
+                }
+                continue;
+            }
+            self.requested.remove(&key);
+            emit(payload);
+            emitted += 1;
+        }
+        [emitted, stale, missing]
     }
 
     pub(in crate::nodes::simulation_node) fn ingest_failed(

@@ -9,10 +9,10 @@ pub(in crate::nodes::simulation_node) use state::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
     TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, TerrainPayloadWorkerPerf,
     WaterPatchMeshAsyncState, WaterPatchPayload, WaterPatchPayloadAsyncState,
-    WaterPatchPayloadRequest, WaterPatchPayloadRequestState,
+    WaterPatchPayloadRequest,
 };
 
 #[cfg(test)]
 pub(in crate::nodes::simulation_node) use state::{
-    PayloadDeferral, TerrainPatchPayloadKey, WaterPatchPayloadKey,
+    PayloadDeferral, TerrainPatchPayloadKey, WaterPatchPayloadKey, WaterPatchPayloadRequestState,
 };

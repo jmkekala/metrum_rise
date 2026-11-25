@@ -433,6 +433,8 @@ pub(crate) struct PatchStream {
     refused: usize,
     extra: usize,
     resident: usize,
+    // Patches marked requested: asked for, no news yet (`TERRAIN-35`'s guard).
+    requested: usize,
     // The wanted square (terrain) and the prewarm square.
     square: Option<[i32; 4]>,
     halo: Option<[i32; 4]>,
@@ -481,6 +483,7 @@ impl PatchStream {
             refused: 0,
             extra: 0,
             resident: 0,
+            requested: 0,
             square: None,
             halo: None,
             prewarm_dirty: false,
@@ -552,6 +555,7 @@ impl PatchStream {
         self.refused = 0;
         self.extra = 0;
         self.resident = 0;
+        self.requested = 0;
         self.square = None;
         self.halo = None;
         self.prewarm_dirty = false;
@@ -594,6 +598,14 @@ impl PatchStream {
     /// Resident patches.
     pub(crate) fn resident_count(&self) -> usize {
         self.resident
+    }
+
+    /// Patches marked requested: asked for through [`PatchExecutor::request`] and not yet
+    /// answered by [`Self::payload`] news. Each is a request its executor still tracks; one it
+    /// dropped without news is never asked for again (`TERRAIN-35`), so the scripts check this
+    /// count against their own. `O(1)`.
+    pub(crate) fn requested_count(&self) -> usize {
+        self.requested
     }
 
     /// Whether the layer has work left that a settled view waits for (prewarm excluded, as the
@@ -664,6 +676,7 @@ impl PatchStream {
             return;
         };
         let index = grid.index(key);
+        self.requested -= usize::from(self.flags[index] & REQUESTED != 0);
         let flags = self.flags[index] & !REQUESTED;
         if news == Payload::Refused && flags & (WANTED | RESIDENT | REFUSED) == WANTED {
             self.refused += 1;
@@ -1137,6 +1150,7 @@ impl PatchStream {
         for &(_, _, index) in wanting.iter().take(self.limits.requests) {
             let key = grid.key(index as usize);
             self.flags[index as usize] |= REQUESTED;
+            self.requested += 1;
             self.requests.extend_from_slice(&key);
         }
         self.order = wanting;

@@ -5,7 +5,7 @@
 use super::async_terrain::{
     PayloadDeferral, TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
     TerrainPatchPayloadKey, TerrainPatchPayloadRequest, WaterPatchPayloadAsyncState,
-    WaterPatchPayloadKey,
+    WaterPatchPayloadKey, WaterPatchPayloadRequestState,
 };
 use super::*;
 use crate::nodes::sim::core::CityTreasury;

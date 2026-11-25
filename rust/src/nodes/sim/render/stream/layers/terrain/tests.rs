@@ -575,3 +575,29 @@ fn a_refused_payload_leaves_no_pending_work() {
     assert_eq!(layer.refused_count(), 0, "out of the square it is no hole");
 }
 
+#[test]
+fn the_requested_count_is_the_requests_without_news() {
+    // `TERRAIN-35`'s guard: the scripts check that the core waits on no request they dropped.
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    let mut scripts = Scripts::default();
+    let eye = [0.0, 800.0, 0.0];
+    layer.set_square(GRID.target(eye, 16000.0, false));
+    let mut budget = FrameBudget::new(f64::INFINITY);
+    layer.frame(Some(eye), 0.016, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+    assert!(!scripts.requested.is_empty());
+    assert_eq!(layer.requested_count(), scripts.requested.len());
+    let dropped = scripts.requested.pop().unwrap();
+    layer.payload(dropped, Payload::Dropped);
+    // News for a patch not marked requested changes nothing.
+    layer.payload(dropped, Payload::Dropped);
+    assert_eq!(layer.requested_count(), scripts.requested.len());
+    deliver(&mut layer, &mut scripts);
+    assert_eq!(layer.requested_count(), 0);
+    // The dropped one is asked for again.
+    layer.frame(Some(eye), 0.016, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+    assert!(scripts.requested.contains(&dropped));
+    assert_eq!(layer.requested_count(), scripts.requested.len());
+    layer.reset(Some(GRID));
+    assert_eq!(layer.requested_count(), 0);
+}

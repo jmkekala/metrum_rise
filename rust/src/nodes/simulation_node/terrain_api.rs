@@ -371,8 +371,12 @@ impl SimulationNode {
                     continue;
                 }
                 if in_flight {
+                    // A job for an older generation runs: the request waits behind it, tracked,
+                    // and is handed back as a retry when that job ends (`TERRAIN-35`).
+                    jobs.wait_behind(key, surface_generation);
                     duplicate_count += 1;
                     in_flight_count += 1;
+                    tracked_requests.push((key, surface_generation));
                     continue;
                 }
                 let request_id = jobs.request(key, surface_generation);
@@ -483,8 +487,9 @@ impl SimulationNode {
     }
 
     /// Returns ready async terrain patch payloads without blocking on patch extraction, the
-    /// transient failures to request again (`retry_requests`, flat `(patch_x, patch_z,
-    /// render_step_mm, generation)`), and the requests refused by contract, which must not be
+    /// requests to make again (`retry_requests`, flat `(patch_x, patch_z, render_step_mm,
+    /// generation)`: transient failures, payloads whose generation moved, and requests that
+    /// waited behind a job that ended), and the requests refused by contract, which must not be
     /// requested again (`refused_requests`, the same layout, with `refused_reasons`).
     #[func]
     pub fn poll_ready_terrain_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
@@ -510,18 +515,6 @@ impl SimulationNode {
         stats.set(
             "failed_count",
             i64::try_from(failed_count).unwrap_or(i64::MAX),
-        );
-        stats.set(
-            "retry_requests",
-            Self::packed_terrain_patch_payload_states(retry_requests.iter().map(|request| {
-                (
-                    request.key.patch_x,
-                    request.key.patch_z,
-                    request.key.render_step_mm,
-                    request.surface_generation,
-                )
-            }))
-            .to_variant(),
         );
 
         let (global_generation, patch_generations) = {
@@ -568,6 +561,20 @@ impl SimulationNode {
         if !refused.is_empty() {
             jobs.ingest_failed(refused.iter().map(|(request, _)| *request).collect());
         }
+        // Requests that waited behind a job that has now ended (`TERRAIN-35`).
+        retry_requests.append(&mut jobs.orphaned);
+        stats.set(
+            "retry_requests",
+            Self::packed_terrain_patch_payload_states(retry_requests.iter().map(|request| {
+                (
+                    request.key.patch_x,
+                    request.key.patch_z,
+                    request.key.render_step_mm,
+                    request.surface_generation,
+                )
+            }))
+            .to_variant(),
+        );
         stats.set(
             "refused_requests",
             Self::packed_terrain_patch_payload_states(refused.iter().map(|(request, _)| {
