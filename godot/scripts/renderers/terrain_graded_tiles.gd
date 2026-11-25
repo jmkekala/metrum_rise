@@ -105,7 +105,7 @@ var last_edit_batch: Array:
 		return _book.last_edit_batch_tiles()
 ## For tests: patch key -> its cell set as the book holds it (`GradedTileBook.cell_objects`, with
 ## `set`, `variant` and `rect`), built on each read. Every resident patch gets its set (prewarmed
-## in setup, one per patch of the grid), kept current by the per-tile updates and hidden until one
+## in setup, one per patch of the grid up to 1,600, made on first need past them), kept current by the per-tile updates and hidden until one
 ## of its tiles shows graded.
 var patch_cells: Dictionary:
 	get:
@@ -222,7 +222,9 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	_wall_material = ShaderMaterial.new()
 	_wall_material.shader = WALL_SHADER
 	# One cell set per patch of the world's grid, the most patches that can draw cells at once
-	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one.
+	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one
+	# on a world of up to 1,600 patches (the default 20 km). On a larger world the book prewarms
+	# 1,600 and makes a set past them when a patch first needs one (`TERRAIN-41` round G0).
 	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
 	var prewarm_us := Time.get_ticks_usec()
 	# The book's records and CPU buffers of the sets, by index, all free, and their objects.

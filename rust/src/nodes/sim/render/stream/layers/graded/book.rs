@@ -159,6 +159,12 @@ const FLIP_US: usize = 2;
 const TRUNCATED: usize = 3;
 const BUILDS: usize = 7;
 
+// The most cell sets setup prewarms (`TERRAIN-41` round G0): the 40 x 40 patches of the default
+// 20 km world, so the shipped maps and the benchmark cities make none while they run. A larger
+// world makes a set past these when a patch first needs one (38,208 bytes of instance buffers a
+// set, made for every patch of the 60 km map before).
+const CELL_SETS_PREWARMED_MAX: i64 = 1_600;
+
 // The counters an effect moves, counted as it is taken (whichever applies it): the renderer's,
 // and the result path's evictions and same-level uploads.
 fn count_effect(counters: &mut frame::Counters, taken: &mut [i64], effect: &Effect) {
@@ -891,11 +897,15 @@ impl GradedTileBook {
         self.trace = trace;
     }
 
-    /// Setup's cell sets: `count` of `per_patch` tile places, prewarmed and free.
+    /// Setup's cell sets: `count` (the world's patches) of `per_patch` tile places, at most
+    /// 1,600 of them prewarmed and free (`TERRAIN-41` round G0). A patch
+    /// that needs a set when the pool is empty makes one (the acquire path); it returns to the
+    /// pool as every set does, so the sets made are the most patches that held one at once.
     #[func]
     pub fn cells_setup(&mut self, per_patch: i64, count: i64) {
-        self.state.cells_setup(per_patch as usize, count as usize);
-        self.counters.cell_sets_prewarmed = count;
+        let prewarmed = count.min(CELL_SETS_PREWARMED_MAX);
+        self.state.cells_setup(per_patch as usize, prewarmed as usize);
+        self.counters.cell_sets_prewarmed = prewarmed;
     }
 
     /// `clear`'s cell part, after every set was released: every queue and mark dropped.
@@ -1600,7 +1610,7 @@ impl GradedTileBook {
     /// sets that start drawing or take the variant. O(the effects + their publications).
     #[func]
     pub fn apply_cells(&mut self, first: i64, end: i64) {
-        let Self { state, objects, backend, sync, cell_effects, cell_counts, trace, .. } = self;
+        let Self { state, objects, backend, sync, cell_effects, cell_counts, trace, counters, .. } = self;
         let (Some(objects), Some(backend)) = (objects.as_mut(), backend.as_mut()) else {
             return;
         };
@@ -1611,6 +1621,8 @@ impl GradedTileBook {
             {
                 trace_out(trace, line);
             }
+            // A set taken past the objects made so far is made by this apply (round G0).
+            let made = matches!(effect, Effect::CellAcquired { set, .. } if set as usize >= objects.sets.len());
             let start = std::time::Instant::now();
             let applied = objects.apply(
                 backend,
@@ -1619,6 +1631,11 @@ impl GradedTileBook {
                 &state.cells.taken_publish,
                 &state.cells.taken_walls,
             );
+            if made {
+                let us = start.elapsed().as_micros() as i64;
+                counters.cell_set_made_us += us;
+                counters.cell_set_made_us_max = counters.cell_set_made_us_max.max(us);
+            }
             let mut materials = [Rid::Invalid; 8];
             match applied {
                 Applied::None | Applied::Begun { .. } => {}
