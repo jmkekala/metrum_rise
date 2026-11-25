@@ -52,6 +52,7 @@ const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TerrainGradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
+const TerrainBackdrop := preload("res://scripts/renderers/terrain_backdrop.gd")
 const BORDER_SKIRT_SHADER := preload("res://scripts/renderers/terrain_border.gdshader")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
@@ -168,6 +169,8 @@ var field_overlay_texture: ImageTexture
 var field_overlay_image: Image
 var field_overlay_world_bounds: Vector4 = Vector4.ZERO
 var empty_water_texture: ImageTexture
+# The backdrop's cell mesh and block materials (`TERRAIN-41` D2), handed to the StreamNode.
+var _backdrop := TerrainBackdrop.new()
 var grass_albedo_texture: Texture2D
 var grass_height_texture: Texture2D
 var coal_albedo_texture: Texture2D
@@ -354,6 +357,8 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_empty_water_texture()
 	_ensure_grass_textures()
 	_ensure_border_visuals()
+	_backdrop.setup(_stream, get_world_3d().scenario, terrain_world_size, patch_cols, patch_rows,
+		patch_interval_cells, terrain_cell_m, _configure_backdrop_material)
 	_prewarm_terrain_patch_resource_pool()
 	graded_tiles = TerrainGradedTiles.new()
 	graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
@@ -1560,6 +1565,31 @@ func _apply_constant_patch_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("contour_flat_relief_start_m", CONTOUR_FLAT_RELIEF_START_M)
 	material.set_shader_parameter("contour_flat_relief_end_m", CONTOUR_FLAT_RELIEF_END_M)
 
+# A backdrop block material's parameters that a patch material shares (`TERRAIN-41` D2): the
+# constants, the world's textures and overlays, and the setting-driven shadow and canopy terms
+# (taken at a world's setup, as a patch takes them at its build). The block's own layout is
+# `TerrainBackdrop`'s.
+func _configure_backdrop_material(material: ShaderMaterial) -> void:
+	_apply_constant_patch_parameters(material)
+	material.set_shader_parameter("overlay_texture", overlay_texture)
+	material.set_shader_parameter("overlay_mode", overlay_mode)
+	material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
+	material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
+	material.set_shader_parameter("field_overlay_texture", field_overlay_texture)
+	material.set_shader_parameter("field_overlay_world_bounds", field_overlay_world_bounds)
+	material.set_shader_parameter("terrain_grass_albedo", grass_albedo_texture)
+	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
+	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
+	material.set_shader_parameter("terrain_grain_albedo", grain_albedo_texture)
+	material.set_shader_parameter("world_size", terrain_world_size)
+	material.set_shader_parameter(
+		"scene_shadow_max_distance_m", SceneLightingConfig.shadow_max_distance_m()
+	)
+	material.set_shader_parameter(
+		"scene_shadow_split_distances_m", SceneLightingConfig.shadow_split_distances()
+	)
+	SceneLightingConfig.apply_canopy_floor_shading(material)
+
 func _new_terrain_patch_resources() -> Dictionary:
 	var patch_node := MeshInstance3D.new()
 	patch_node.name = "TerrainPatchPool"
@@ -2628,16 +2658,25 @@ func _apply_overlay_mode() -> void:
 		var material: ShaderMaterial = patches[key]["material"]
 		material.set_shader_parameter("overlay_mode", overlay_mode)
 		material.set_shader_parameter("overlay_texture", overlay_texture)
+	for material in _backdrop.materials:
+		material.set_shader_parameter("overlay_mode", overlay_mode)
+		material.set_shader_parameter("overlay_texture", overlay_texture)
 
 func _apply_coal_pit_texture() -> void:
 	for key in patches.keys():
 		var material: ShaderMaterial = patches[key]["material"]
 		material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
 		material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
+	for material in _backdrop.materials:
+		material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
+		material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
 
 func _apply_field_overlay_texture() -> void:
 	for key in patches.keys():
 		var material: ShaderMaterial = patches[key]["material"]
+		material.set_shader_parameter("field_overlay_texture", field_overlay_texture)
+		material.set_shader_parameter("field_overlay_world_bounds", field_overlay_world_bounds)
+	for material in _backdrop.materials:
 		material.set_shader_parameter("field_overlay_texture", field_overlay_texture)
 		material.set_shader_parameter("field_overlay_world_bounds", field_overlay_world_bounds)
 

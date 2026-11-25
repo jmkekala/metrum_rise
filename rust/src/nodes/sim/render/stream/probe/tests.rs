@@ -144,13 +144,15 @@ fn the_backlog_counts_the_waiting_their_oldest_wait_the_ready_and_the_holes() {
             ([0, 0, 1], DRAWN, UNIT),
             ([1, 0, 1], READY, UNIT),
             ([2, 0, 1], 0, FAR),
-            ([3, 0, 1], 0, UNIT),
+            ([3, 0, 1], COVERED, UNIT),
         ]),
         &PLANES,
         [0.0, 1.0],
     );
-    // Three waiting, the oldest one frame, one of them ready, two in view.
-    assert_eq!(layer.backlog, [3, 1, 1, 2]);
+    // Three waiting, the oldest one frame, one of them ready, two holes in view, one of those
+    // bare (the other covered by a stand-in, `TERRAIN-41` D2), three chunks in view.
+    assert_eq!(layer.backlog, [3, 1, 1, 2, 1, 3]);
+    assert_eq!(layer.stats[0].bare_max, 1);
     layer.observe(
         4,
         0,
@@ -163,5 +165,5 @@ fn the_backlog_counts_the_waiting_their_oldest_wait_the_ready_and_the_holes() {
         &PLANES,
         [0.0, 1.0],
     );
-    assert_eq!(layer.backlog, [0; 4]);
+    assert_eq!(layer.backlog, [0, 0, 0, 0, 0, 3]);
 }

@@ -20,7 +20,9 @@
 //! edge reads the same values on both sides. Lattice points beyond the world's last sample (the
 //! last blocks of a map that is not a whole number of blocks) hold the edge sample's value.
 //!
-//! Nothing here is drawn (round D2 draws it). The product is built by a background job at the
+//! Round D2 draws it ([`cells`]): every patch of the map the terrain does not draw as a patch
+//! draws a cell of its block's textures with the terrain shader's backdrop variant
+//! (`terrain_backdrop.gdshader`). The product is built by a background job at the
 //! load and refreshed after terrain and water edits (the job,
 //! `simulation_node/async_backdrop.rs`); its blocks are uploaded by [`BackdropLayer`] through the
 //! stream backend, one texture a unit under the frame's install ledger: a block's texture is
@@ -32,6 +34,7 @@
 //! ([`CHANNEL_FORMATS`]) and what the water and land cover channels hold.
 
 use crate::nodes::sim::render::stream::backend::{Handle, RenderBackend, TextureFormat};
+use crate::nodes::sim::render::stream::layers::terrain::{PatchGrid, PatchKey};
 use crate::nodes::sim::render::stream::schedule::{Clock, FrameBudget, predicted_us};
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use rayon::prelude::*;
@@ -634,6 +637,17 @@ impl BackdropShared {
     }
 }
 
+/// What draws the cells (`terrain.gd` hands it over at a world's setup): the cell's mesh and the
+/// textures' parameter names (catalogue indices), and one material a block of the terrain
+/// shader's backdrop variant, owned by the script.
+struct Drawing {
+    mesh: u32,
+    // The catalogue index of the first channel's parameter; the others follow in [`Channel`]
+    // order.
+    parameter: u32,
+    materials: Vec<Handle>,
+}
+
 /// The backdrop's textures on the main thread: one a block and channel, created on its first
 /// upload and replaced whole after (`O(1)` a unit). Uploads run as units of the streaming node's
 /// pass, each predicted from its bytes, only in the room the frame's ledger has left (never as
@@ -644,6 +658,9 @@ pub(crate) struct BackdropLayer {
     // The textures by block, [`Channel`] order, and the world and layout they belong to.
     textures: Vec<[Option<Handle>; 3]>,
     owner: Option<(u64, Layout)>,
+    // The cells drawn with them (`TERRAIN-41` D2) and what draws them.
+    cells: cells::Cells,
+    drawing: Option<Drawing>,
     /// Texture uploads since the node started (creates and replaces).
     pub(crate) uploads: u64,
     /// Bytes uploaded since the node started.
@@ -661,15 +678,116 @@ impl BackdropLayer {
             .and_then(|set| set[channel as usize])
     }
 
-    /// Frees every texture.
+    /// Frees every texture (the cells stop drawing until their blocks' textures exist again).
     pub(crate) fn clear(&mut self, backend: &mut impl RenderBackend) {
-        for set in self.textures.drain(..) {
-            for texture in set.into_iter().flatten() {
+        for (block, set) in self.textures.drain(..).enumerate() {
+            let bound = self.drawing.as_ref().and_then(|drawing| {
+                drawing.materials.get(block).map(|&material| (material, drawing.parameter))
+            });
+            for (channel, texture) in set.into_iter().enumerate() {
+                let Some(texture) = texture else {
+                    continue;
+                };
+                // Unbound first: the material never names a freed texture.
+                if let Some((material, parameter)) = bound {
+                    backend.material_set_texture(material, parameter + channel as u32, None);
+                }
                 backend.free(texture);
             }
         }
         self.owner = None;
         self.texture_bytes = 0;
+        self.cells.touch_all();
+    }
+
+    /// Starts the cells over on a map's patch grid (`StreamNode.reset_terrain_patches`: nothing
+    /// resident, so every patch of the map wants its cell), freeing the old cells' objects.
+    /// `O(patches)`, once a world.
+    pub(crate) fn reset_cells(&mut self, grid: Option<PatchGrid>, backend: Option<&mut impl RenderBackend>) {
+        if let Some(backend) = backend {
+            self.cells.free_objects(backend);
+        }
+        self.cells.reset(grid);
+    }
+
+    /// Frees the cells' objects (the node leaves the tree).
+    pub(crate) fn free_cells(&mut self, backend: &mut impl RenderBackend) {
+        self.cells.free_objects(backend);
+    }
+
+    /// Hands over what draws the cells: the cell's `mesh` and the first texture parameter
+    /// `parameter` (catalogue indices; the channels' parameters follow in [`Channel`] order) and
+    /// one material a block, row-major as the product's blocks. The textures that exist are
+    /// bound to them; the cells are drawn again with them at the next flush. `O(blocks)`.
+    pub(crate) fn set_drawing(
+        &mut self,
+        mesh: u32,
+        parameter: u32,
+        materials: Vec<Handle>,
+        backend: &mut impl RenderBackend,
+    ) {
+        // The objects keep their mesh: made again with the new one.
+        self.cells.free_objects(backend);
+        for (block, set) in self.textures.iter().enumerate() {
+            let Some(&material) = materials.get(block) else {
+                continue;
+            };
+            for (channel, texture) in set.iter().enumerate() {
+                if texture.is_some() {
+                    backend.material_set_texture(material, parameter + channel as u32, *texture);
+                }
+            }
+        }
+        self.drawing = Some(Drawing {
+            mesh,
+            parameter,
+            materials,
+        });
+    }
+
+    /// Patch `key` became resident or left (`O(1)`): its cell goes or comes at the next flush.
+    pub(crate) fn set_resident(&mut self, key: PatchKey, resident: bool) {
+        self.cells.set_resident(key, resident);
+    }
+
+    /// Whether patch `key` draws a cell (as last flushed). `O(1)`.
+    pub(crate) fn cell_shown(&self, key: PatchKey) -> bool {
+        self.cells.is_shown(key)
+    }
+
+    /// Cells listed, cells drawn and blocks drawing. `O(blocks)`.
+    pub(crate) fn cell_counts(&self) -> [usize; 3] {
+        [
+            self.cells.listed(),
+            self.cells.shown_count(),
+            self.cells.shown_blocks(),
+        ]
+    }
+
+    /// Sends the cells' changed blocks (both of the stream node's passes end with it, so a change
+    /// of residency and its cell reach the same frame). A block draws once its three textures
+    /// exist for the cells' map and it has a material; `heights` bound the cells' ground and
+    /// skirts. `O(changed blocks x 256)`; nothing on a frame without a change.
+    pub(crate) fn flush(&mut self, backend: &mut impl RenderBackend, heights: [f32; 2]) {
+        let textures = &self.textures;
+        let drawing = self.drawing.as_ref();
+        let same_map = match (self.owner, self.cells.grid()) {
+            (Some((_, layout)), Some(grid)) => {
+                layout.patches == [grid.cols as usize, grid.rows as usize]
+            }
+            _ => false,
+        };
+        let material = |block: usize| {
+            let ready = same_map
+                && textures
+                    .get(block)
+                    .is_some_and(|set| set.iter().all(Option::is_some));
+            ready
+                .then(|| drawing.and_then(|drawing| drawing.materials.get(block).copied()))
+                .flatten()
+        };
+        self.cells
+            .flush(backend, drawing.map(|drawing| drawing.mesh), material, heights);
     }
 
     /// Follows `product`: frees the textures of another world or layout, then uploads the
@@ -722,6 +840,14 @@ impl BackdropLayer {
                         let texture = backend.texture_2d_create([side, side], format, &mut fill);
                         self.textures[block][channel as usize] = Some(texture);
                         self.texture_bytes += bytes as u64;
+                        if let Some(drawing) = self.drawing.as_ref()
+                            && let Some(&material) = drawing.materials.get(block)
+                        {
+                            let parameter = drawing.parameter + channel as u32;
+                            backend.material_set_texture(material, parameter, Some(texture));
+                        }
+                        // The block may draw its cells now.
+                        self.cells.touch(block);
                     }
                 }
                 product.unmark(block, channel);
@@ -734,6 +860,8 @@ impl BackdropLayer {
         units
     }
 }
+
+mod cells;
 
 #[cfg(test)]
 mod tests;
