@@ -28,14 +28,20 @@ const LAND_COVER_TEXEL_M: f64 = 8.0;
 /// Patches of hysteresis between the keep and the release rectangle.
 pub(crate) const RELEASE_RING: i32 = 2;
 
-/// The bytes of one place on `grid`: `[terrain patch, water patch]` (an edge patch is charged
-/// the full place).
-pub(crate) fn place_bytes(grid: &PatchGrid) -> [u64; 2] {
+/// The bytes of one place on `grid` by kind: `[height, land cover, water depth]` (an edge patch
+/// is charged the full place; the debug view's split, `TERRAIN-41` B2).
+pub(crate) fn place_kinds(grid: &PatchGrid) -> [u64; 3] {
     let samples = grid.interval.max(1) as u64 + 1;
     let height = samples + 2 * TERRAIN_RENDER_PATCH_BORDER_TEXELS as u64;
     let cover = (grid.span() / LAND_COVER_TEXEL_M).ceil() as u64 + 2;
     let depth = samples + 2 * WATER_RENDER_PATCH_BORDER_TEXELS as u64;
-    [height * height * 4 + cover * cover, depth * depth * 4]
+    [height * height * 4, cover * cover, depth * depth * 4]
+}
+
+/// The bytes of one place on `grid`: `[terrain patch, water patch]`.
+pub(crate) fn place_bytes(grid: &PatchGrid) -> [u64; 2] {
+    let [height, cover, depth] = place_kinds(grid);
+    [height + cover, depth]
 }
 
 /// What a budget allows on a grid about a wanted square.

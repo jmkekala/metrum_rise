@@ -483,7 +483,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		# The mesh its node draws: step, cover generation, depth signature (empty: none).
 		"held_mesh": PackedInt64Array(),
 		"cover_generation": _patch_cover_generation(patch_data),
-		"last_patch_data": patch_data,
+		"last_patch_data": _payload_metadata(patch_data),
 	}
 
 func refresh_road_covered_patches(flat_pairs: PackedInt32Array) -> void:
@@ -511,7 +511,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		_remove_patch(key)
 		return false
 
-	patch["last_patch_data"] = patch_data
+	patch["last_patch_data"] = _payload_metadata(patch_data)
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
 	var depth_nonzero_count := _patch_visible_depth_count(patch_data)
@@ -541,6 +541,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			texture_material.set_shader_parameter("watermap", depth_texture)
 		else:
 			depth_texture.update(depth_image)
+		TerrainRenderer.trim_upload_image(depth_image, Image.FORMAT_RF)
 		texture_elapsed_ms = float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 		_water_debug_patch_uploads += 1
 
@@ -852,6 +853,8 @@ func _upload_water_patch_depth_texture(
 	else:
 		depth_texture = ImageTexture.create_from_image(depth_image)
 		resources["depth_texture"] = depth_texture
+	# The patch keeps no depth samples once uploaded (`TERRAIN-41` B2).
+	TerrainRenderer.trim_upload_image(depth_image, Image.FORMAT_RF)
 	resources["depth_texture_width"] = texture_width
 	resources["depth_texture_height"] = texture_height
 	return depth_texture
@@ -1051,11 +1054,15 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var mesh: Mesh = null
 		if patch_node != null:
 			mesh = patch_node.mesh
-		var depth_stats: Dictionary = _water_patch_depth_stats(patch_data)
+		# The patch keeps no depth samples (`TERRAIN-41` B2): read back from its texture.
+		var depth_texture: Texture2D = patch.get("depth_texture", null) as Texture2D
+		var depth_image: Image = depth_texture.get_image() if depth_texture != null else null
+		var depth_payload := {"depth_bytes": depth_image.get_data() if depth_image != null else PackedByteArray()}
+		var depth_stats: Dictionary = _water_patch_depth_stats(depth_payload)
 		var baseline_stats: Dictionary = {}
 		if simulation_node.has_method("get_water_patch_debug"):
 			baseline_stats = simulation_node.get_water_patch_debug(key.x, key.y) as Dictionary
-		var depth_sample_count: int = _water_patch_depth_sample_count(patch_data)
+		var depth_sample_count: int = _water_patch_depth_sample_count(depth_payload)
 		var baseline_sample_count: int = int(baseline_stats.get("total_samples", depth_sample_count))
 		var baseline_nonzero_count: int = int(baseline_stats.get("baseline_nonzero", -1))
 		var mesh_stats: Dictionary = patch.get(
@@ -1227,6 +1234,13 @@ func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dic
 		return ready_patch_data
 	_request_water_patch_payload(key, patches.has(key))
 	return {}
+
+# What a built patch keeps of its payload (`TERRAIN-41` B2): the metadata, without the depth
+# samples, which live on in its texture. A shallow copy. O(fields).
+static func _payload_metadata(patch_data: Dictionary) -> Dictionary:
+	var kept := patch_data.duplicate()
+	kept.erase("depth_bytes")
+	return kept
 
 func _water_patch_depth_bytes(patch_data: Dictionary) -> PackedByteArray:
 	return patch_data["depth_bytes"] as PackedByteArray

@@ -55,7 +55,11 @@ func _run() -> void:
 				await process_frame
 		_expect(int(baseline.get("baseline_nonzero", -1)) == expected_count, "live baseline must match the captured water depth")
 		_expect(not baseline.has("visible_nonzero"), "one authored water layer must have one set of source statistics")
-		renderer.patches[key] = {"last_patch_data": payload}
+		# A built patch keeps its payload's metadata and the texture its samples went to (`TERRAIN-41` B2).
+		var depth := Image.create_from_data(int(payload["texture_width"]), int(payload["texture_height"]),
+			false, Image.FORMAT_RF, payload["depth_bytes"])
+		renderer.patches[key] = {"last_patch_data": renderer._payload_metadata(payload),
+			"depth_texture": ImageTexture.create_from_image(depth)}
 		var text := ""
 		deadline = Time.get_ticks_msec() + 5000
 		while Time.get_ticks_msec() < deadline:
@@ -98,7 +102,10 @@ func _check_terrain_payload(simulation: SimulationNode) -> void:
 		_expect(is_equal_approx(float(stats["min"]), -50.0) and is_equal_approx(float(stats["max"]), -50.0), "terrain diagnostics must preserve signed height")
 		_expect(is_equal_approx(float(stats["sum"]), count * -50.0), "terrain diagnostics must sum the uploaded samples")
 		_expect(not payload.has("height_data"), "terrain exports must have one authoritative height buffer")
-		renderer.patches[Vector2i.ZERO] = {"last_patch_data": payload}
+		var heights := Image.create_from_data(int(payload["texture_width"]), int(payload["texture_height"]),
+			false, Image.FORMAT_RF, payload["height_bytes"])
+		renderer.patches[Vector2i.ZERO] = {"last_patch_data": TerrainRenderer._payload_metadata(payload),
+			"height_texture": ImageTexture.create_from_image(heights)}
 		var lines: Array[String] = renderer.road_geometry_debug_patch_lines(PackedInt32Array([0, 0]))
 		_expect("\n".join(lines).contains("height_min=-50.000"), "formatted terrain diagnostics must report native heights")
 		renderer.free()

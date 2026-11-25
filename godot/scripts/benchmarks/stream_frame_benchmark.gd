@@ -91,8 +91,11 @@
 ## frame back) saves the view at a quarter, half and three quarters of each motion and after its
 ## turn. Every sample records the process's memory at its end (`memory`).
 ## METRUM_TERRAIN_BUDGET_MB (read by terrain.gd, `TERRAIN-41` B1) sets the base terrain's memory
-## budget (unset: every patch fits); each sample records the budget's state (`terrain_budget`), and
+## budget (unset: the Terrain memory setting's default, Automatic, `TERRAIN-41` B2; 0: every patch
+## fits); each sample records the budget's state (`terrain_budget`), and
 ## METRUM_STREAM_WAIT_FILL=1 makes every settle wait for the budget's fill as well.
+## METRUM_STREAM_TAIL_FRAMES=<n> (`TERRAIN-41` B2) records n more frames after a flight's last settle
+## (`<phase>_tail`): the budget's background releases and fill, which a settle does not wait for.
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
 ## terrain proxies against the patches the frame drew (`proxies`).
 ## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
@@ -620,6 +623,9 @@ func _flight(bench: Node, phase: String, world: Vector2) -> bool:
 	if not bool(settle.settled):
 		bench._fail("%s did not settle" % phase, {"settle_ms": settle.settle_ms})
 		return false
+	var tail := int(OS.get_environment("METRUM_STREAM_TAIL_FRAMES"))
+	if tail > 0:
+		_report.samples.append(await _capture_frames(bench, phase + "_tail", tail))
 	return true
 
 # Moves the pivot along x from `from` to `to` over `duration_s` of wall time, on the ground under it.

@@ -27,6 +27,7 @@ const KEY_SHOW_FPS := "show_fps"
 const KEY_RENDER_SCALE := "render_scale"
 const KEY_SHADOW_QUALITY := "shadow_quality"
 const KEY_VIEW_DISTANCE := "view_distance"
+const KEY_TERRAIN_MEMORY := "terrain_memory"
 const KEY_UI_SCALE := "ui_scale"
 const KEY_HAS_POSITION := "has_position"
 
@@ -62,6 +63,17 @@ const DEFAULT_VIEW_DISTANCE := VIEW_DISTANCE_FULL
 ## VEG-23 prototype switch; no persisted option/UI until visual and GPU acceptance.
 const GRASS_ENABLED := true
 const REDUCED_VIEW_DISTANCE_M := 3000.0
+## Terrain memory (`TERRAIN-41`): a target, in megabytes of 10^6 bytes, for the base terrain the
+## streaming core keeps built (heights, land cover, water depth and water meshes); stored as the
+## megabytes, or one of the two choices below. Automatic is 512 MB on a discrete graphics adapter
+## and 256 MB otherwise, never sized for a large card (the card's memory is not read).
+const TERRAIN_MEMORY_AUTOMATIC := 0
+## Every patch of the loaded map stays built once filled.
+const TERRAIN_MEMORY_WHOLE_MAP := -1
+const TERRAIN_MEMORY_CHOICES := [TERRAIN_MEMORY_AUTOMATIC, 256, 512, 1024, TERRAIN_MEMORY_WHOLE_MAP]
+const DEFAULT_TERRAIN_MEMORY := TERRAIN_MEMORY_AUTOMATIC
+const TERRAIN_MEMORY_DISCRETE_MB := 512
+const TERRAIN_MEMORY_OTHER_MB := 256
 const DEFAULT_UI_SCALE := 1.0
 const MIN_UI_SCALE := 0.8
 const MAX_UI_SCALE := 2.0
@@ -136,6 +148,30 @@ static func get_shadow_quality() -> int:
 static func get_view_distance() -> int:
 	var value := int(_graphics_value(KEY_VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE))
 	return value if value in [VIEW_DISTANCE_FULL, VIEW_DISTANCE_REDUCED] else DEFAULT_VIEW_DISTANCE
+
+## The stored Terrain memory choice, one of TERRAIN_MEMORY_CHOICES.
+static func get_terrain_memory() -> int:
+	var value := int(_graphics_value(KEY_TERRAIN_MEMORY, DEFAULT_TERRAIN_MEMORY))
+	return value if value in TERRAIN_MEMORY_CHOICES else DEFAULT_TERRAIN_MEMORY
+
+## The base terrain's memory budget the stream node takes (`set_terrain_budget_mb`): the chosen
+## megabytes, Automatic resolved, 0 for Whole map (every patch fits).
+static func get_terrain_memory_budget_mb() -> float:
+	match get_terrain_memory():
+		TERRAIN_MEMORY_AUTOMATIC:
+			return float(automatic_terrain_memory_mb())
+		TERRAIN_MEMORY_WHOLE_MAP:
+			return 0.0
+	return float(get_terrain_memory())
+
+## Automatic's value: TERRAIN_MEMORY_DISCRETE_MB when the renderer reports a discrete adapter,
+## TERRAIN_MEMORY_OTHER_MB otherwise. `RenderingServer.get_video_adapter_type()` answers from the
+## rendering device under Forward+ and Mobile; the Compatibility renderer and the headless display
+## have none and answer DEVICE_TYPE_OTHER, so they get the smaller value.
+static func automatic_terrain_memory_mb() -> int:
+	if RenderingServer.get_video_adapter_type() == RenderingDevice.DEVICE_TYPE_DISCRETE_GPU:
+		return TERRAIN_MEMORY_DISCRETE_MB
+	return TERRAIN_MEMORY_OTHER_MB
 
 # Benchmarks measure the authored frame, so the player's render settings do not reach them.
 static func _graphics_value(key: String, default_value: Variant) -> Variant:
@@ -357,6 +393,7 @@ static func _write_defaults(cfg: ConfigFile) -> void:
 	cfg.set_value(SECTION_GRAPHICS, KEY_RENDER_SCALE, DEFAULT_RENDER_SCALE)
 	cfg.set_value(SECTION_GRAPHICS, KEY_SHADOW_QUALITY, DEFAULT_SHADOW_QUALITY)
 	cfg.set_value(SECTION_GRAPHICS, KEY_VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE)
+	cfg.set_value(SECTION_GRAPHICS, KEY_TERRAIN_MEMORY, DEFAULT_TERRAIN_MEMORY)
 	cfg.set_value(SECTION_ACCESSIBILITY, KEY_UI_SCALE, DEFAULT_UI_SCALE)
 
 static func _layout_section(layout_id: String) -> String:

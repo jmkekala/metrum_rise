@@ -14,6 +14,9 @@ signal dirty_changed(has_pending_changes: bool)
 const MAX_FPS_LABELS := ["Unlimited", "30", "60", "120", "144"]
 const RENDER_SCALE_LABELS := ["Native", "77% (FSR 2)", "67% (FSR 2)", "50% (FSR 2)"]
 const ON_OFF := ["Off", "On"]
+# Terrain memory choices in GameSettings.TERRAIN_MEMORY_CHOICES order; Automatic's label names
+# what it resolves to here.
+const TERRAIN_MEMORY_LABELS := ["Automatic (%d MB)", "256 MB", "512 MB", "1,024 MB", "Whole map"]
 const TOGGLES := [GameSettings.KEY_FULLSCREEN, GameSettings.KEY_VSYNC, GameSettings.KEY_SHOW_FPS]
 
 var _initial := {}
@@ -52,6 +55,11 @@ func _build_ui() -> void:
 	_lod_quality = _add_choice("Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
 		["Performance", "Balanced", "Quality"],
 		"Controls when buildings switch to simpler meshes. Does not affect simulation or remove distant buildings.")
+	# Wording for the user's review (`TERRAIN-41` B2).
+	var memory_labels := TERRAIN_MEMORY_LABELS.duplicate()
+	memory_labels[0] = memory_labels[0] % GameSettings.automatic_terrain_memory_mb()
+	_add_choice("Terrain memory", GameSettings.KEY_TERRAIN_MEMORY, memory_labels,
+		"A target for how much of the map stays loaded around the camera. More keeps places you have left ready to show again. Fast camera moves can go briefly over it.")
 
 func _add_choice(text: String, key: String, labels: Array, hint: String) -> OptionsRows.Cycler:
 	var cycler := OptionsRows.Cycler.new()
@@ -98,6 +106,7 @@ func reset_defaults() -> void:
 		GameSettings.KEY_SHADOW_QUALITY: GameSettings.DEFAULT_SHADOW_QUALITY,
 		GameSettings.KEY_VIEW_DISTANCE: GameSettings.DEFAULT_VIEW_DISTANCE,
 		GameSettings.KEY_BUILDING_LOD_QUALITY: GameSettings.DEFAULT_BUILDING_LOD_QUALITY,
+		GameSettings.KEY_TERRAIN_MEMORY: GameSettings.DEFAULT_TERRAIN_MEMORY,
 	}
 	_sync_controls()
 	_emit_dirty_state()
@@ -114,6 +123,7 @@ func _persisted_values() -> Dictionary:
 		GameSettings.KEY_SHADOW_QUALITY: GameSettings.get_shadow_quality(),
 		GameSettings.KEY_VIEW_DISTANCE: GameSettings.get_view_distance(),
 		GameSettings.KEY_BUILDING_LOD_QUALITY: GameSettings.get_building_lod_quality(),
+		GameSettings.KEY_TERRAIN_MEMORY: GameSettings.get_terrain_memory(),
 	}
 
 # Option indices are stored directly except for On/Off toggles and values from a choice list.
@@ -127,6 +137,8 @@ func _value_for_index(key: String, index: int) -> Variant:
 			return GameSettings.RENDER_SCALE_CHOICES[index]
 		GameSettings.KEY_SHADOW_QUALITY:
 			return GameSettings.SHADOW_QUALITY_CHOICES[index]
+		GameSettings.KEY_TERRAIN_MEMORY:
+			return GameSettings.TERRAIN_MEMORY_CHOICES[index]
 	return index
 
 func _index_for_value(key: String, value: Variant) -> int:
@@ -139,6 +151,8 @@ func _index_for_value(key: String, value: Variant) -> int:
 			return GameSettings.RENDER_SCALE_CHOICES.find(value)
 		GameSettings.KEY_SHADOW_QUALITY:
 			return GameSettings.SHADOW_QUALITY_CHOICES.find(value)
+		GameSettings.KEY_TERRAIN_MEMORY:
+			return GameSettings.TERRAIN_MEMORY_CHOICES.find(value)
 	return int(value)
 
 func _set_pending(key: String, value: Variant) -> void:

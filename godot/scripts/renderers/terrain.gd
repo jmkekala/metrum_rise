@@ -42,6 +42,11 @@ const LAND_COVER_PARAMETERS: Array[StringName] = [&"land_cover_texture", &"land_
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const GameSettings := preload("res://scripts/core/game_settings.gd")
+# The payload's sample arrays a built patch drops once uploaded (`TERRAIN-41` B2).
+const PAYLOAD_BYTE_FIELDS: Array[String] = ["height_bytes", "mask_bytes", "land_cover"]
+# One texel of a 32-bit format: what a trimmed upload image keeps (shared, never written).
+static var _trimmed_texel := PackedByteArray([0, 0, 0, 0])
 const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
@@ -278,6 +283,20 @@ func _ready() -> void:
 	if console != null:
 		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	rebuild_from_simulation_state()
+	add_to_group("graphics_settings")
+
+## Re-reads the player's Terrain memory after Options applies it: the stream node moves the built
+## set to the new target through its units (fill and releases) under the install ledger.
+func apply_graphics_settings() -> void:
+	apply_terrain_memory()
+
+## The base terrain's memory budget (`TERRAIN-41`): the player's Terrain memory, a target, unless
+## METRUM_TERRAIN_BUDGET_MB names one (benchmarks and tests; 0 or less: every patch fits).
+## Benchmark runs read the setting's default (Automatic), as they read every graphics default.
+func apply_terrain_memory() -> void:
+	var forced := OS.get_environment("METRUM_TERRAIN_BUDGET_MB")
+	var budget_mb := float(forced) if not forced.is_empty() else GameSettings.get_terrain_memory_budget_mb()
+	_stream.set_terrain_budget_mb(budget_mb)
 
 func _exit_tree() -> void:
 	if graded_tiles != null:
@@ -322,9 +341,7 @@ func rebuild_from_simulation_state() -> void:
 	_stream.reset_terrain_patches(
 		self, null, patch_cols, patch_rows, patch_interval_cells, terrain_cell_m, terrain_world_size
 	)
-	# The base terrain's memory budget (`TERRAIN-41` B1): every patch fits unless the benchmark's
-	# METRUM_TERRAIN_BUDGET_MB names one (the setting is round B2's).
-	_stream.set_terrain_budget_mb(float(OS.get_environment("METRUM_TERRAIN_BUDGET_MB")))
+	apply_terrain_memory()
 	_push_debug_modes()
 	if graded_tiles != null:
 		_stream.attach_graded_book(null)
@@ -1007,7 +1024,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		"sample_step_m": sample_step_m,
 		"lod_step": initial_lod_step,
 		"subdivision_factor": initial_subdivision_factor,
-		"last_patch_data": patch_data,
+		"last_patch_data": _payload_metadata(patch_data),
 	}
 	_surface_commit_revision += 1
 
@@ -1185,7 +1202,9 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture_width"] = old_texture_width
 	patch["spare_height_texture_height"] = old_texture_height
 	_note_spares(patch)
-	patch["last_patch_data"] = patch_data
+	patch["last_patch_data"] = _payload_metadata(patch_data)
+	# Uploaded at the stage: the patch keeps no height samples (`TERRAIN-41` B2).
+	trim_upload_image(stage["height_image"] as Image, Image.FORMAT_RF)
 	_surface_commit_revision += 1
 	_push_surface_generation(key)
 	_commit_patch_land_cover(patch, stage["land_cover"])
@@ -1745,6 +1764,7 @@ func _upload_terrain_patch_height_texture(
 	# frame (an in-place write of every fresh build read +0.04 ms render CPU on the shipped Kuopio,
 	# `TERRAIN-41` B1b). An edit's staged texture (the spare) is still written in place.
 	var height_texture := ImageTexture.create_from_image(height_image)
+	trim_upload_image(height_image, Image.FORMAT_RF)
 	resources["height_texture"] = height_texture
 	resources["height_texture_width"] = texture_width
 	resources["height_texture_height"] = texture_height
@@ -1854,7 +1874,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 			continue
 		var node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 		var mesh: Mesh = node.mesh if node != null else null
-		var height_stats := _terrain_patch_height_stats(patch_data)
+		var height_stats := _terrain_patch_texture_height_stats(patch)
 		lines.append(
 			"terrain_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d height_min=%.3f height_max=%.3f"
 			% [
@@ -2240,6 +2260,11 @@ func _terrain_patch_data_for_key(
 func _terrain_patch_height_bytes(patch_data: Dictionary) -> PackedByteArray:
 	return patch_data["height_bytes"] as PackedByteArray
 
+## The mask pages' bytes (`TERRAIN-41` B2's debug view: a layer for every patch of the world,
+## allocated at the load, beside the memory target and not counted in it).
+func mask_page_bytes() -> int:
+	return patch_cols * patch_rows * _mask_layer_size.x * _mask_layer_size.y * 2
+
 func _rebuild_mask_pages(border_texels: int) -> void:
 	_mask_pages.clear()
 	_mask_layer_size = Vector2i.ONE * (patch_interval_cells + 1 + 2 * border_texels)
@@ -2292,6 +2317,29 @@ func _apply_patch_masks(
 func _terrain_patch_height_stats(patch_data: Dictionary) -> Dictionary:
 	var bytes: PackedByteArray = patch_data.get("height_bytes", PackedByteArray())
 	return RenderDebug.float_stats(bytes.to_float32_array())
+
+# A built patch's height statistics read back from its texture: the patch keeps no samples
+# (`TERRAIN-41` B2). A debug path: the read back waits for the render thread.
+func _terrain_patch_texture_height_stats(patch: Dictionary) -> Dictionary:
+	var texture: Texture2D = patch.get("height_texture", null) as Texture2D
+	var image: Image = texture.get_image() if texture != null else null
+	var bytes := image.get_data() if image != null else PackedByteArray()
+	return RenderDebug.float_stats(bytes.to_float32_array())
+
+## What a built patch keeps of its payload (`TERRAIN-41` B2): the metadata, without the height,
+## mask and land cover bytes, which live on in its textures and mask layer once uploaded. A
+## shallow copy: the payload's arrays are shared, never copied. O(fields).
+static func _payload_metadata(patch_data: Dictionary) -> Dictionary:
+	var kept := patch_data.duplicate()
+	for field: String in PAYLOAD_BYTE_FIELDS:
+		kept.erase(field)
+	return kept
+
+## Drops `image`'s samples once its texture holds them, keeping the object for reuse as an upload
+## scratch (a pool's set, a patch's spare): one texel of `format`, the array shared, not allocated.
+static func trim_upload_image(image: Image, format: Image.Format) -> void:
+	if image != null and not image.is_empty() and image.get_width() * image.get_height() > 1:
+		image.set_data(1, 1, false, format, _trimmed_texel)
 
 func _terrain_patch_mesh_from_data(
 	patch_data: Dictionary,

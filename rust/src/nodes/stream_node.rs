@@ -48,7 +48,8 @@ use crate::nodes::sim::render::stream::layers::roads::{
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, LayerFrame, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream,
     PatchWork, Payload, POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS,
-    UNIT_KIND_NAMES, UNIT_KINDS, WATER_COSTS, WATER_LIMITS, frame_layers, place_bytes, places,
+    UNIT_KIND_NAMES, UNIT_KINDS, WATER_COSTS, WATER_LIMITS, frame_layers, place_bytes, place_kinds,
+    places,
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
@@ -92,6 +93,8 @@ pub struct StreamNode {
     budget: FrameBudget,
     ledger_frame: u64,
     frame_spent: [f64; 2],
+    // The frame's whole install ledger as the node's last pass closed it: measured, predicted.
+    frame_ledger: [f64; 2],
     // The perf channel's ledger at the node's last pass (`TERRAIN-41`): microseconds charged by
     // each owner, in `Owner` order, then the predicted total the admissions compared.
     frame_charged: [f64; OWNERS + 1],
@@ -137,6 +140,8 @@ pub struct StreamNode {
     // meshes, and resource sets in their pools (each a place of its layer).
     terrain_budget: Option<u64>,
     patch_extras: [[i64; 2]; 2],
+    // The releases since the patch grid was set, a layer (terrain, water; the debug view's).
+    releases_total: [u64; 2],
     // A load's road chunk hydration (`RENDER-32-P`) and its executor, budget and frame.
     roads: RoadHydration,
     road_scripts: Option<Gd<Node>>,
@@ -189,6 +194,7 @@ impl INode for StreamNode {
             budget: FrameBudget::new(STREAM_BUDGET_US),
             ledger_frame: 0,
             frame_spent: [0.0; 2],
+            frame_ledger: [0.0; 2],
             frame_charged: [0.0; OWNERS + 1],
             clock: MonotonicClock::default(),
             perf: false,
@@ -219,6 +225,7 @@ impl INode for StreamNode {
             terrain_work: PatchWork::default(),
             water_work: PatchWork::default(),
             terrain_budget: None,
+            releases_total: [0; 2],
             patch_extras: [[0; 2]; 2],
             roads: RoadHydration::default(),
             road_scripts: None,
@@ -781,6 +788,7 @@ impl StreamNode {
         });
         self.terrain.reset(grid);
         self.water.reset(grid);
+        self.releases_total = [0; 2];
         self.post_load_window = grid.is_some();
         self.post_load_s = 0.0;
         self.terrain_scripts = Some(terrain);
@@ -789,8 +797,10 @@ impl StreamNode {
 
     /// The base terrain's memory budget (`TERRAIN-41` B1), megabytes of 10^6 bytes; 0 or less:
     /// every patch fits (the default). Counted are the kept base terrain's texels (heights, land
-    /// cover, water depth) and the extras the scripts report; the keep and release rectangles
-    /// follow at the next frame.
+    /// cover, water depth) and the extras the scripts report. It is a target, not a hard limit:
+    /// the keep and release rectangles follow at the next frame, and the fill and the releases
+    /// move the built set to it through their units under the frame's install ledger once the
+    /// view waits for nothing (`TERRAIN-41` B2: the player's setting, changed at any time).
     #[func]
     pub fn set_terrain_budget_mb(&mut self, megabytes: f64) {
         self.terrain_budget = (megabytes > 0.0).then_some((megabytes * 1e6) as u64);
@@ -806,29 +816,72 @@ impl StreamNode {
         }
     }
 
-    /// The base terrain's budget now (`TERRAIN-41` B1, the debug view's and the benchmark's):
-    /// `budget_bytes` (-1: every patch fits), `counted_bytes`, `extra_bytes`, `places`, `ring`
-    /// (`K`), `overrun`, `terrain_built`, `water_built`, `fill_left` (both layers' patches of
-    /// their prewarm squares not yet built: the background fill a settled view does not wait
-    /// for), `release_rect`. `O(prewarm square)` for `fill_left`: a status read, not a frame's.
+    /// The base terrain's budget now (`TERRAIN-41` B1 and B2, the debug view's and the
+    /// benchmark's): the fields of the perf channel's record (`budget_status`), and `fill_left`
+    /// (both layers' patches of their prewarm squares not yet built: the background fill a settled
+    /// view does not wait for), `release_rect`, the last frame's install ledger `ledger_us`
+    /// (measured, every owner) and `ledger_predicted_us`, and `ledger_budget_us`. `O(prewarm
+    /// square)` for `fill_left`: a status read, not a frame's.
     #[func]
     pub fn get_terrain_budget(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
-        out.set("budget_bytes", self.terrain_budget.map_or(-1, |bytes| bytes as i64));
-        out.set("extra_bytes", self.patch_extra_bytes() as i64);
-        out.set("counted_bytes", self.counted_bytes() as i64);
-        out.set("terrain_built", self.terrain.built_count() as i64);
-        out.set("water_built", self.water.built_count() as i64);
+        self.budget_status(&mut out);
         out.set("fill_left", (self.terrain.fill_left() + self.water.fill_left()) as i64);
+        if let Some([a, b, c, d]) = self.terrain.release_rect() {
+            out.set("release_rect", Vector4i::new(a, b, c, d));
+        }
+        out.set("ledger_us", self.frame_ledger[0]);
+        out.set("ledger_predicted_us", self.frame_ledger[1]);
+        out.set("ledger_budget_us", STREAM_BUDGET_US);
+        out
+    }
+
+    // The budget's state by kind (`TERRAIN-41` B2's debug view and the perf record):
+    // `budget_bytes` (-1: every patch fits), `counted_bytes` and its parts `height_bytes`,
+    // `land_cover_bytes`, `water_depth_bytes` (built places by kind), `spare_bytes`,
+    // `water_mesh_bytes`, `pooled_bytes` (the extras, `extra_bytes`); `places` (`N`), `ring`
+    // (`K`), `overrun`; `wanted` (the wanted square's patches: the drawn set) and `wanted_side_m`;
+    // per layer `{terrain,water}_drawn`, `_built`, `_kept` (built, not drawn) and
+    // `_releases_total` since the grid was set. `O(1)`.
+    fn budget_status(&self, out: &mut VarDictionary) {
+        out.set("budget_bytes", self.terrain_budget.map_or(-1, |bytes| bytes as i64));
+        out.set("counted_bytes", self.counted_bytes() as i64);
+        out.set("extra_bytes", self.patch_extra_bytes() as i64);
+        if let Some(grid) = self.terrain.grid() {
+            let [height, cover, depth] = place_kinds(&grid);
+            let [terrain_place, water_place] = place_bytes(&grid);
+            let terrain = self.terrain.built_count() as u64;
+            let water = self.water.built_count() as u64;
+            out.set("height_bytes", (terrain * height) as i64);
+            out.set("land_cover_bytes", (terrain * cover) as i64);
+            out.set("water_depth_bytes", (water * depth) as i64);
+            out.set("spare_bytes", self.patch_extras[0][0].max(0));
+            out.set("water_mesh_bytes", self.patch_extras[1][0].max(0));
+            let pooled = self.patch_extras[0][1].max(0) as u64 * terrain_place
+                + self.patch_extras[1][1].max(0) as u64 * water_place;
+            out.set("pooled_bytes", pooled as i64);
+        }
         if let Some(keep) = self.terrain.keep() {
             out.set("places", i64::try_from(keep.places).unwrap_or(-1));
             out.set("ring", keep.ring as i64);
             out.set("overrun", keep.overrun);
         }
-        if let Some([a, b, c, d]) = self.terrain.release_rect() {
-            out.set("release_rect", Vector4i::new(a, b, c, d));
+        // The wanted square (the drawn set: built patches outside it are kept hidden) and its
+        // side, metres.
+        if let (Some(grid), Some([a, b, c, d])) = (self.terrain.grid(), self.terrain.square()) {
+            out.set("wanted", i64::from((c - a + 1) * (d - b + 1)));
+            out.set("wanted_side_m", f64::from((c - a + 1).max(d - b + 1)) * grid.span());
         }
-        out
+        let layers = [("terrain", &self.terrain), ("water", &self.water)];
+        for (at, (name, layer)) in layers.into_iter().enumerate() {
+            out.set(format!("{name}_drawn"), layer.resident_count() as i64);
+            out.set(format!("{name}_built"), layer.built_count() as i64);
+            out.set(
+                format!("{name}_kept"),
+                layer.built_count().saturating_sub(layer.resident_count()) as i64,
+            );
+            out.set(format!("{name}_releases_total"), self.releases_total[at] as i64);
+        }
     }
 
     /// The `terrain_force_full_world` and `terrain_force_lod1` debug modes.
@@ -1521,12 +1574,14 @@ impl StreamNode {
         );
         if ran[0] {
             self.water_work = self.water.work();
+            self.releases_total[1] += self.water_work.releases as u64;
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
             self.water.take_released().for_each(drop);
         }
         if ran[1] {
             self.terrain_work = self.terrain.work();
+            self.releases_total[0] += self.terrain_work.releases as u64;
         }
         self.follow_terrain();
         // The window closes when the patches first settle with residents, or after
@@ -1663,9 +1718,14 @@ impl StreamNode {
                 charged[..OWNERS].copy_from_slice(&ledger.charged);
                 charged[OWNERS] = ledger.budget.predicted_us;
             }
-            [ledger.charged[Owner::Stream as usize], ledger.budget.measured_us]
+            [
+                ledger.charged[Owner::Stream as usize],
+                ledger.budget.measured_us,
+                ledger.budget.predicted_us,
+            ]
         });
-        self.frame_spent = spent;
+        self.frame_spent = [spent[0], spent[1]];
+        self.frame_ledger = [spent[1], spent[2]];
         self.frame_charged = charged;
     }
 
@@ -1873,6 +1933,8 @@ impl StreamNode {
 
     fn record_perf(&mut self) {
         let counted = self.counted_bytes();
+        let mut budget = VarDictionary::new();
+        self.budget_status(&mut budget);
         let script = self.perf_script.get_or_insert_with(|| {
             ResourceLoader::singleton()
                 .load("res://scripts/core/perf_debug.gd")
@@ -1941,8 +2003,11 @@ impl StreamNode {
             let mut patches = VarDictionary::new();
             patches.set("units_ms", self.frame_patch_units_us / 1000.0);
             patches.set("post_load_window", self.post_load_window);
-            // The budget's counted bytes (`TERRAIN-41` B1).
+            // The budget's counted bytes (`TERRAIN-41` B1) and its state by kind (B2).
             patches.set("budget_counted_bytes", counted as i64);
+            for (key, value) in budget.iter_shared() {
+                patches.set(format!("budget_{key}"), value);
+            }
             for (name, layer, work) in [
                 ("terrain", &self.terrain, self.terrain_work),
                 ("water", &self.water, self.water_work),

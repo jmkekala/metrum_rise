@@ -49,7 +49,7 @@ use super::super::schedule::{Class, Clock, FrameBudget};
 mod budget;
 mod units;
 
-pub(crate) use budget::{Keep, RELEASE_RING, keep, place_bytes, places};
+pub(crate) use budget::{Keep, RELEASE_RING, keep, place_bytes, place_kinds, places};
 pub(crate) use units::{UNIT_KIND_NAMES, UNIT_KINDS, UnitKind, UnitTimes};
 
 /// The scripts' patch grid: `terrain.gd`'s layout (`get_terrain_patch_layout`) and world size.

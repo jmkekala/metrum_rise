@@ -38,7 +38,7 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | parking | dump | clear"
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | parking | terrain | dump | clear"
 # Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
 const SHADER_GLOBAL_MODES := {
 	"terrain_visual": "terrain_visual_debug_mode",
@@ -293,6 +293,8 @@ func _run_command(text: String) -> void:
 			_visual_command(words)
 		"parking", "park":
 			_parking_command()
+		"terrain", "terrain_memory":
+			_terrain_command()
 		"dump":
 			_dump()
 		"clear":
@@ -377,6 +379,55 @@ func _parking_command() -> void:
 	lines.append("Rejected parking spots: %d" % rejected.size())
 	for issue in rejected:
 		lines.append("  " + issue)
+	var text := "\n".join(lines)
+	_view.set_status(text)
+	MetrumDebug.log("events", text)
+
+## Prints the base terrain's memory (`TERRAIN-41` B2): the Terrain memory target and the counted
+## bytes by kind, the places and keep ring, the wanted square and what is drawn of it, built and
+## kept-hidden patches, the fill still to come, the releases since the load, the last frame's
+## install ledger, and beside them what the target does not count (the mask pages, nodes,
+## materials, the driver's own) with the engine's memory monitors.
+func _terrain_command() -> void:
+	var scene := get_tree().current_scene
+	var stream: Node = scene.get_node_or_null("StreamNode") if scene != null else null
+	var terrain: Node = scene.get_node_or_null("Terrain") if scene != null else null
+	if stream == null or not stream.has_method("get_terrain_budget"):
+		_view.set_status("Terrain memory needs a loaded world.")
+		return
+	var budget: Dictionary = stream.get_terrain_budget()
+	var mb := func(key: String) -> String: return "%.1f" % (float(budget.get(key, 0)) / 1e6)
+	var target := int(budget.get("budget_bytes", -1))
+	var counted := float(budget.get("counted_bytes", 0))
+	var choice := GameSettings.get_terrain_memory()
+	var setting := "Automatic" if choice == GameSettings.TERRAIN_MEMORY_AUTOMATIC else (
+		"Whole map" if choice == GameSettings.TERRAIN_MEMORY_WHOLE_MAP else "%d MB" % choice)
+	var lines := PackedStringArray([
+		"Terrain memory (%s): target %s, counted %s MB%s" % [setting,
+			"every patch" if target < 0 else "%.0f MB" % (target / 1e6), mb.call("counted_bytes"),
+			"" if target < 0 else "  (%.1f %% of the target)" % (100.0 * counted / maxf(1.0, target))],
+		"  heights %s  land cover %s  water depth %s  spare textures %s  water meshes %s  pooled %s MB" % [
+			mb.call("height_bytes"), mb.call("land_cover_bytes"), mb.call("water_depth_bytes"),
+			mb.call("spare_bytes"), mb.call("water_mesh_bytes"), mb.call("pooled_bytes")],
+		"Places %s  keep ring %d%s" % [str(budget.get("places", "every patch")), int(budget.get("ring", 0)),
+			"  (the view alone is over the target)" if bool(budget.get("overrun", false)) else ""],
+		"Drawn: terrain %d, water %d of %d wanted (the square of %.1f km about the camera; built patches beyond it stay hidden)" % [
+			int(budget.get("terrain_drawn", 0)), int(budget.get("water_drawn", 0)), int(budget.get("wanted", 0)),
+			float(budget.get("wanted_side_m", 0.0)) / 1000.0],
+		"Built: terrain %d (kept hidden %d), water %d (kept hidden %d); fill left %d" % [
+			int(budget.get("terrain_built", 0)), int(budget.get("terrain_kept", 0)),
+			int(budget.get("water_built", 0)), int(budget.get("water_kept", 0)), int(budget.get("fill_left", 0))],
+		"Released since the load: terrain %d, water %d" % [
+			int(budget.get("terrain_releases_total", 0)), int(budget.get("water_releases_total", 0))],
+		"Install ledger last frame: %.2f of %.2f ms" % [float(budget.get("ledger_us", 0.0)) / 1000.0,
+			float(budget.get("ledger_budget_us", 0.0)) / 1000.0],
+		"Not counted: mask pages %.1f MB, nodes, materials, the driver's own allocations" % [
+			float(terrain.mask_page_bytes()) / 1e6 if terrain != null and terrain.has_method("mask_page_bytes") else 0.0],
+		"Engine: textures %.0f MiB  buffers %.0f MiB  video %.0f MiB" % [
+			Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED) / 1048576.0,
+			Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED) / 1048576.0,
+			Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0],
+	])
 	var text := "\n".join(lines)
 	_view.set_status(text)
 	MetrumDebug.log("events", text)
