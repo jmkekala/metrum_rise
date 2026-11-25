@@ -12,7 +12,7 @@ use crate::nodes::sim::render::stream::layers::terrain::{
 };
 use crate::nodes::sim::render::stream::schedule::{FrameBudget, MonotonicClock};
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 // 37 x 20 patches of 64 cells of 8 m: 3 x 2 blocks, the last column of blocks 5 patches wide and
@@ -171,6 +171,58 @@ fn every_patch_draws_exactly_one_of_patch_and_cell_on_scripted_and_shuffled_sequ
     let before = recorder.commands.len();
     layer.flush(&mut recorder, HEIGHTS);
     assert_eq!(recorder.commands.len(), before);
+}
+
+// `TERRAIN-41` D3: a resident patch that draws nothing (the graded book's blank: its list not
+// known yet) keeps its cell; the cell goes in the flush after the patch draws and comes back when
+// it stops, whichever of residency and blank changes first, in any order inside a frame.
+#[test]
+fn a_resident_patch_drawing_nothing_keeps_its_cell() {
+    let mut recorder = Recorder::new();
+    let mut layer = drawn_layer(&mut recorder);
+    let mut state: BTreeMap<PatchKey, [bool; 2]> = BTreeMap::new();
+    let drawn = |state: &BTreeMap<PatchKey, [bool; 2]>| -> BTreeSet<PatchKey> {
+        state
+            .iter()
+            .filter(|(_, [resident, blank])| *resident && !*blank)
+            .map(|(key, _)| *key)
+            .collect()
+    };
+    // A patch arrives blank in the pass that made it resident: its cell stays.
+    layer.set_resident([3, 2], true);
+    layer.set_blank([3, 2], true);
+    state.insert([3, 2], [true, true]);
+    layer.flush(&mut recorder, HEIGHTS);
+    assert!(layer.cell_shown([3, 2]) && !layer.patch_draws([3, 2]));
+    assert_exactly_one(&recorder, &drawn(&state), "arrived blank");
+    // Its list came: it draws, its cell goes.
+    layer.set_blank([3, 2], false);
+    state.insert([3, 2], [true, false]);
+    layer.flush(&mut recorder, HEIGHTS);
+    assert!(!layer.cell_shown([3, 2]) && layer.patch_draws([3, 2]));
+    assert_exactly_one(&recorder, &drawn(&state), "drawing");
+    // Shuffled residency and blank changes, both orders inside a frame.
+    let mut walk = Walk(0x9e37_79b9_7f4a_7c15);
+    let keys = all_keys();
+    for frame in 0..300 {
+        for _ in 0..walk.next() % 60 {
+            let key = keys[(walk.next() % keys.len() as u64) as usize];
+            let on = walk.next().is_multiple_of(2);
+            let entry = state.entry(key).or_insert([false, false]);
+            if walk.next().is_multiple_of(2) {
+                layer.set_resident(key, on);
+                entry[0] = on;
+            } else {
+                layer.set_blank(key, on);
+                entry[1] = on;
+            }
+        }
+        layer.flush(&mut recorder, HEIGHTS);
+        assert_exactly_one(&recorder, &drawn(&state), &format!("shuffled frame {frame}"));
+        for &key in &keys {
+            assert_eq!(layer.patch_draws(key), drawn(&state).contains(&key), "frame {frame} {key:?}");
+        }
+    }
 }
 
 #[test]

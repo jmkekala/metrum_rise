@@ -21648,6 +21648,121 @@ cost, not separated), the load call +40-60 ms (the backdrop's build and 27 textu
 Video memory +158 KB (the cells' buffers and mesh; the textures are D1's), Godot's static memory
 +1.5 MB.
 
+### The backdrop's hand-over as drawn, and its water (`TERRAIN-41` round D3, 2026-11-25)
+
+Two defects the user saw on `dev` an hour after round D2 landed, zoomed out over a large map:
+single 512 m squares of sky (the haze's colour) flickering among loaded terrain as patches loaded,
+and backdrop lakes a bright blue beside the real water's dark navy, so a lake changed colour at the
+hand-over and showed a hard line where it crossed the wanted square's edge.
+
+**The flicker: a resident patch can draw nothing.** Round D2's cells mirrored the terrain layer's
+residency, and its proof (the recording backend) stopped there. But the graded tile book collapses a
+resident patch's PlaneMesh while it does not know the patch's list of graded tiles, and until the
+patch's graded set is ready (T53 (a): "nothing until then"). So a patch that turned resident took its
+cell away in that pass, drew its PlaneMesh for that one frame (the book applies its draw states in the
+terrain renderer's next frame), then drew nothing until its list came back from the background
+pool: a square of sky for one or more frames, on and off. **The rule on the renderer's side now:** a
+patch is drawn as a patch when it is resident *and* the graded book does not have it drawing
+nothing; its cell goes in the pass where both first hold and comes back in the pass where either
+stops (`backdrop/cells.rs`, two bits a patch). The book reports every entry into and exit from its
+draw-nothing set (`take_blank_news`, `book/patches.rs`), which the stream node takes in both of its
+passes before the cells' flush, so a draw state the book applies in the terrain renderer's frame
+reaches that frame's cells. And a patch that turns resident without a known list draws nothing from
+that pass on (`blank_until_drawn`, called from the stream node's `follow_terrain`): its first frame
+shows its cell, not a PlaneMesh the book would collapse a frame later (no trace line: the frame's own
+draw state follows as before and finds it applied, so recorded traces replay unchanged). No fade, no
+timer, and no frame with both drawn. Bounds: a draw-state change `O(1)`; the book's draw state at a
+residency `O(the patch's list)`, as the book's frame computes it.
+
+**The water: the real water's inputs, lit as the water is.** D2's flat albedo (0.020, 0.070, 0.120)
+was a hand-picked linear constant, lit by the terrain's `light()`, and brighter than the water by far:
+the water's deep colour is the sRGB `DEEP_WATER_COLOR` (0.018, 0.066, 0.092), near black in linear,
+and it is not shaded like ground. The variant now takes `backdrop_water_color` and
+`backdrop_water_fresnel` (power, strength), set by `terrain_backdrop.gd` from `water.gd`'s
+`DEEP_WATER_COLOR`, `WATER_FRESNEL_POWER` and `WATER_FRESNEL_STRENGTH`, the constants the water's
+materials take, so the two cannot drift apart. Where a cell lies under water the fragment draws the
+water's opaque terms as a far pixel of the real water draws them (`water.gdshader`): the deep colour
+times one minus the same Schlick Fresnel against the level surface (normal straight up), the engine's
+sky ambient and sky reflection left to the engine (`IRRADIANCE` and `RADIANCE` not overridden, as the
+water leaves them; the ground's override them with its authored ambient floor), water's reflectance
+(`SPECULAR` 0.25) and the roughness of its unresolved ripples at the weather's sea state. `light()`
+lights it with the engine's Lambert term, unshadowed and without the clouds' dimming: the water has
+no `light()`, casts and takes no shadow (`shadows_disabled`) and its diffuse ignores the cloud shadow
+(only its sun glitter takes it). Left out, by the plan's "flat colour": the screen and planar
+reflections of the shore and the moving clouds, the sun glitter, the waves' shading and the lake bed
+seen through the water's last 2-3 % of opacity. No new sampler, no reflection lookup.
+
+**Proof of the flicker's fix.**
+- Godot (`terrain_backdrop_handover_test`, headless, in `./run.sh --test`'s main chain): on a fresh
+  20 km blank world, through the load, a jump, a zoom out to 12 km and back in, after every frame
+  each patch of the map is drawn by exactly one of its node (visible, with a mesh, its PlaneMesh
+  not collapsed by the book) and its cell (the whole-map probe's covered flag). On `dev`'s library
+  it fails: 3,639 patch-frames drawn by neither in 386 frames, the first in the load's tenth frame;
+  on the round's, 0 neither and 0 both in 377 frames, with 6,611 patch-frames of resident patches
+  drawing nothing covered by their cells.
+- Rust (`backdrop/cells/tests.rs`): 300 shuffled frames of residency and draw-nothing changes in
+  either order inside a frame keep exactly one of patch and cell for every patch; D2's sequences
+  unchanged.
+- Rendered, every frame (a diagnostic, not committed: the stream benchmark with the sky drawn
+  magenta and its compositor clouds off writes every frame at 640 x 360; a detector counts
+  magenta regions inside the ground, away from the open sky, and the frame carries the scripts'
+  own count of patches in view drawn by neither node nor cell). The 60 km map at 256 MB
+  (`post_load,zoom,flight_jump`): on `dev` sky shows through the ground in 2,019 of the far
+  zoom-out's 3,080 frames, up to 21 squares at once (the largest 3,834 pixels at 640 x 360), and
+  the scripts count up to 60 patches in view drawn by neither in 2,656 frames; with the round, 0
+  frames and 0 patches in every phase. The shipped Kuopio at 256 MB
+  (`post_load,zoom,jump,flight_high,flight_jump`): on `dev` the scripts count up to 19 patches in
+  view drawn by neither in 11 of the load's frames (the screen is still black there) and none later;
+  with the round, none. The detector's other finds there are equal on both sides (73 and 76 frames):
+  sky seen through a near tree's crown in the 60 m zoom. Whole map on the shipped Kuopio (budget 0,
+  `zoom,jump`, the state count only): `dev` 77 of the load's frames with up to 34 patches drawn by
+  neither, the round 0. The 60 km map at the whole-map budget was not run.
+  What remains in the detector on both sides: one-pixel cracks along patch seams in the far-to-ground
+  zoom (up to 17 pixels in 6 frames), the unstitched seam between detail steps the plan names, not
+  a patch.
+- D2's proofs hold: the stream goldens replay with no mismatch (30k 3,144 frames / 85 checks,
+  Kuopio 10,036 / 87); the shipped Kuopio's settle digests equal a control at all 12 points and the
+  other control at the 10 where the two controls agree (they differ in the vegetation at the
+  far-to-ground zoom's two points); the reflection's proxy book in step in all 3,614 frames of the
+  shipped Kuopio's flights and its screen rectangles 4,263 of 4,263 equal.
+
+**Rows** (`dev`'s release library and scripts against the round's, 512 MB both sides, the eight
+P-cores, each session started with no other session's Godot running and the load under 2). The
+shipped Kuopio (`turns,pan,zoom,jump`), two C B B C sessions: the first read `pan_repeat`'s maximum
+and the medians of `zoom_in_repeat` and `far_zoom_out` worse (+4.9, +0.24, +0.23 ms against spreads
+of 1.3, 0.19, 0.21), the second `turn_back 0.5s` and `zoom_in` at the median and `zoom_in`'s and
+`zoom_out`'s maxima; **pooled over four runs a side, all 16 phases level at the median and the
+maximum**. No phase there draws a cell (the square covers the shipped map at the benchmark's poses).
+
+**The water's colour, measured.** The 60 km map at 512 MB, one pose (17 km from the load's view, a
+14 km orbit at a pitch of 0.75 rad, the user's kind of view), a jump there: its first frame draws
+the lakes of the view as backdrop, its settled frame as real water, the same pixels at the same pose
+(a third run with the backdrop's water colour magenta marks them, eroded by 2 pixels). Mean sRGB of
+those pixels, real water against backdrop water, and the CIE76 difference of the means:
+| Hour | Real water | D2's backdrop | Round D3's backdrop | CIE76 D2 | CIE76 D3 |
+|---|---|---|---|---:|---:|
+| 7.5 (low sun) | 47.6 / 60.8 / 68.6 | | 46.5 / 59.6 / 68.0 | | 0.73 |
+| 12 | 33.9 / 48.6 / 54.9 | 30.9 / 65.9 / 86.9 | 35.0 / 49.0 / 54.7 | 12.70 | 0.54 |
+| 16 | 40.0 / 52.9 / 59.9 | | 39.8 / 52.5 / 59.6 | | 0.25 |
+| 23 (night) | 0.6 / 1.6 / 2.9 | not run | 0.0 / 0.6 / 1.4 | | 0.35 |
+
+On the way (noon): the water's colour lit by the terrain's own `light()` (which multiplies by `ALBEDO`
+while the engine multiplies the diffuse by it again after `light()`) read 5.85; with the engine's
+lighting and no bed 3.30; the bed seen through deep water's last 2 % closes the rest. Worst: the far,
+grazing band at a low sun (7.5 h, the frame's upper rows: darker by 4.2 / 3.4 / 2.4), where the real
+water reflects the haze; per pixel the real water's waves vary |dY| p90 3-4 around the flat colour. A
+flat colour does not follow the real water's screen and planar reflections near the camera, its sun
+glitter path or its waves. Stills: the pose's first and settled frames at each hour, and D2's at noon,
+beside the round's hand-back.
+
+**The land, same pose** (report only): the backdrop's land is lighter than the real patches' by
+6.9 / 6.4 / 4.5 (sRGB, mean over the view), 7.1 at the median of 64-pixel tiles and 13.1 at most:
+the real patches carry their trees, the 8 m normal and relief masks, the backdrop open ground or
+landed cover with the 64 m normal. No patchwork beyond that shows at this pose; no block-edge seam
+from the lattice normal's one-sided difference shows in the stills (an edge every 8,192 m), not
+measured. Row `TERRAIN-60`.
+
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
