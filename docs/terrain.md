@@ -20685,20 +20685,25 @@ By the compare tool's rule (delta of the means against the same-binary spread) t
 better (-0.3 ms, spread 0.0), missing at most better (-42, spread 28), most in-view holes better
 (-25.5, spread 16), terrain wanted-to-drawn p95 level (-23.5, spread 24). By phase: the flight's
 start better at its maximum, the turn better, the settle level; the flight itself better at the
-median and worse at its single slowest frame (22-23 against 19-20 ms, the main thread's process
-time in both). The water's meshes in the flight: 939-962 holes and 1,536-1,585 upgrades
+median and worse at its single slowest frame (22-23 against 19-20 ms, the main thread's process time
+in both). A second C B B C session (4 runs a side pooled, the same rule over the larger of the two
+sides' ranges): frame p50 13.4-13.5 to 13.1 ms better, missing at most 195-236 to 144-181 better,
+most in-view holes 157-180 to 129-145 better, wanted-to-drawn p95 120-150 to 86-114 level (-26.5,
+spread 30), the slowest frame level by the rule (the branch's 21.7-23.7 against `dev`'s 18.4-23.4
+ms, +2.6 on the means). The water's meshes in the flight: 939-962 holes and 1,536-1,585 upgrades
 submitted, 1,249-1,271 upgrades applied, 256-328 returned for want of room, 108-129 shown patches
 kept their mesh; the graded builds held in 528-534 of 642-645 frames.
 
 **Measured, shipped Kuopio** (turns, pan, zoom, jump; C B B C): terrain wanted-to-drawn p95 2-4 to 2
 frames on the pan back, 8-9 to 6 on the far zoom-out, 18 to 12 on the far zoom to the ground and
-26-27 to 19-21 on the jump back. Frame medians within 0.4 ms of `dev`'s; by the compare tool's rule
-worse at the median on the 0.5 s turn's repeat (+0.4), the repeated zoom-in and the far zoom-out
-(+0.2), and on the 1 s turn back, the pan back and its repeat (+0.1 against a 0.1 spread), the rest
-level; worse at the maximum on the 0.5 s turn back (+1.3 ms), the 1 s turn out (13 against 9-10 ms),
-the far zoom-out (16 against 13-14) and the jump (12 against 11); single maxima of 15-20 ms on the
-pan out, the repeated zoom-in and the far zoom to the ground (controls 9-13) read level by the
-spread. The jumps' maxima stay at 10-12 ms (L1 with L2 read 17).
+26-27 to 19-21 on the jump back. Pooled over two C B B C sessions (4 runs a side, the same rule over
+the larger of the two sides' ranges) every phase is level at the median and at the maximum; the
+branch's medians sit 0.02-0.37 ms above `dev`'s in 15 of 16 phases, inside the spread (the 0.5 s
+turn's repeat +0.37 against 0.45, the pan back +0.13 against 0.15, the far zoom to the ground +0.19
+against 0.24). On the turn's repeat and the far zoom to the ground the water's ledger part is
+0.08-0.09 ms a frame higher (its upgrades admitted in the room); on the pan back the ledger and the
+render CPU are level. One session alone read several phases worse by 0.1-0.4 ms and a few maxima by
+1.3-3.2 ms. The jumps' maxima stay at 10-12 ms (L1 with L2 read 17).
 
 **Proof.**
 
