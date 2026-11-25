@@ -161,11 +161,9 @@ pub struct StreamNode {
     // The graded tile renderer's book, which follows the terrain's resident entries.
     graded: Option<Gd<GradedTileBook>>,
     // The backdrop (`TERRAIN-41` D1): its sampling job's spawner, once a simulation is attached,
-    // and its textures; the engine's texture and static memory moved by its uploads (measured
-    // around them, the debug view's).
+    // and its textures.
     backdrop: Option<BackdropSpawner>,
     backdrop_layer: BackdropLayer,
-    backdrop_memory: [i64; 2],
 }
 
 // The agents' twins with their own backend (their own mesh and material catalogue), the feed
@@ -247,7 +245,6 @@ impl INode for StreamNode {
             graded: None,
             backdrop: None,
             backdrop_layer: BackdropLayer::default(),
-            backdrop_memory: [0; 2],
         }
     }
 
@@ -786,8 +783,7 @@ impl StreamNode {
     /// `pending` (channels waiting for their upload), `uploads`, `uploaded_bytes`, `builds`,
     /// `build_ms` (the last build on its worker), `refreshes`, `refresh_ms`, `refresh_chunks`,
     /// `refresh_points`, `refresh_changed` (the last refresh), `covers` (land cover notes),
-    /// `busy` (jobs that found the core held), and the engine's texture and static memory moved
-    /// around the uploads (`video_delta_bytes`, `static_delta_bytes`; 0 headless). `O(blocks)`.
+    /// `busy` (jobs that found the core held). `O(blocks)`.
     #[func]
     pub fn get_backdrop(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -795,8 +791,6 @@ impl StreamNode {
         out.set("uploads", layer.uploads as i64);
         out.set("uploaded_bytes", layer.uploaded_bytes as i64);
         out.set("texture_bytes", layer.texture_bytes as i64);
-        out.set("video_delta_bytes", self.backdrop_memory[0]);
-        out.set("static_delta_bytes", self.backdrop_memory[1]);
         let Some(spawner) = self.backdrop.as_ref() else {
             out.set("built", false);
             out.set("ready", false);
@@ -1853,8 +1847,6 @@ impl StreamNode {
             if let Ok(mut state) = spawner.shared.state.try_lock() {
                 let world = spawner.shared.world();
                 let product = state.product.as_mut().filter(|product| product.world == world);
-                let measure = product.as_ref().is_some_and(|product| product.has_pending());
-                let before = measure.then(engine_memory);
                 self.backdrop_layer.upload(
                     product,
                     backend,
@@ -1862,11 +1854,6 @@ impl StreamNode {
                     &self.clock,
                     self.load_settling,
                 );
-                if let Some(before) = before {
-                    let after = engine_memory();
-                    self.backdrop_memory[0] += after[0] - before[0];
-                    self.backdrop_memory[1] += after[1] - before[1];
-                }
             }
         }
         self.frame_copy_us += backend.take_copy_us();
@@ -2167,14 +2154,6 @@ impl StreamNode {
             ],
         );
     }
-}
-
-// The engine's texture memory and static (system) memory, bytes.
-fn engine_memory() -> [i64; 2] {
-    use godot::classes::Os;
-    use godot::classes::rendering_server::RenderingInfo;
-    let video = RenderingServer::singleton().get_rendering_info(RenderingInfo::TEXTURE_MEM_USED);
-    [video as i64, Os::singleton().get_static_memory_usage() as i64]
 }
 
 fn patch_key(key: Vector3i) -> PatchKey {

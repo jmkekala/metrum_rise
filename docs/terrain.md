@@ -21464,8 +21464,7 @@ for it yet), or all at once while the load holds the frame.
 
 **A step a loading screen can wait for.** `StreamNode.get_backdrop()` reports `built`, `ready` (built
 for the current world, every texture uploaded, no job running), the bytes (`product_bytes`,
-`texture_bytes`), the last build's and refresh's worker time and counts, uploads, and the engine's
-texture and static memory moved around the uploads (`video_delta_bytes`, `static_delta_bytes`). A
+`texture_bytes`), the last build's and refresh's worker time and counts, and the uploads. A
 loading screen that keeps the load's hold (`set_terrain_load_settling(true)`, as round B2's preload
 note describes) until `ready` gets the backdrop built and uploaded before the map shows; today's load
 does not wait for it (load time is report only). The stream benchmark records the dictionary in every
