@@ -486,8 +486,10 @@ pub(crate) struct PatchStream {
     released: Vec<PatchKey>,
     // Candidates a release found busy this frame (scratch, returned to the list at its end).
     release_busy: Vec<u32>,
-    // The other layer's holes wait: releases run only as donors.
+    // The other layer's holes wait: releases run only as donors; unless the counted bytes are
+    // over the budget (its extras grew), when releases run in the room the holes left.
     releases_held: bool,
+    over_budget: bool,
     // The wanted square (terrain) and the prewarm square.
     square: Option<[i32; 4]>,
     halo: Option<[i32; 4]>,
@@ -546,6 +548,7 @@ impl PatchStream {
             released: Vec::new(),
             release_busy: Vec::new(),
             releases_held: false,
+            over_budget: false,
             square: None,
             halo: None,
             prewarm_dirty: false,
@@ -651,6 +654,14 @@ impl PatchStream {
     /// wait (`TERRAIN-41` B1: no hole of either layer waits behind a release).
     pub(crate) fn hold_releases(&mut self, held: bool) {
         self.releases_held = held;
+    }
+
+    /// The counted bytes are over the budget (`TERRAIN-41` B1: the extras grew, so the places
+    /// shrank faster than the donors give back): releases run in the room the frame's holes left,
+    /// holes waiting or not. A release comes after every hole of the frame, so it takes no room a
+    /// hole could have had.
+    pub(crate) fn set_over_budget(&mut self, over: bool) {
+        self.over_budget = over;
     }
 
     /// The grid, once a world is set.
@@ -1306,12 +1317,12 @@ impl PatchStream {
 
         // Releases on their own (`TERRAIN-41` B1): after holes, level changes and hides, before
         // the fill, at a fixed price, never as the frame's exempt first unit, and only while no
-        // hole of this layer waits (in a frame of holes a release is a build's donor). Farthest
-        // first. `O(released + R log R)` while candidates exist, nothing otherwise.
+        // hole of either layer waits (in a frame of holes a release is a build's donor) or while
+        // the counted bytes are over the budget. Farthest first. `O(released + R log R)` while
+        // candidates exist, nothing otherwise.
         if !blocked
             && !release_blocked
-            && !self.releases_held
-            && self.missing == self.refused
+            && (self.over_budget || !self.releases_held && self.missing == self.refused)
             && !self.releasable.is_empty()
         {
             self.sort_releasable(grid, &distance_sq);

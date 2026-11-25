@@ -791,3 +791,24 @@ fn the_same_eyes_give_the_same_units_and_a_still_frame_does_nothing() {
         capacity
     );
 }
+
+#[test]
+fn over_the_budget_releases_run_while_holes_wait_for_their_payloads() {
+    // A jump: the new square's holes wait for their payloads (no build, so no donor). Within the
+    // budget the old patches wait; over it (the extras grew) they are released in the room the
+    // holes left.
+    for over in [false, true] {
+        let mut layer = wide_layer(Some(3500));
+        let mut scripts = Scripts::default();
+        settle(&mut layer, &mut scripts, [-12000.0, 800.0, -3000.0], f64::INFINITY);
+        layer.set_over_budget(over);
+        let eye = [12000.0, 800.0, 12000.0];
+        layer.set_square(WIDE.target(eye, 1.0e6, false));
+        // Room for every hide and release of the frame.
+        let mut budget = FrameBudget::new(1.0e6);
+        let work = layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+        assert!(layer.pending()[0] > 0 && work.activations == 0);
+        assert_eq!(work.donors, 0);
+        assert_eq!(work.releases > 0, over, "over the budget: {over}");
+    }
+}

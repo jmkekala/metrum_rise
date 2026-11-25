@@ -1472,6 +1472,11 @@ impl StreamNode {
             .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
         self.water.hold_prewarm(self.terrain.has_pending_work());
         self.water.hold_releases(self.terrain.pending()[0] > 0);
+        let over = self
+            .terrain_budget
+            .is_some_and(|budget| self.counted_bytes() > budget);
+        self.water.set_over_budget(over);
+        self.terrain.set_over_budget(over);
         if let Some(scripts) = self.water_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {
