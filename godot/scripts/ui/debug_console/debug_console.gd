@@ -38,10 +38,11 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | relief [<strength> [add|ratio]] | parking | dump | clear"
-# Trial (`RENDER-78`): the ground's relief light, the `terrain_relief_light` shader global
-# (terrain_relief_light.gdshaderinc): x the strength, y the form (0 add, 1 ratio). Zero is
-# today's light. METRUM_TERRAIN_RELIEF sets it at launch as "<strength>" or "<strength>:ratio".
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | relief [<strength> [add|ratio] [sun|all]] | parking | dump | clear"
+# The ground's relief light (`RENDER-78`), the `terrain_relief_light` shader global
+# (terrain_relief_light.gdshaderinc): x the strength, y the form (0 add, 1 ratio, plus 2 for the
+# sun only, the moon keeping today's light). Strength 0, the default, is today's light.
+# METRUM_TERRAIN_RELIEF sets it at launch as the command's words joined by ":", e.g. "1:ratio:sun".
 const RELIEF_GLOBAL := "terrain_relief_light"
 const RELIEF_ENVIRONMENT := "METRUM_TERRAIN_RELIEF"
 # Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
@@ -361,17 +362,27 @@ func _visual_command(words: PackedStringArray) -> void:
 
 func _relief_command(words: PackedStringArray) -> void:
 	if words.size() > 1 and not _set_relief(words.slice(1)):
-		_view.set_status("Usage: relief [<strength> [add|ratio]]")
+		_view.set_status("Usage: relief [<strength> [add|ratio] [sun|all]]")
 		return
-	_view.set_status("relief %s %s" % [_relief.x, "ratio" if _relief.y > 0.5 else "add"])
+	_view.set_status("relief %s %s %s" % [_relief.x, "ratio" if fmod(_relief.y, 2.0) > 0.5 else "add",
+		"sun" if _relief.y > 1.5 else "all"])
 
-# `values`: a strength and optionally the form, `add` (the default) or `ratio`.
+# `values`: a strength, then optionally the form, `add` (the default) or `ratio`, and the lights,
+# `all` (the default: sun and moon) or `sun`.
 func _set_relief(values: PackedStringArray) -> bool:
-	if values.is_empty() or not values[0].is_valid_float() \
-			or (values.size() > 1 and not values[1].to_lower() in ["add", "ratio"]):
+	if values.is_empty() or not values[0].is_valid_float():
 		return false
-	var ratio := values.size() > 1 and values[1].to_lower() == "ratio"
-	_relief = Vector2(float(values[0]), 1.0 if ratio else 0.0)
+	var ratio := false
+	var sun_only := false
+	for word in values.slice(1):
+		match word.to_lower():
+			"add", "ratio":
+				ratio = word.to_lower() == "ratio"
+			"all", "sun":
+				sun_only = word.to_lower() == "sun"
+			_:
+				return false
+	_relief = Vector2(float(values[0]), (1.0 if ratio else 0.0) + (2.0 if sun_only else 0.0))
 	# Written, never read back: the server's copy of a global is not readable at runtime.
 	RenderingServer.global_shader_parameter_set(RELIEF_GLOBAL, _relief)
 	return true

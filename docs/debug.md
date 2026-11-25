@@ -947,6 +947,13 @@ available in every build and scene.
   - `visual <mode>` lists the mode's values.
   - `visual <mode> <value>` takes a value name, alias or index.
   - `visual off` turns every visual mode off, which also returns residency to camera-based.
+  - `relief <strength> [add|ratio] [sun|all]` sets the ground's relief light (`RENDER-78`,
+    [terrain.md](terrain.md#14-terrain-site-ground-water-and-lighting-materials-are-runtime-presentation)):
+    one write of the shader global `terrain_relief_light`, effective the next frame, not saved.
+    The form defaults to `add`, the lights to `all` (sun and moon); `sun` leaves moonlit ground
+    as today. `relief 0` is today's light, `relief` alone prints the value.
+    `METRUM_TERRAIN_RELIEF` sets it at launch with the same words joined by `:`, e.g.
+    `METRUM_TERRAIN_RELIEF=1:ratio:sun`.
   - `parking` (`park`) prints parking spots, car custody (parked, driving, stored off-map, in
     use), trips under way by phase, why departure attempts since load drove or walked, and every
     rejected parking spot with its building and reason. The same text goes to `events`.
