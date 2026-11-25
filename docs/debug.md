@@ -974,6 +974,13 @@ available in every build and scene.
     engine's texture, buffer and video memory. The same text goes to `events`; the fields are
     `StreamNode.get_terrain_budget()`'s, and the perf channel's `terrain_stream` record carries
     them as `budget_<field>` (all but the fill and the ledger, which it has as its own fields).
+    Below them the backdrop (`TERRAIN-41` D1, D2; `StreamNode.get_backdrop()`): its blocks,
+    whether it is ready, its bytes and textures, channels waiting, uploads, the last build and
+    refresh, land cover notes; its cells (patches not drawn as patches, cells drawn, blocks
+    drawing); and the map's patches in the camera's view by what draws them: as a patch, by a
+    backdrop cell, or nothing (sky). The backdrop's cells lie beyond the distance haze's end
+    whenever they lie outside the wanted square (the haze ends at the square's radius), so a cell
+    counted in view there shows as haze.
   - `dump`
   - `clear`
 - **Copy** puts the visible, filtered lines on the clipboard.

@@ -21510,6 +21510,133 @@ level pooled (frame p50 14.0-15.2 against 13.9-14.3 ms, the first pair at a load
 6,164-6,588 against 6,110-6,120 ms; 64 blocks, 12,747,328 bytes of texels, texture memory +17-19
 MiB; the build 6.3-7.6 ms on its worker.
 
+### The backdrop drawn (`TERRAIN-41` round D2, 2026-11-25)
+
+Round D2 of the item's plan: the backdrop of round D1 is drawn wherever the terrain does not draw a
+patch, so the ground a view reaches never shows sky while patches build, after a load, a zoom-out or a
+jump. The look is the plan's defaults, the user's decision of 2026-11-25: the terrain's own shader as
+a variant (its colours, sun and moon light with the relief term, fog and cloud shadow), flat water
+colour with no reflection, waves or second pass, land cover from landed payloads (open ground where a
+patch's payload was never built), far roads and sites on ungraded backdrop ground until their patch
+installs, no fade, and no backdrop in the water reflection.
+
+**What is drawn where.** Every patch of the map draws exactly one of its patch and its backdrop cell
+in every frame: a patch inside the wanted square draws its cell until its unit makes it resident
+(a hole), and every patch outside the square draws its cell (it is never drawn as a patch there).
+This is one step more than the plan's scope ("one instance a patch that is wanted and not
+resident"), at the user's request: inside the camera's far plane nothing of the map is left
+undrawn. Patches inside the square keep drawing as real patches at their detail steps as before;
+the plan's F1 (the far field from the backdrop) stays out.
+
+**How** (`stream/layers/backdrop/cells.rs`, `stream_node.rs`). The cells mirror the terrain layer's
+residency: each change the stream node takes from the terrain layer (`follow_terrain`, in the pass
+whose unit made the change, or the script's own removal) moves the patch's cell out of or into its
+block's dense list (`O(1)`, a swap-remove), and both of the stream node's passes end by sending the
+blocks that changed, so a patch made resident and its cell's removal reach the same frame. One
+`MultiMesh` and one instance a block of 16 x 16 patches (custom lane: the patch's place in its block
+and its size, so the map's short last patch ends at the world's edge), drawn with the block's
+material in the main scenario only, casting no shadow; the engine culls a block by its bounds. A block
+draws once its three textures exist for this map and it has a material. The backdrop has its own
+render backend and catalogue (one mesh, three texture parameters), because the vegetation's
+`set_vegetation_catalogue` replaces its catalogue whole. Bounds: at most one instance a patch of the
+map (1,296 on the shipped 18,432 m map in 9 `MultiMesh`es, 13,689 in 64 at 59,904 m); a still frame
+sends nothing; a frame with residency changes sends `O(changed blocks x 256)` rows of 16 floats,
+whatever the map's size.
+
+`terrain.gd` hands the drawing over at a world's setup (`TerrainBackdrop`,
+`renderers/terrain_backdrop.gd`): the cell mesh ((n + 1)^2 lattice vertices and a skirt) and one
+`ShaderMaterial` a block with the patch materials' shared parameters
+(`StreamNode.set_backdrop_drawing`), then `StreamNode.build_backdrop()` runs D1's sampling job on the
+calling thread and makes the textures at once, so the load's first frame shows the backdrop (without
+it the first job queued behind the load's payload jobs and the first frames showed sky: on the
+low-spec stand-in below the first 1.5 s of frames). The overlay, coal pit and field overlay
+parameters follow the patch materials' updates. The block's textures are bound to its material once
+and replaced under their handles by D1's refreshes, so an edit under a drawn cell shows without a
+rebind.
+
+**The shader variant** (`terrain_backdrop.gdshader`, `#define TERRAIN_BACKDROP` in
+`terrain_surface.gdshaderinc`). The block's ground, water surface and land cover are bound to the
+terrain's own `heightmap`, `watermap` and `land_cover_texture`, so the variant adds no sampler
+(`TERRAIN-16`). The vertex fetches its lattice sample exactly (`texelFetch`: the value a detail step 8
+patch draws at that vertex) and, where the water surface lies above the ground, takes the water
+surface; its normal is the lattice's central difference (one-sided on a block's edge). The fragment
+is the base terrain's with no mask layer (no relief mask, no cliffs), the lattice normal, a shore
+blend from the interpolated wetness, and flat water (one albedo) where the cell lies under water.
+`light()` is the terrain's, relief term and cloud factor included.
+
+**The distance haze hides what lies outside the square.** The haze (`scene_lighting.gd`'s distance
+fade) ends half a patch inside `min(far plane, max(8 km, 4 x camera height))`, the wanted square's
+own radius, so that patches activating at the square's edge stay hidden; everything outside the
+square is fully hazed. The cells there are drawn and counted but show as haze: a zoom-out today
+shows haze, not sky, beyond the square, with or without the backdrop. The user's observation of
+round B2 (terrain far away dropped although loaded) is this haze. Making the backdrop visible there
+means moving the haze's end out to the far plane, a look change left to the user (stills below). Holes
+inside the square (after a load, during a zoom-out, a flight or a jump) are inside the haze's reach and
+are where the backdrop shows.
+
+**Proof.**
+- Rust (`backdrop/cells/tests.rs`, recording backend): on a 37 x 20 patch map (6 blocks, short last
+  ones), scripted (a square coming in, moving a column, a whole block resident and leaving) and 300
+  shuffled frames of up to 60 random changes: in every frame every patch of the map draws exactly one
+  of its patch and its cell (each cell decoded from the recorder's rows, none twice); a still frame
+  sends nothing. The terrain layer's own frames (500 frames of a walk with jumps under a 0.6 ms
+  budget, so holes wait): the cells follow `take_changes` and the same holds in every frame, inside
+  and outside the square. A block draws only with its three textures and material, never in the
+  reflection's scenario, and stops when its textures are freed (unbound first). A brush and a lake
+  edit under drawn cells: D1's refresh replaces the block's two textures under the handles the
+  material binds, and the cells are not resent.
+- Godot, rendered on the Compatibility renderer (`terrain_backdrop_shader_test`, in `./run.sh
+  --test`'s rendered chain): the variant compiles and draws a cell from a `MultiMesh` with its
+  custom lane; flat water where the water lies above the ground, ground elsewhere; the relief term
+  darkens a slope facing away from the sun and leaves flat ground as strength 0 draws it.
+- The drawn probe counts a terrain hole under a cell as covered and gains `terrain_map` (every patch of
+  the map), `bare_max` (most in-view chunks over which nothing drew in a frame) and the in-view total
+  in its backlog. With the backdrop, bare is 0 in every frame of every phase measured: the 60 km
+  map's `flight_high`, `flight_jump` and `zoom` (without it, at most 146 bare in the square and 1,371
+  on the map in one frame, 9,632 during the far zoom-out), the shipped Kuopio's zoom and jump, and its
+  load on the low-spec stand-in.
+- The reflection's books on one shipped Kuopio run (`flight_low`, `flight_high`, `flight_jump`, both
+  check modes): the proxy book in step in all 3,652 frames (3,290 with a mirror drawing), the screen
+  hull's rectangle equal to the walk's in all 4,295 rectangles, no fallback walk.
+- With the whole view inside the wanted square nothing changes: on the shipped Kuopio's
+  `turns,pan,zoom,jump` the settle digests equal the control's at all 12 points in every category
+  (graded, buildings, roads, parked, vegetation, land cover, water meshes, water); the stream goldens
+  replay with no mismatch (30k 3,144 frames / 85 checks, Kuopio 10,036 / 87). A cell is drawn only
+  for a patch not drawn as a patch, and on the shipped map at the benchmark's poses the square covers
+  the map (0 cells in the zoom phases, 144 after the jump, all outside the square and hazed).
+
+**The low-spec stand-in** (report only; the shipped Kuopio, `post_load,zoom`, two CPUs for the whole
+game with eight workers, the install ledger cut from 2.0 to 0.5 ms and the post-load window's patch
+budget from 5.2 to 1.3 ms in a local build; the same library with the backdrop's setup removed from
+the scripts as "before"; in-view patches per frame drawn as a patch / covered by a cell / bare):
+before, the first frames after the load show 0 / 0 / 45 (sky), 13 / 0 / 32 at 0.5 s and 1 s, 22 / 0 /
+23 at 2 s, bare until 4.8 s; after, 0 / 45 / 0 from the first frame, 13 / 32 / 0 at 1 s, never bare.
+The far zoom-out's holes inside the square: at most 35 bare before, 0 after (47 and 0 on the whole
+map); the far-to-ground zoom 9 and 0. On this machine a slow load's first seconds now show coarse
+ground (flat water, no forest yet: the land cover comes with the payloads) where they showed sky.
+
+**The 60 km map** (report only, one run each, the backdrop drawn against the same library without it):
+bare in view 0 in every frame of `flight_high`, `flight_jump` and `zoom` (without: at most 146 in the
+square during the high flight's start, 82 in the jump, 9,632 during the far zoom-out). The cells
+outside the square cost there: 10,880-12,207 cells drawn (all hazed), +260,000 primitives and +0.2-0.26
+ms of render CPU in the zoom phases, frame median +0.45-0.67 ms (`zoom_in` 6.63 against 5.96 ms);
+the far zoom-out +2.3 ms with 9,761 holes covered (drawn content); the flights level (high flight
+14.12 against 14.64 ms). The load call 4,628 against 4,570 ms. Row `TERRAIN-57`.
+
+**Stills** (`t41-d2/stills/` beside the round's hand-back, full resolution, labelled; one capture a
+side, clear weather, noon). Today's haze with and without the backdrop, and the haze ended at the
+far plane (a diagnostic copy of `scene_lighting.gd`, not shipped) with and without it: under today's
+haze the two are equal outside the square (the shipped Kuopio's poses differ by at most 1 pixel
+over 8 levels); with the haze at the far plane, without the backdrop the map ends at the square's
+edge (the observation), with it the whole map draws to the horizon, and the square's edge shows
+where real water (reflective) meets the backdrop's flat water and where real forest meets landed or
+open land cover. On the 60 km map the cells outside the square cost +0.28-0.70 ms of GPU at these
+poses (4,839-9,110 cells in view, +1.1-1.9 M primitives), on the shipped Kuopio +0.04-0.12 ms (504-936
+cells). A pair across the hand-over at step 8 (the far-plane haze, every patch real against the
+backdrop beyond the square): no vertex moves by construction (the cell's vertices are the same lattice samples, fetched exactly; not measured in pixels); the light term, relief and cloud factor are the same
+code, and what changes is shading detail (the 64 m lattice normal against the 8 m texture's, no
+relief mask) and the water's look.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
