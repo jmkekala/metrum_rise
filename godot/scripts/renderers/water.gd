@@ -1865,7 +1865,13 @@ func _return_upgrade_meshes() -> int:
 			kept.append(mesh_data)
 			continue
 		var key := Vector2i(int(mesh_data.get("patch_x", -1)), int(mesh_data.get("patch_z", -1)))
-		_queue_patch_mesh_refresh(key, int(mesh_data.get("lod_step", 1)))
+		var lod_step := int(mesh_data.get("lod_step", 1))
+		# A mesh of a step its patch left is dropped: the level change that moved the patch queued
+		# its own step, which asking again for this one would overwrite (the patch then kept an
+		# older step's mesh with nothing in flight).
+		if not _water_patch_mesh_data_matches_patch(key, lod_step, mesh_data):
+			continue
+		_queue_patch_mesh_refresh(key, lod_step)
 		returned += 1
 	mesh_apply_queue.assign(kept)
 	return returned
