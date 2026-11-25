@@ -21694,7 +21694,8 @@ s at the median; the 457 installs waited 192 frames at the mean and 231 at most 
 508 stalled passes; an install measured 11.8 us against its predicted 24.6 us. Proof of no behaviour
 change: the vegetation's tests (the scripted sequence's command digest included) unchanged; settle
 digests on the shipped Kuopio (`turns,pan,zoom,jump,trip`, 14 points, one run a side) equal to `dev`
-in every family at every point but point 10's vegetation band flags (`VEG-34`: the round's value is
+in every family at every point but two known run-to-run variations of `dev` itself: point 9's terrain
+and water steps (`TERRAIN-45`) and point 10's vegetation band flags (`VEG-34`: the round's value is
 the one an earlier `dev` control produced in round L1b); the terrain goldens untouched (no patch
 layer code changed).
 
