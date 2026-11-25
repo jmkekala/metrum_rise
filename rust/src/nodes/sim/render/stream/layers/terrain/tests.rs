@@ -20,6 +20,7 @@ const COSTS: UnitCosts = UnitCosts {
     build_us: 200.0,
     lod_us: 15.0,
     free_us: 10.0,
+    release_us: 10.0,
 };
 
 struct FixedClock;
@@ -39,6 +40,11 @@ struct Scripts {
     activations: Vec<(PatchKey, u8)>,
     lod_changes: Vec<(PatchKey, u8)>,
     blocked: bool,
+    // `TERRAIN-41` B1: nodes built (activations of unbuilt patches and prewarm builds), patches
+    // released, and every call in order.
+    builds: usize,
+    released: Vec<PatchKey>,
+    calls: Vec<(u8, PatchKey)>,
 }
 
 impl PatchExecutor for Scripts {
@@ -52,15 +58,27 @@ impl PatchExecutor for Scripts {
             return (Activation::Blocked, -1);
         }
         assert!(self.resident.insert(key, step).is_none(), "{key:?} twice");
-        self.built.insert(key);
+        self.builds += usize::from(self.built.insert(key));
         self.activations.push((key, step));
+        self.calls.push((b'a', key));
         (Activation::Done, 0)
     }
     fn deactivate(&mut self, key: PatchKey) {
         assert!(self.resident.remove(&key).is_some());
+        self.calls.push((b'h', key));
     }
     fn build(&mut self, key: PatchKey, _step: u8) -> Option<i64> {
-        self.built.insert(key).then_some(0)
+        self.calls.push((b'b', key));
+        let built = self.built.insert(key);
+        self.builds += usize::from(built);
+        built.then_some(0)
+    }
+    fn release(&mut self, key: PatchKey) -> Release {
+        assert!(!self.resident.contains_key(&key), "{key:?} released while drawn");
+        assert!(self.built.remove(&key), "{key:?} released unbuilt");
+        self.released.push(key);
+        self.calls.push((b'r', key));
+        Release::Done
     }
     fn set_lod(&mut self, key: PatchKey, step: u8) {
         *self.resident.get_mut(&key).unwrap() = step;
@@ -600,4 +618,176 @@ fn the_requested_count_is_the_requests_without_news() {
     assert_eq!(layer.requested_count(), scripts.requested.len());
     layer.reset(Some(GRID));
     assert_eq!(layer.requested_count(), 0);
+}
+
+// `TERRAIN-41` B1: the budget's keep, release and fill, on the 60 km world's layout (117 x 117
+// patches of 64 cells of 8 m), where the wanted square at 800 m is a fraction of the grid.
+const WIDE: PatchGrid = PatchGrid {
+    cols: 117,
+    rows: 117,
+    interval: 64,
+    cell: 8.0,
+    world: [59904.0, 59904.0],
+};
+
+// One frame on `WIDE` at `eye` with `places` (none: no budget) and a frame budget of
+// `budget_us`; payloads arrive the frame after their request.
+fn wide_frame(
+    layer: &mut PatchStream,
+    scripts: &mut Scripts,
+    eye: [f32; 3],
+    budget_us: f64,
+) -> PatchWork {
+    layer.set_square(WIDE.target(eye, 1.0e6, false));
+    let mut budget = FrameBudget::new(budget_us);
+    let work = layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, scripts);
+    deliver(layer, scripts);
+    let _ = layer.take_changes().count();
+    let _ = layer.take_generations().count();
+    let _ = layer.take_released().count();
+    work
+}
+
+fn wide_layer(places: Option<u64>) -> PatchStream {
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(WIDE));
+    layer.set_places(places);
+    layer
+}
+
+// A flight across the grid at 800 m, a turn of the eye's height, and a 20 km jump and back.
+fn wide_walk() -> Vec<[f32; 3]> {
+    let mut eyes = Vec::new();
+    for step in 0..160 {
+        eyes.push([-12000.0 + step as f32 * 120.0, 800.0, -3000.0]);
+    }
+    for step in 0..40 {
+        eyes.push([7200.0, 800.0 + step as f32 * 20.0, -3000.0]);
+    }
+    for _ in 0..60 {
+        eyes.push([7200.0, 1600.0, 17000.0]);
+    }
+    for _ in 0..60 {
+        eyes.push([7200.0, 1600.0, -3000.0]);
+    }
+    eyes
+}
+
+fn settle(layer: &mut PatchStream, scripts: &mut Scripts, eye: [f32; 3], budget_us: f64) {
+    for _ in 0..4000 {
+        wide_frame(layer, scripts, eye, budget_us);
+        if !layer.has_pending_work() && layer.fill_left() == 0 && layer.releasable.is_empty() {
+            return;
+        }
+    }
+    panic!("never settled");
+}
+
+#[test]
+fn a_whole_grid_budget_fills_once_then_builds_and_releases_nothing() {
+    let mut layer = wide_layer(Some(u64::MAX));
+    let mut plain = wide_layer(None);
+    let (mut scripts, mut plain_scripts) = (Scripts::default(), Scripts::default());
+    let start = [-12000.0, 800.0, -3000.0];
+    settle(&mut layer, &mut scripts, start, f64::INFINITY);
+    assert_eq!(layer.built_count(), (WIDE.cols * WIDE.rows) as usize, "the fill builds the grid");
+    assert_eq!(layer.release_rect(), None);
+    settle(&mut plain, &mut plain_scripts, start, f64::INFINITY);
+    let builds = scripts.builds;
+    for (step, eye) in wide_walk().into_iter().enumerate() {
+        wide_frame(&mut layer, &mut scripts, eye, 2000.0);
+        wide_frame(&mut plain, &mut plain_scripts, eye, f64::INFINITY);
+        assert_eq!(scripts.builds, builds, "frame {step}: a build after the fill");
+        assert!(scripts.released.is_empty(), "frame {step}: a release");
+    }
+    settle(&mut layer, &mut scripts, [7200.0, 1600.0, -3000.0], 2000.0);
+    // What is drawn is what a layer without a budget draws.
+    assert_eq!(scripts.resident, plain_scripts.resident);
+}
+
+#[test]
+fn the_smallest_budget_keeps_its_places_and_releases_beyond_the_ring() {
+    let start = [-12000.0, 800.0, -3000.0];
+    let square = WIDE.target(start, 1.0e6, false);
+    let ring = WIDE.widen(square, RELEASE_RING);
+    // The wanted square and its release ring, no more (`K` = 0).
+    let places = ((ring[2] - ring[0] + 1) * (ring[3] - ring[1] + 1)) as u64;
+    let mut layer = wide_layer(Some(places));
+    let mut plain = wide_layer(None);
+    let (mut scripts, mut plain_scripts) = (Scripts::default(), Scripts::default());
+    settle(&mut layer, &mut scripts, start, f64::INFINITY);
+    assert_eq!(layer.keep().map(|keep| (keep.ring, keep.overrun)), Some((0, false)));
+    for budget_us in [f64::INFINITY, 1000.0] {
+        for (step, eye) in wide_walk().into_iter().enumerate() {
+            let work = wide_frame(&mut layer, &mut scripts, eye, budget_us);
+            wide_frame(&mut plain, &mut plain_scripts, eye, f64::INFINITY);
+            assert!(layer.built_count() as u64 <= places, "frame {step}: {} built", layer.built_count());
+            assert_eq!(layer.built_count(), scripts.built.len());
+            // In a frame where a hole waits, a release is a build's donor only.
+            if layer.pending()[0] > 0 || work.holes_deferred > 0 {
+                assert_eq!(work.releases, work.donors, "frame {step}");
+            }
+        }
+        let eye = [7200.0, 1600.0, -3000.0];
+        settle(&mut layer, &mut scripts, eye, budget_us);
+        settle(&mut plain, &mut plain_scripts, eye, f64::INFINITY);
+        // Settled, every built patch lies in the release rectangle, and the drawn set is the
+        // one without a budget.
+        let release = layer.release_rect().expect("a budget releases");
+        assert!(scripts.built.iter().all(|key| {
+            key[0] >= release[0] && key[1] >= release[1] && key[0] <= release[2] && key[1] <= release[3]
+        }));
+        assert_eq!(scripts.resident, plain_scripts.resident);
+        assert!(!scripts.released.is_empty(), "the walk released nothing");
+    }
+}
+
+#[test]
+fn a_wobble_across_a_boundary_builds_and_frees_nothing_after_its_first_cycle() {
+    // 4,000 places: a keep ring of a few patches. The eye wobbles within one patch of a patch
+    // boundary (x = 0 is a boundary of the 512 m lattice).
+    let mut layer = wide_layer(Some(4000));
+    let mut scripts = Scripts::default();
+    let mut walk = Walk(0x3c6e_f372_fe94_f82b);
+    let eye_at = |walk: &mut Walk| [((walk.next() - 0.5) * 1024.0) as f32, 800.0, 100.0];
+    for _ in 0..400 {
+        let eye = eye_at(&mut walk);
+        wide_frame(&mut layer, &mut scripts, eye, f64::INFINITY);
+    }
+    settle(&mut layer, &mut scripts, [0.0, 800.0, 100.0], f64::INFINITY);
+    let (builds, released) = (scripts.builds, scripts.released.len());
+    for _ in 0..400 {
+        let eye = eye_at(&mut walk);
+        wide_frame(&mut layer, &mut scripts, eye, f64::INFINITY);
+    }
+    assert_eq!((scripts.builds, scripts.released.len()), (builds, released));
+}
+
+#[test]
+fn the_same_eyes_give_the_same_units_and_a_still_frame_does_nothing() {
+    let run = || {
+        let mut layer = wide_layer(Some(3500));
+        let mut scripts = Scripts::default();
+        for eye in wide_walk() {
+            wide_frame(&mut layer, &mut scripts, eye, 1000.0);
+        }
+        (layer, scripts)
+    };
+    let (mut layer, mut scripts) = run();
+    let (_, again) = run();
+    assert!(scripts.calls.iter().any(|call| call.0 == b'r'), "the walk released nothing");
+    assert_eq!(scripts.calls, again.calls);
+    let eye = [7200.0, 1600.0, -3000.0];
+    settle(&mut layer, &mut scripts, eye, 1000.0);
+    let capacity = (layer.releasable.capacity(), layer.release_busy.capacity(), layer.prewarm.capacity());
+    let calls = scripts.calls.len();
+    for _ in 0..30 {
+        let work = wide_frame(&mut layer, &mut scripts, eye, 1000.0);
+        assert_eq!((work.ring_cells, work.releases, work.builds, work.activations), (0, 0, 0, 0));
+    }
+    assert_eq!(scripts.calls.len(), calls);
+    assert_eq!(
+        (layer.releasable.capacity(), layer.release_busy.capacity(), layer.prewarm.capacity()),
+        capacity
+    );
 }

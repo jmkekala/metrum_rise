@@ -22,6 +22,13 @@
 //! - **Prewarm.** Once nothing is missing, queued or leaving, the water's patches one beyond
 //!   the terrain's square are built hidden, nearest first ([`Limits::halo`]); the terrain's
 //!   prewarm square is its wanted square, as its scripts' was in effect.
+//! - **Budget** (`TERRAIN-41` B1, [`budget`]). Given places ([`PatchStream::set_places`]), the
+//!   prewarm square is the keep rectangle (the fill: kept patches built hidden, nearest first,
+//!   once nothing else waits, releases included) and built patches beyond the release rectangle
+//!   are released, farthest first: in a frame of holes only as a hole build's donor (released
+//!   at once inside the build's price, so a burst releases as fast as it builds), otherwise as a
+//!   unit of their own after the hides at a fixed price. The water keeps and releases with the
+//!   terrain (`StreamNode`). Without places the layer keeps its own halo and releases nothing.
 //!
 //! The units run in the scheduler's order (`schedule::Class`): holes in view, holes within the
 //! near ring (the 2 km of `TERRAIN-15`'s hand-over), other holes, level changes in view, other
@@ -35,8 +42,10 @@
 use super::super::rings::{Cell, Lattice, RingBand, RingSet};
 use super::super::schedule::{Class, Clock, FrameBudget};
 
+mod budget;
 mod units;
 
+pub(crate) use budget::{Keep, RELEASE_RING, keep, place_bytes, places};
 pub(crate) use units::{UNIT_KIND_NAMES, UNIT_KINDS, UnitKind, UnitTimes};
 
 /// The scripts' patch grid: `terrain.gd`'s layout (`get_terrain_patch_layout`) and world size.
@@ -263,6 +272,12 @@ pub(crate) struct UnitCosts {
     pub(crate) lod_us: f64,
     /// Hiding a patch that left.
     pub(crate) free_us: f64,
+    /// Releasing a kept patch outside the budget's release rectangle (`TERRAIN-41` B1): its
+    /// node, material and textures back to the pool. Priced at its 95th percentile on the 60 km
+    /// flight at a 256 MB budget: terrain 155-170 us (mean 114), water 137-149 us (mean 68, its
+    /// mesh cache's entries going with it). A release that runs as a build's donor is charged
+    /// inside the build's price.
+    pub(crate) release_us: f64,
 }
 
 /// Terrain's unit costs, measured on Kuopio's load (`RENDER-32-M` record): a build (a height
@@ -278,6 +293,7 @@ pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
     build_us: 200.0,
     lod_us: 20.0,
     free_us: 40.0,
+    release_us: 160.0,
 };
 /// Water's unit costs, measured as terrain's: an activation that builds the node (a depth image
 /// and texture, a material) takes 0.064 ms at the median, 0.21 ms at most.
@@ -286,6 +302,7 @@ pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
     build_us: 120.0,
     lod_us: 20.0,
     free_us: 30.0,
+    release_us: 140.0,
 };
 
 /// The post-load window's budget for the patch units, microseconds (`RENDER-32-M`): from a world
@@ -306,6 +323,18 @@ pub(crate) enum Activation {
     Blocked,
 }
 
+/// What a release did (`TERRAIN-41` B1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Release {
+    /// The patch is not built any more (released, or it had no node).
+    Done,
+    /// Not this patch now (a commit of its own is staged or its own request is in flight): the
+    /// next candidate may go.
+    Busy,
+    /// A network publication is pending: no release this frame.
+    Blocked,
+}
+
 /// What executes a layer's units: the scripts' pooled nodes (`terrain.gd`, `water.gd`) in the
 /// game, a recorder in tests.
 pub(crate) trait PatchExecutor {
@@ -323,6 +352,9 @@ pub(crate) trait PatchExecutor {
     fn build(&mut self, key: PatchKey, step: u8) -> Option<i64>;
     /// Gives resident `key` the mesh of `step`.
     fn set_lod(&mut self, key: PatchKey, step: u8);
+    /// Releases built, hidden `key`: its node, material and textures go back to the pool. Calls
+    /// nothing back; what the core must know is the answer.
+    fn release(&mut self, key: PatchKey) -> Release;
 }
 
 // Per-patch flags.
@@ -399,6 +431,10 @@ pub(crate) struct PatchWork {
     /// Of them holes (any class; a hole skipped for its payload or behind a blocked activation
     /// is not counted): what the graded book's builds wait behind (`TERRAIN-41` L2).
     pub(crate) holes_deferred: usize,
+    /// Kept patches released (`TERRAIN-41` B1), of them `donors` as a hole build's donor.
+    pub(crate) releases: usize,
+    /// Releases that ran as a build's donor in a frame of holes.
+    pub(crate) donors: usize,
     /// Units run by [`UnitKind`] (`TERRAIN-41` L1).
     pub(crate) unit_count: [usize; UNIT_KINDS],
     /// Their measured microseconds by kind.
@@ -435,6 +471,23 @@ pub(crate) struct PatchStream {
     resident: usize,
     // Patches marked requested: asked for, no news yet (`TERRAIN-35`'s guard).
     requested: usize,
+    // Built patches (`BUILT`), and the budget's state (`TERRAIN-41` B1): the places it holds
+    // (none: the layer's own prewarm halo, no release), the keep it gives about the square, the
+    // release rectangle (none: nothing is released), the built patches that may lie outside it
+    // (stale entries filtered when used; nearest first after `sort_releasable`, so the farthest
+    // pops off the end) and whether that list needs sorting.
+    built: usize,
+    places: Option<u64>,
+    keep: Option<Keep>,
+    release: Option<[i32; 4]>,
+    releasable: Vec<u32>,
+    releasable_dirty: bool,
+    // Built patches released since the last take (their surface generation goes, -1).
+    released: Vec<PatchKey>,
+    // Candidates a release found busy this frame (scratch, returned to the list at its end).
+    release_busy: Vec<u32>,
+    // The other layer's holes wait: releases run only as donors.
+    releases_held: bool,
     // The wanted square (terrain) and the prewarm square.
     square: Option<[i32; 4]>,
     halo: Option<[i32; 4]>,
@@ -484,6 +537,15 @@ impl PatchStream {
             extra: 0,
             resident: 0,
             requested: 0,
+            built: 0,
+            places: None,
+            keep: None,
+            release: None,
+            releasable: Vec::new(),
+            releasable_dirty: false,
+            released: Vec::new(),
+            release_busy: Vec::new(),
+            releases_held: false,
             square: None,
             halo: None,
             prewarm_dirty: false,
@@ -521,6 +583,7 @@ impl PatchStream {
             &mut self.mismatched,
             &mut self.queue,
             &mut self.prewarm,
+            &mut self.releasable,
         ] {
             list.clear();
             list.reserve(len);
@@ -556,6 +619,12 @@ impl PatchStream {
         self.extra = 0;
         self.resident = 0;
         self.requested = 0;
+        self.built = 0;
+        self.keep = None;
+        self.release = None;
+        self.releasable_dirty = false;
+        self.released.clear();
+        self.released.reserve(len);
         self.square = None;
         self.halo = None;
         self.prewarm_dirty = false;
@@ -576,6 +645,12 @@ impl PatchStream {
     /// builds do not take the frames the terrain's holes need).
     pub(crate) fn hold_prewarm(&mut self, held: bool) {
         self.prewarm_held = held;
+    }
+
+    /// Holds the releases that are not a build's donor back while the other patch layer's holes
+    /// wait (`TERRAIN-41` B1: no hole of either layer waits behind a release).
+    pub(crate) fn hold_releases(&mut self, held: bool) {
+        self.releases_held = held;
     }
 
     /// The grid, once a world is set.
@@ -606,6 +681,39 @@ impl PatchStream {
     /// count against their own. `O(1)`.
     pub(crate) fn requested_count(&self) -> usize {
         self.requested
+    }
+
+    /// Built patches (resident or kept). `O(1)`.
+    pub(crate) fn built_count(&self) -> usize {
+        self.built
+    }
+
+    /// The budget's keep about the wanted square (`TERRAIN-41` B1; none without a budget).
+    pub(crate) fn keep(&self) -> Option<Keep> {
+        self.keep
+    }
+
+    /// The release rectangle: built patches outside it are released (none: nothing is).
+    pub(crate) fn release_rect(&self) -> Option<[i32; 4]> {
+        self.release
+    }
+
+    /// Patches whose fill (prewarm) build is still to come: unbuilt, not refused, in the
+    /// prewarm square. `O(prewarm square)`: a status read, not a frame's.
+    pub(crate) fn fill_left(&self) -> usize {
+        let (Some(grid), Some(halo)) = (self.grid, self.halo) else {
+            return 0;
+        };
+        (halo[1]..=halo[3])
+            .flat_map(|z| (halo[0]..=halo[2]).map(move |x| [x, z]))
+            .filter(|&key| self.flags[grid.index(key)] & (BUILT | REFUSED) == 0)
+            .count()
+    }
+
+    /// The built patches released since the last call; taken by the caller (their surface
+    /// generation goes, as when a script frees a node itself).
+    pub(crate) fn take_released(&mut self) -> std::vec::Drain<'_, PatchKey> {
+        self.released.drain(..)
     }
 
     /// Whether the layer has work left that a settled view waits for (prewarm excluded, as the
@@ -681,14 +789,14 @@ impl PatchStream {
         if news == Payload::Refused && flags & (WANTED | RESIDENT | REFUSED) == WANTED {
             self.refused += 1;
         }
+        // The prewarm list keeps its order: news changes no patch's membership (a refused
+        // one is skipped when reached), and a list as wide as the keep rectangle is not sorted
+        // again for every payload of a fill (`TERRAIN-41` B1).
         self.flags[index] = match news {
             Payload::Ready => flags | READY,
             Payload::Dropped => flags & !READY,
             Payload::Refused => (flags & !READY) | REFUSED,
         };
-        if flags & WANTED == 0 {
-            self.prewarm_dirty = true;
-        }
     }
 
     /// The script freed `key`'s node itself (a failed upload): it is neither built nor
@@ -698,11 +806,24 @@ impl PatchStream {
             return;
         };
         let index = grid.index(key);
-        self.flags[index] &= !(BUILT | READY);
         if self.flags[index] & RESIDENT != 0 {
             self.set_resident(index, false);
         }
+        self.set_built(index, false);
+        self.flags[index] &= !READY;
         self.prewarm_dirty = true;
+    }
+
+    // Marks `index` built or not, keeping the count. `O(1)`.
+    fn set_built(&mut self, index: usize, built: bool) {
+        let was = self.flags[index] & BUILT != 0;
+        if built && !was {
+            self.flags[index] |= BUILT;
+            self.built += 1;
+        } else if !built && was {
+            self.flags[index] &= !BUILT;
+            self.built -= 1;
+        }
     }
 
     /// Sets whether `key` is wanted (water: terrain's residency). `O(1)`.
@@ -765,7 +886,8 @@ impl PatchStream {
         let flags = self.flags[index];
         let wanted = flags & WANTED != 0;
         if resident {
-            self.flags[index] |= RESIDENT | BUILT;
+            self.set_built(index, true);
+            self.flags[index] |= RESIDENT;
             self.flags[index] &= !READY;
             self.resident += 1;
             if wanted {
@@ -824,7 +946,9 @@ impl PatchStream {
             return;
         }
         self.square = Some(square);
-        self.set_halo(Some(grid.widen(square, self.limits.halo)));
+        // The fill's order is nearest the eye: sorted again when the fill next runs.
+        self.prewarm_dirty = true;
+        self.apply_keep(grid, square);
         if let Some(old) = old {
             for_each_in_difference(old, square, |x, z| {
                 self.mark_wanted(grid.index([x, z]), false);
@@ -839,6 +963,140 @@ impl PatchStream {
                 }
             }
         }
+    }
+
+    /// The budget's places (`TERRAIN-41` B1; none: no budget, the layer's own prewarm halo and no
+    /// release; `u64::MAX`: every patch fits). The keep and release rectangles follow at once.
+    /// `O(K)`, plus the release strips (`set_release`).
+    pub(crate) fn set_places(&mut self, places: Option<u64>) {
+        if self.places == places {
+            return;
+        }
+        self.places = places;
+        if let (Some(grid), Some(square)) = (self.grid, self.square) {
+            self.apply_keep(grid, square);
+        }
+    }
+
+    // The prewarm square and the release rectangle for `square`: the keep rectangle and its
+    // ring with a budget, the layer's own halo without. `O(K)` and the release strips.
+    fn apply_keep(&mut self, grid: PatchGrid, square: [i32; 4]) {
+        let Some(places) = self.places else {
+            self.keep = None;
+            self.set_halo(Some(grid.widen(square, self.limits.halo)));
+            self.set_release(None);
+            return;
+        };
+        let kept = keep(&grid, square, places);
+        self.keep = Some(kept);
+        self.set_halo(Some(grid.widen(square, kept.ring.max(self.limits.halo))));
+        // Every patch fits: nothing is released.
+        let release = (places != u64::MAX).then(|| grid.widen(square, kept.ring + RELEASE_RING));
+        self.set_release(release);
+    }
+
+    /// Sets the release rectangle (none: nothing is released). The built patches of the strips
+    /// that leave it become candidates. `O(boundary patches)` for a move, `O(old rectangle)` for a
+    /// jump; nothing when it holds.
+    pub(crate) fn set_release(&mut self, release: Option<[i32; 4]>) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        if self.release == release {
+            return;
+        }
+        let whole = [0, 0, grid.cols - 1, grid.rows - 1];
+        let old = self.release.unwrap_or(whole);
+        let new = release.unwrap_or(whole);
+        self.release = release;
+        let mut found = false;
+        for_each_in_difference(old, new, |x, z| {
+            let index = grid.index([x, z]);
+            if self.flags[index] & BUILT != 0 {
+                self.releasable.push(index as u32);
+                found = true;
+            }
+        });
+        self.releasable_dirty |= found;
+    }
+
+    // Whether `index` lies outside the release rectangle.
+    fn outside_release(&self, grid: PatchGrid, index: usize) -> bool {
+        self.release.is_some_and(|rect| {
+            let [x, z] = grid.key(index);
+            x < rect[0] || z < rect[1] || x > rect[2] || z > rect[3]
+        })
+    }
+
+    // Whether `index` may be released now: built and outside the release rectangle (so not
+    // wanted; a resident one is still leaving and is hidden first).
+    fn releasable(&self, grid: PatchGrid, index: usize) -> bool {
+        self.flags[index] & BUILT != 0 && self.outside_release(grid, index)
+    }
+
+    // The candidates without stale entries, nearest first (so the farthest pops off the end),
+    // then by index. `O(R log R)` for R candidates, only when the list changed.
+    fn sort_releasable(&mut self, grid: PatchGrid, distance_sq: &impl Fn(usize) -> f64) {
+        if !self.releasable_dirty {
+            return;
+        }
+        self.releasable_dirty = false;
+        let mut list = std::mem::take(&mut self.releasable);
+        list.retain(|&index| self.releasable(grid, index as usize));
+        list.sort_unstable();
+        list.dedup();
+        list.sort_by(|&a, &b| {
+            distance_sq(a as usize)
+                .total_cmp(&distance_sq(b as usize))
+                .then(b.cmp(&a))
+        });
+        self.releasable = list;
+    }
+
+    // Releases the farthest candidate that goes, charged at `predicted_us` (0 inside a build's
+    // price). Returns whether one went, or `None` when a publication blocks every release this
+    // frame. `O(1)` amortised; a busy candidate is kept for a later frame.
+    fn release_one(
+        &mut self,
+        grid: PatchGrid,
+        budget: &mut FrameBudget,
+        clock: &impl Clock,
+        predicted_us: f64,
+        exec: &mut impl PatchExecutor,
+        busy: &mut Vec<u32>,
+    ) -> Option<bool> {
+        while let Some(index) = self.releasable.pop() {
+            let index = index as usize;
+            if !self.releasable(grid, index) {
+                continue;
+            }
+            let key = grid.key(index);
+            let start = clock.now_us();
+            if self.flags[index] & RESIDENT != 0 {
+                // Still drawn, beyond the release rectangle (a jump whose hides wait behind its
+                // holes): hidden first, inside the release's price, so a burst releases as fast
+                // as it builds.
+                exec.deactivate(key);
+                self.set_resident(index, false);
+            }
+            let done = exec.release(key);
+            self.account(budget, UnitKind::Release, predicted_us, clock.now_us() - start);
+            match done {
+                Release::Done => {
+                    self.set_built(index, false);
+                    self.flags[index] &= !READY;
+                    self.released.push(key);
+                    self.work.releases += 1;
+                    return Some(true);
+                }
+                Release::Busy => busy.push(index as u32),
+                Release::Blocked => {
+                    self.releasable.push(index as u32);
+                    return None;
+                }
+            }
+        }
+        Some(false)
     }
 
     /// Keeps `reserve_us` of the frame's budget from the level changes (the holes' reserve of
@@ -875,6 +1133,9 @@ impl PatchStream {
         let upgrade_reserve_us = self.upgrade_reserve_us;
         let mut blocked = false;
         let mut held = false;
+        let mut release_blocked = false;
+        let mut busy = std::mem::take(&mut self.release_busy);
+        busy.clear();
 
         // Holes, then level changes, nearest first inside their classes.
         self.order.clear();
@@ -971,6 +1232,17 @@ impl PatchStream {
                 held = true;
                 continue;
             }
+            if kind == UnitKind::Build && !release_blocked && !self.releasable.is_empty() {
+                // The donor rule (`TERRAIN-41` B1): a build first releases the farthest kept
+                // patch outside the release rectangle, inside the build's price, so its
+                // resources are built into at once and a burst releases as fast as it builds.
+                self.sort_releasable(grid, &distance_sq);
+                match self.release_one(grid, budget, clock, 0.0, exec, &mut busy) {
+                    Some(true) => self.work.donors += 1,
+                    Some(false) => {}
+                    None => release_blocked = true,
+                }
+            }
             let step = self.rule(grid, eye, index);
             let start = clock.now_us();
             let (done, generation) = exec.activate(key, step);
@@ -987,7 +1259,10 @@ impl PatchStream {
                     self.set_resident(index, true);
                     self.work.activations += 1;
                 }
-                Activation::NotReady => self.flags[index] &= !(READY | BUILT),
+                Activation::NotReady => {
+                    self.set_built(index, false);
+                    self.flags[index] &= !READY;
+                }
                 Activation::Blocked => blocked = true,
             }
         }
@@ -1015,6 +1290,11 @@ impl PatchStream {
             exec.deactivate(grid.key(index as usize));
             self.account(budget, UnitKind::Hide, self.costs.free_us, clock.now_us() - start);
             self.set_resident(index as usize, false);
+            if self.outside_release(grid, index as usize) {
+                // Kept, hidden, beyond the release rectangle (a jump): released later.
+                self.releasable.push(index);
+                self.releasable_dirty = true;
+            }
             freed += 1;
         }
         // The hides' own pushes were onto the emptied list; the rest wait, farthest first.
@@ -1024,10 +1304,46 @@ impl PatchStream {
         self.leaving = leaving;
         self.work.frees = freed;
 
-        // Prewarm once nothing else waits.
+        // Releases on their own (`TERRAIN-41` B1): after holes, level changes and hides, before
+        // the fill, at a fixed price, never as the frame's exempt first unit, and only while no
+        // hole of this layer waits (in a frame of holes a release is a build's donor). Farthest
+        // first. `O(released + R log R)` while candidates exist, nothing otherwise.
+        if !blocked
+            && !release_blocked
+            && !self.releases_held
+            && self.missing == self.refused
+            && !self.releasable.is_empty()
+        {
+            self.sort_releasable(grid, &distance_sq);
+            while !self.releasable.is_empty()
+                && (unbudgeted || budget.fits(self.costs.release_us))
+            {
+                match self.release_one(grid, budget, clock, self.costs.release_us, exec, &mut busy) {
+                    Some(true) => {}
+                    Some(false) => break,
+                    None => {
+                        release_blocked = true;
+                        break;
+                    }
+                }
+            }
+            if !self.releasable.is_empty() && !release_blocked {
+                self.work.deferred += 1;
+            }
+        }
+        // Busy candidates wait for a later frame.
+        if !busy.is_empty() {
+            self.releasable.extend_from_slice(&busy);
+            self.releasable_dirty = true;
+        }
+        self.release_busy = busy;
+
+        // Prewarm (the budget's fill) once nothing else waits, releases included: a fill never
+        // builds past the places the releases still have to give back.
         if !blocked
             && !held
             && !self.prewarm_held
+            && self.releasable.is_empty()
             && self.missing == 0
             && self.extra == 0
             && self.queue.is_empty()
@@ -1108,7 +1424,7 @@ impl PatchStream {
             self.account(budget, UnitKind::Prewarm, self.costs.build_us, clock.now_us() - start);
             self.flags[index] &= !READY;
             if let Some(generation) = built {
-                self.flags[index] |= BUILT;
+                self.set_built(index, true);
                 self.step[index] = step;
                 self.generations.push((key, generation));
                 self.work.builds += 1;
@@ -1140,8 +1456,23 @@ impl PatchStream {
                 }
             }
         } else {
+            // The prewarm list is nearest last: walked from the end, it stops once the frame's
+            // request limit is reached counting the prewarm payloads already asked for or held
+            // and not yet built, so a fill as wide as the keep rectangle holds at most that many
+            // payloads and a frame visits `O(requests)` entries, not the whole list (`TERRAIN-41`
+            // B1); it takes the nearest by the list's last sort.
+            let mut pending = 0;
             for &index in self.prewarm.iter().rev() {
-                if self.flags[index as usize] & NEEDS == 0 {
+                if pending + wanting.len() >= self.limits.requests {
+                    break;
+                }
+                let flags = self.flags[index as usize];
+                if flags & (BUILT | REFUSED) != 0 {
+                    continue;
+                }
+                if flags & (READY | REQUESTED) != 0 {
+                    pending += 1;
+                } else {
                     wanting.push((Class::Hole, distance_sq(index as usize), index));
                 }
             }

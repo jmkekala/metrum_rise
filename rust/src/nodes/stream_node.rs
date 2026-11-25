@@ -47,8 +47,8 @@ use crate::nodes::sim::render::stream::layers::roads::{
 };
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
-    POST_LOAD_PATCH_BUDGET_US, TERRAIN_COSTS, TERRAIN_LIMITS, UNIT_KIND_NAMES, UNIT_KINDS,
-    WATER_COSTS, WATER_LIMITS,
+    POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS, UNIT_KIND_NAMES, UNIT_KINDS,
+    WATER_COSTS, WATER_LIMITS, place_bytes, places,
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
@@ -132,6 +132,11 @@ pub struct StreamNode {
     patch_holes_deferred: bool,
     terrain_work: PatchWork,
     water_work: PatchWork,
+    // The base terrain's memory budget, bytes (`TERRAIN-41` B1; none: every patch fits), and
+    // the extras the scripts report a layer (terrain, water): bytes of spare textures and water
+    // meshes, and resource sets in their pools (each a place of its layer).
+    terrain_budget: Option<u64>,
+    patch_extras: [[i64; 2]; 2],
     // A load's road chunk hydration (`RENDER-32-P`) and its executor, budget and frame.
     roads: RoadHydration,
     road_scripts: Option<Gd<Node>>,
@@ -213,6 +218,8 @@ impl INode for StreamNode {
             patch_holes_deferred: false,
             terrain_work: PatchWork::default(),
             water_work: PatchWork::default(),
+            terrain_budget: None,
+            patch_extras: [[0; 2]; 2],
             roads: RoadHydration::default(),
             road_scripts: None,
             road_budget: FrameBudget::new(ROAD_HYDRATION_BUDGET_US),
@@ -780,6 +787,49 @@ impl StreamNode {
         self.water_scripts = water;
     }
 
+    /// The base terrain's memory budget (`TERRAIN-41` B1), megabytes of 10^6 bytes; 0 or less:
+    /// every patch fits (the default). Counted are the kept base terrain's texels (heights, land
+    /// cover, water depth) and the extras the scripts report; the keep and release rectangles
+    /// follow at the next frame.
+    #[func]
+    pub fn set_terrain_budget_mb(&mut self, megabytes: f64) {
+        self.terrain_budget = (megabytes > 0.0).then_some((megabytes * 1e6) as u64);
+    }
+
+    /// A layer's extras for the budget (`TERRAIN-41` B1), as totals: `layer` 0 terrain, 1 water;
+    /// `bytes` of spare textures and water meshes its built patches hold; `pooled` resource sets
+    /// in its pool (each counted as a place of the layer until freed). `O(1)`.
+    #[func]
+    pub fn set_patch_extras(&mut self, layer: i64, bytes: i64, pooled: i64) {
+        if let Some(extras) = usize::try_from(layer).ok().and_then(|layer| self.patch_extras.get_mut(layer)) {
+            *extras = [bytes.max(0), pooled.max(0)];
+        }
+    }
+
+    /// The base terrain's budget now (`TERRAIN-41` B1, the debug view's and the benchmark's):
+    /// `budget_bytes` (-1: every patch fits), `counted_bytes`, `extra_bytes`, `places`, `ring`
+    /// (`K`), `overrun`, `terrain_built`, `water_built`, `fill_left`, `release_rect`.
+    /// `O(prewarm square)` for `fill_left`: a status read, not a frame's.
+    #[func]
+    pub fn get_terrain_budget(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        out.set("budget_bytes", self.terrain_budget.map_or(-1, |bytes| bytes as i64));
+        out.set("extra_bytes", self.patch_extra_bytes() as i64);
+        out.set("counted_bytes", self.counted_bytes() as i64);
+        out.set("terrain_built", self.terrain.built_count() as i64);
+        out.set("water_built", self.water.built_count() as i64);
+        out.set("fill_left", self.terrain.fill_left() as i64);
+        if let Some(keep) = self.terrain.keep() {
+            out.set("places", i64::try_from(keep.places).unwrap_or(-1));
+            out.set("ring", keep.ring as i64);
+            out.set("overrun", keep.overrun);
+        }
+        if let Some([a, b, c, d]) = self.terrain.release_rect() {
+            out.set("release_rect", Vector4i::new(a, b, c, d));
+        }
+        out
+    }
+
     /// The `terrain_force_full_world` and `terrain_force_lod1` debug modes.
     #[func]
     pub fn set_terrain_modes(&mut self, full_world: bool, force_lod1: bool) {
@@ -888,7 +938,7 @@ impl StreamNode {
 
     /// The terrain's and the water's patch units by kind since the last call, then starts over
     /// (`TERRAIN-41` L1, the stream benchmark's samples): `<layer>_<kind>` (kinds `show`,
-    /// `build`, `hide`, `step`, `prewarm`) -> `{count, mean_us, p50_us, p95_us, p99_us, max_us}`,
+    /// `build`, `hide`, `step`, `prewarm`, `release`) -> `{count, mean_us, p50_us, p95_us, p99_us, max_us}`,
     /// the percentiles as one-microsecond bucket edges. `O(kinds x buckets)`.
     #[func]
     pub fn take_patch_unit_times(&mut self) -> VarDictionary {
@@ -1336,6 +1386,29 @@ impl StreamNode {
 }
 
 impl StreamNode {
+    // The extras' bytes (`TERRAIN-41` B1): reported bytes, and each pooled set a place of its
+    // layer. `O(1)`.
+    fn patch_extra_bytes(&self) -> u64 {
+        let Some(grid) = self.terrain.grid() else {
+            return 0;
+        };
+        let place = place_bytes(&grid);
+        (0..2)
+            .map(|layer| self.patch_extras[layer][0] as u64 + self.patch_extras[layer][1] as u64 * place[layer])
+            .sum()
+    }
+
+    // The bytes the budget counts: the built places of both layers and the extras. `O(1)`.
+    fn counted_bytes(&self) -> u64 {
+        let Some(grid) = self.terrain.grid() else {
+            return 0;
+        };
+        let [terrain, water] = place_bytes(&grid);
+        self.terrain.built_count() as u64 * terrain
+            + self.water.built_count() as u64 * water
+            + self.patch_extra_bytes()
+    }
+
     // The terrain and water patches' frame: the terrain's square from the view, its units, the
     // water's wanted set and halo from the terrain's residency, the water's units; the
     // vegetation's tiers follow the terrain's residency.
@@ -1354,6 +1427,12 @@ impl StreamNode {
             None => grid.target([0.0; 3], 0.0, true),
         };
         self.terrain.set_square(square);
+        // The budget's places (`TERRAIN-41` B1): the terrain's keep and release rectangles; the
+        // water keeps and releases with them. `O(K)` when the places changed, nothing otherwise.
+        let budget_places = places(&grid, self.terrain_budget, self.patch_extra_bytes());
+        self.terrain.set_places(Some(budget_places));
+        let water_ring = self.terrain.keep().map_or(0, |keep| keep.ring).max(WATER_LIMITS.halo);
+        self.water.set_release(self.terrain.release_rect());
         let planes = (self.terrain.has_pending_work() || self.water.has_pending_work())
             .then(|| self.camera_frustum())
             .flatten();
@@ -1390,8 +1469,9 @@ impl StreamNode {
         // the scripts drew it, and the water's first draw (its shader's first use) falls inside
         // the load like the terrain's.
         self.water
-            .set_halo(self.terrain.square().map(|square| grid.widen(square, WATER_LIMITS.halo)));
+            .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
         self.water.hold_prewarm(self.terrain.has_pending_work());
+        self.water.hold_releases(self.terrain.pending()[0] > 0);
         if let Some(scripts) = self.water_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {
@@ -1411,7 +1491,9 @@ impl StreamNode {
             self.patch_holes_deferred |= self.water_work.holes_deferred > 0;
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
+            self.water.take_released().for_each(drop);
         }
+        self.terrain.hold_releases(self.water.pending()[0] > 0);
         if let Some(scripts) = self.terrain_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {
@@ -1500,6 +1582,15 @@ impl StreamNode {
         for (key, generation) in self.terrain.take_generations() {
             self.residency.set_surface_generation(key, generation);
         }
+        // A released patch's generation goes, as when the script frees a node itself.
+        let mut book = self.graded.as_mut().map(|book| book.bind_mut());
+        for key in self.terrain.take_released() {
+            self.residency.set_surface_generation(key, -1);
+            if let Some(book) = book.as_mut() {
+                book.follow_generation(key, -1);
+            }
+        }
+        drop(book);
         let mut changed = false;
         for (key, resident) in self.terrain.take_changes() {
             self.water.set_wanted(key, resident);
@@ -1765,6 +1856,7 @@ impl StreamNode {
     }
 
     fn record_perf(&mut self) {
+        let counted = self.counted_bytes();
         let script = self.perf_script.get_or_insert_with(|| {
             ResourceLoader::singleton()
                 .load("res://scripts/core/perf_debug.gd")
@@ -1833,6 +1925,8 @@ impl StreamNode {
             let mut patches = VarDictionary::new();
             patches.set("units_ms", self.frame_patch_units_us / 1000.0);
             patches.set("post_load_window", self.post_load_window);
+            // The budget's counted bytes (`TERRAIN-41` B1).
+            patches.set("budget_counted_bytes", counted as i64);
             for (name, layer, work) in [
                 ("terrain", &self.terrain, self.terrain_work),
                 ("water", &self.water, self.water_work),
@@ -1853,6 +1947,9 @@ impl StreamNode {
                 patches.set(format!("{name}_requests"), work.requests as i64);
                 patches.set(format!("{name}_deferred"), work.deferred as i64);
                 patches.set(format!("{name}_holes_deferred"), work.holes_deferred as i64);
+                patches.set(format!("{name}_releases"), work.releases as i64);
+                patches.set(format!("{name}_donors"), work.donors as i64);
+                patches.set(format!("{name}_built"), layer.built_count() as i64);
                 // Units by kind (`TERRAIN-41` L1): count, measured and longest microseconds.
                 for kind in 0..UNIT_KINDS {
                     let kind_name = UNIT_KIND_NAMES[kind];
@@ -2128,6 +2225,18 @@ impl PatchExecutor for ScriptExecutor<'_> {
             "stream_set_lod",
             &[Vector2i::new(key[0], key[1]).to_variant(), i64::from(step).to_variant()],
         );
+    }
+
+    // The script answers 0 released, 1 nothing built, 2 a publication is pending, 3 busy.
+    fn release(&mut self, key: TerrainKey) -> Release {
+        let done = self
+            .0
+            .call("stream_release", &[Vector2i::new(key[0], key[1]).to_variant()]);
+        match done.try_to::<i64>().unwrap_or(2) {
+            0 | 1 => Release::Done,
+            3 => Release::Busy,
+            _ => Release::Blocked,
+        }
     }
 }
 

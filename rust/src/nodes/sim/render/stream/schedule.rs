@@ -103,6 +103,12 @@ impl FrameBudget {
         self.units == 0 || self.spent_us() + predicted_us <= self.budget_us
     }
 
+    /// Whether a unit predicted at `predicted_us` fits the room left, never as an exempt first
+    /// unit (a release, `TERRAIN-41` B1: it never takes a frame the budget has no room in).
+    pub(crate) fn fits(&self, predicted_us: f64) -> bool {
+        self.spent_us() + predicted_us <= self.budget_us
+    }
+
     /// This owner's account inside the frame's account `frame`: the frame's spend so far, its
     /// own `units` (so its first unit of the frame still runs).
     pub(crate) fn within(frame: &FrameBudget, units: u32) -> Self {

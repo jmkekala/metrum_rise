@@ -14,7 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
-const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
+/// Texels of neighbouring water each render patch depth texture carries beyond its own samples.
+pub(crate) const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
 const WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 
 /// One deterministic render-patch snapshot of visible water.

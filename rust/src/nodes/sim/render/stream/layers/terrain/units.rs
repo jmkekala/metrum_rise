@@ -18,12 +18,15 @@ pub(crate) enum UnitKind {
     Step,
     /// A prewarm build (hidden).
     Prewarm,
+    /// A release of a kept patch outside the budget's release rectangle (`TERRAIN-41` B1).
+    Release,
 }
 
 /// The unit kinds.
-pub(crate) const UNIT_KINDS: usize = 5;
+pub(crate) const UNIT_KINDS: usize = 6;
 /// The kinds' names in the perf record, in [`UnitKind`] order.
-pub(crate) const UNIT_KIND_NAMES: [&str; UNIT_KINDS] = ["show", "build", "hide", "step", "prewarm"];
+pub(crate) const UNIT_KIND_NAMES: [&str; UNIT_KINDS] =
+    ["show", "build", "hide", "step", "prewarm", "release"];
 
 // One-microsecond buckets; the last holds every unit at or above it.
 const BUCKETS: usize = 2048;
