@@ -209,14 +209,26 @@ also turns off the screen-space AA pass), `Shadows` (High, the default; Medium: 
 filter and penumbra over two unblended cascades instead of four, `RENDER-15`; or Low: plain PCF, two
 cascades, no cascade blending; stored as High 0, Low 1, Medium 2, so a settings file from before
 Medium keeps its choice), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
-9 km) and `Building detail` (Performance/Balanced/Quality; default Balanced), persisted in the
+9 km), `Building detail` (Performance/Balanced/Quality; default Balanced) and `Terrain memory`
+(`TERRAIN-41`: Automatic, the default, or 256 MB, 512 MB, 1,024 MB, Whole map; a target, not a
+hard limit, for how much of the map's base ground stays built after the camera leaves it, counted
+as the patches' height, land cover and water depth texels plus their spare textures, water meshes
+and pooled sets; the count can go briefly over it while the camera moves fast and returns within it
+once the view is in step. Automatic is 512 MB when `RenderingServer.get_video_adapter_type()`
+reports a discrete adapter and 256 MB otherwise; the Compatibility renderer and headless runs
+report none and get 256 MB; the card's memory is not read. Its label names the value it resolves
+to. Stored as the megabytes, 0 for Automatic, -1 for Whole map. Its row's wording awaits the user's
+review), persisted in the
 `graphics` section of `user://settings.cfg`. Apply takes effect live: frame settings through
-`GameSettings.apply_display_settings()`, shadows and view distance through the
-`graphics_settings` group (`SceneLighting`, `InputManager`), building detail through the
+`GameSettings.apply_display_settings()`, shadows, view distance and terrain memory through the
+`graphics_settings` group (`SceneLighting`, `InputManager`, the terrain renderer, whose stream node
+moves the built set to the new target through its fill and release units under the frame's install
+ledger), building detail through the
 building renderers without reimporting assets. Cancel discards pending edits and Reset
 proposes defaults. Detail uses the shared screen-size LOD policy, not asset-authored distance
 bands; it changes neither simulation nor visibility. Gameplay benchmarks
-(`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults.
+(`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults
+(terrain memory: Automatic, unless `METRUM_TERRAIN_BUDGET_MB` names a budget, 0 for every patch).
 These replace the former `METRUM_GFX` preset and its F8-F11 hotkeys.
 Display settings apply through the Options footer and on boot. `Mods` embeds the content-pack manager from
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
@@ -618,7 +630,7 @@ Both inspectors use `UIStyle.keep_keyboard_with_game` and shared title/section/a
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
 | Options | MainMenu `Options`, gameplay `File -> Options...` or the pause menu | `scripts/ui/options_menu.gd` *(implemented)* | In-UI overlay with Display and Mods tabs, footer-level apply/reset/cancel actions, and the last tab persisted through `user://settings.cfg`. |
-| Graphics | Options → Display | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Graphics | Options → Display | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance, building detail and terrain memory, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Interface (UI Scale) | Options → Display | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click a building's footprint with no active tool or while `SelectTool` is active (a direct hit through Rust's `pick_building_at`; a click on a road or open ground opens nothing, however near a building) | `scripts/ui/building_inspector.gd` *(implemented)*, card chrome in `scripts/ui/inspector_card.gd` | A borderless card (no OS title bar) with a 3 px top stripe in the building's accent (residential green, commercial blue, industrial amber, a utility the HUD accent). Header: the icon well (its utility service, a farm's field, an extractor's pit, else its zone), an uppercase eyebrow (zone, "Power utility", "Farm"), the name, then a chip row: level pips, the business status pill and a business's "Budget $X" (a home's households are a KPI). Then alerts as tinted banners (broken in red; deserted, rezoning and construction in yellow), then KPI tiles with meters: a business's Workers, Output, Stock (or Used power for a plant) and Today's profit (green or red, yesterday in the tooltip); a home's Households, Residents (an age-stacked meter with a children / adults / elders legend), Supplies and Money. Then pill tabs over dense key-value grids (four columns when every value is short, else two): People (a farm's residents, job slots when some are inactive, utility state and plant funding), Money (only what the header and KPIs leave out: profit yesterday, utility revenue, a home's money in all and lowest supplies, a farm household's money and supplies), Site (extraction-pit reserve/depletion or the farm field with Edit Field), Power (a plant's output and staffed capacity, its own use under an "Own use" heading; for any building "Used yesterday", local supply, imports and cost), Stock (inventory with daily input rates) and Parking (valid places and rejected ones; the tab carries a warning icon when any are rejected). Empty tabs are left out, the last tab picked stays picked for the next building in the session, and the window fits its height to the open tab. The header drags the card and × closes it; it is fitted to its content before it is placed beside the cursor (header labels clip with an ellipsis rather than wrap, so the placement sees the real height). One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. While its card is open the building is ringed on the map in the card's accent (`scripts/renderers/footprint_halo.gd`: the road selection's band around Rust's `footprint`, depth-tested so the building hides the far side). It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
 | Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane, route and latest trip failure (`DEBUG-06`). Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |

@@ -21069,7 +21069,10 @@ the shipped Kuopio's camera jump at 16-17 ms in its worst frame against `dev`'s 
 turns' maxima +3.3-3.7 ms and the far zoom-out's +3.5 ms, pooled over eight runs; here the turns
 and the far zoom-out are level with `dev` and the jump's worst frame is 11.7-12.4 ms (below). The
 rendered rows are diagnostic (the eight P-cores, 8 workers), not
-acceptance timing.
+acceptance timing. Landed on `dev` on 2026-11-25 with the user's acceptance of +0.36 ms at the
+60 km flight's frame median and +2.5 ms on the shipped Kuopio jump's one slow frame; the defects it
+named are rows `VEG-33` (the jump's frame, options A and B), `TERRAIN-50`, `WATER-08` and
+`RENDER-79`.
 
 **One order, with the budget's units in it.** `frame_layers` (`stream/layers/terrain.rs`) runs both
 patch layers as one frame, stated at the code:
@@ -21223,6 +21226,90 @@ points equal in residency and steps, graded, buildings, roads, parked and vegeta
 and their land cover differing by design (the fill), as between the two `dev` runs. The 30k pond (16 points): terrain and water residency and steps equal to round B1c's `dev` run at every point (the two earlier `dev` runs differ at point 8, `TERRAIN-45`); one graded tile differs at equal level and token from point 8 on, as between the `dev` runs (`TERRAIN-27`), and one is in its hysteresis band at point 4. The
 water mesh check: 0 mismatches at every point of every run. Drag probe: passes (`tools/graded_drag_probe.py`, budget 512 MB). Golden
 recordings replay (nothing recorded again). Level F (release test executables of `dev` `e06cfca08` and the branch): every metric level in the 30k 32x C B B C, the 1x day level or better, both 1x days pass the acceptance; in 32x three of the four rows on both sides miss the acceptance's worst unpreempted frame or p99.9 (rows the runner flags as noisy; the simulation rows run none of the patch frame).
+
+### Base terrain: the memory setting, the debug view and the trims (`TERRAIN-41` round B2, 2026-11-25)
+
+Round B2 of the item's plan (`PLAN-TERRAIN-41`), on `dev` `2288bedee`, with one fix the setting
+depended on first.
+
+**The 256 MB settle (part 0).** On the 60 km `flight_high` at 256 MB the settle after the turn took
+5.3-7.0 s against 4.8-4.9 on the control (round B1c). The per-frame records of `dev`'s 256 MB row
+showed why: while the counted bytes were over the budget, round B1's rule let the terrain's releases
+run in the room the frame left whatever waited (5 a frame at 160 us); the vegetation's installs,
+which come after the patch units in the stream node's pass, found no room (254 products waiting, none
+installed, for about 2.3 s); those waiting vegetation holes kept the install ledger's 1.0 ms hole
+reserve on, so the level changes ran one a frame (the exempt first) with 1,300 queued; only when the
+releases had brought the count under the budget did the vegetation install and the level changes run
+26 a frame. Fixed at the root: a release that is not a hole build's donor waits while the view waits
+for anything (a unit held back, a hole of its layer, the other layer's work, the vegetation), over
+the budget or not (`PatchStream::run_releases`). It still makes progress: once the view is in step
+nothing holds it, each frame with room releases at least one, the candidate list is finite and gains
+entries only when the square or the places move, and once it is empty every built patch lies inside
+the release rectangle, whose places fit the budget unless the view alone overruns it. The budget is a
+target: what this costs is the count's overshoot during the settle. One untimed run of the fixed
+library at 256 MB (load 3-8): settle after the turn 5.5 s, the counted bytes' worst frame 282.6 MB
+(+10.4 %, round B1's rule 273-275 MB) at the settle's end, back within the budget 0.7 s after the
+view was in step (`METRUM_STREAM_TAIL_FRAMES`, new). The 60 km map is a test map (the user,
+2026-11-25): its rows are report-only, and the overshoot is row `TERRAIN-52` with its options.
+Test: `over_the_budget_releases_wait_for_the_view_then_return_the_count_within_its_places` (replaces
+round B1's test of the old rule). `terrain_budget_save_test` now counts the stream node's releases,
+donors included (a donor keeps the built count level): 115 on its 20 MB walk, where the old rule's
+over-budget releases had made 972; the three saves stay equal.
+
+**The setting.** Options → Graphics, `Terrain memory`: Automatic, 256 MB, 512 MB, 1,024 MB, Whole map
+(the wording is for the user's review). Its hint: "A target for how much of the map stays loaded
+around the camera. More keeps places you have left ready to show again. Fast camera moves can go
+briefly over it." `GameSettings.KEY_TERRAIN_MEMORY` in the `graphics` section stores the megabytes,
+0 for Automatic and -1 for Whole map; an unknown value reads as Automatic.
+`GameSettings.get_terrain_memory_budget_mb()` resolves it for `StreamNode.set_terrain_budget_mb`
+(0: every patch fits). Automatic is 512 MB when `RenderingServer.get_video_adapter_type()` answers
+`RenderingDevice.DEVICE_TYPE_DISCRETE_GPU` and 256 MB otherwise; the call needs no rendering device:
+under Forward+ and Mobile it answers from the device (here `2`, discrete, an AMD Radeon RX 7900 XTX:
+512 MB), under the Compatibility renderer (OpenGL) and the headless display it answers
+`DEVICE_TYPE_OTHER` (`0`) on the same card, so those get 256 MB; the card's memory is not read
+(decision 4). The Automatic choice's label names its value (`Automatic (512 MB)`). The terrain
+renderer applies it at each world rebuild and through the `graphics_settings` group when Options
+applies; `METRUM_TERRAIN_BUDGET_MB` still overrides it, and benchmark runs read the setting's
+default as they read every graphics default. A change at run time moves the keep and release
+rectangles at the next frame; the releases (own class, never the exempt first unit) and the fill
+(prewarm units) then move the built set under the install ledger. `terrain_memory_setting_test`
+(in `./run.sh --test`) checks the round trip (settings file, pending, Apply, Reset, an unknown
+value), Automatic's value headless (256 MB), Options' Apply reaching the stream node, and on a 20 km
+blank world after the load's hand-over: every patch fits, then 45 MB (1,600 to 765 built against 775
+places), then every patch again (1,600), with no frame's predicted install
+ledger over 2.0 ms (worst 1,998 and 1,982 us predicted, 1,500 and 2,092 us measured: a unit's overrun).
+
+**Loading later.** The fill is the prewarm units under the per-frame ledger. A load-time preload
+(fill what fits before the map is shown) needs no new mechanism: the load's hold already runs the
+patch units without the frame budget (`set_terrain_load_settling(true)`), so a caller that keeps the
+hold until `get_terrain_budget().fill_left` is 0 fills to the budget at once; the benchmark's
+`METRUM_STREAM_WAIT_FILL=1` is that wait. With the whole 60 km map at 1,024 MB it made the load 31.8 s
+against 16.8 s (one untimed run).
+
+**The debug view.** `StreamNode.get_terrain_budget()` (and the perf channel's `terrain_stream` record
+as `budget_<field>`): the target, the counted bytes and their parts (`height_bytes`,
+`land_cover_bytes`, `water_depth_bytes` of the built places, `spare_bytes`, `water_mesh_bytes`,
+`pooled_bytes`), the places and keep ring, `overrun`, the wanted square (`wanted`, `wanted_side_m`),
+per layer drawn, built, kept (built, not drawn) and releases since the load; the status read adds
+`fill_left`, `release_rect` and the last frame's ledger. The debug console's `terrain` command prints
+them with what the target does not count (the mask pages, nodes, materials, the driver's own) and
+the engine's texture, buffer and video memory ([debug.md](debug.md)).
+
+**The trims.** A built terrain patch kept its payload (`last_patch_data`: height, mask and land cover
+bytes) and its upload image after the upload, 62,002 bytes of system memory a patch; a water patch
+its depth samples twice, 35,912. Now a patch keeps the payload's metadata only
+(`_payload_metadata`) and its upload image is cut to one texel once the texture holds the samples
+(`trim_upload_image`, the image object kept as the pool's and the spare's scratch). Readers of the
+dropped bytes: the road debug lines' height and depth statistics, now read back from the textures
+(a debug path); the level change's mesh, the graded book, the residency and the generations read
+metadata only. The land cover image stays (4,356 bytes: the benchmark's land cover digest reads it).
+Measured (`patch_bytes`, 16 patches, the 60 km flight): terrain 62,002 to 4,360 bytes a patch, water
+35,912 to 4.
+
+**The 1,024 MB observation on the 60 km map** (`TERRAIN-51`): not a release; the whole map is built
+but only the wanted square is drawn, and the fill pauses while the camera moves. Numbers in the row.
+
+**Rows.** See the round's hand-back until this record is completed.
 
 ## Implemented Runtime Contract
 

@@ -950,6 +950,17 @@ available in every build and scene.
   - `parking` (`park`) prints parking spots, car custody (parked, driving, stored off-map, in
     use), trips under way by phase, why departure attempts since load drove or walked, and every
     rejected parking spot with its building and reason. The same text goes to `events`.
+  - `terrain` (`terrain_memory`) prints the base terrain's memory (`TERRAIN-41`): the Terrain
+    memory setting and its target, the counted bytes and their parts (heights, land cover, water
+    depth, spare textures, water meshes, pooled sets), the places and keep ring (and whether the
+    view alone is over the target), the wanted square (its patches and side: only it is drawn,
+    built patches beyond it stay hidden whatever the target) and what is drawn of it, built and
+    kept-hidden patches of both layers, the fill still to
+    come, the releases since the load, the last frame's install ledger, and beside them what the
+    target does not count (the mask pages, nodes, materials, the driver's own allocations) with the
+    engine's texture, buffer and video memory. The same text goes to `events`; the fields are
+    `StreamNode.get_terrain_budget()`'s, and the perf channel's `terrain_stream` record carries
+    them as `budget_<field>` (all but the fill and the ledger, which it has as its own fields).
   - `dump`
   - `clear`
 - **Copy** puts the visible, filtered lines on the clipboard.
