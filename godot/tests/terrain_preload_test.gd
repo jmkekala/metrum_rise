@@ -60,12 +60,21 @@ func _test_preload(side: float, budget_mb: float, what: String) -> void:
 	if budget_mb > 0.0:
 		stream.set_terrain_budget_mb(budget_mb)
 	_expect(stream.is_terrain_preloading(), "%s: a player's load preloads" % what)
+	# The view's phase first: before the load's first frame nothing is pending, yet the fill waits.
+	_expect(int(stream.get_terrain_preload().get("phase", -1)) == 1, "%s: the preload starts with the view" % what)
 	var start := Time.get_ticks_msec()
 	var progress := ""
 	var frames := 0
+	# The first frame the view was in step, and the first a kept (hidden) patch was built.
+	var in_step_frame := -1
+	var kept_frame := -1
 	while not input.is_world_ready() and Time.get_ticks_msec() - start < TIMEOUT_MS:
+		if in_step_frame < 0 and bool(stream.get_terrain_preload().get("in_step", false)):
+			in_step_frame = frames
 		await process_frame
 		frames += 1
+		if kept_frame < 0 and int(stream.get_terrain_budget().get("terrain_kept", 0)) > 0:
+			kept_frame = frames
 		# The line with the most patches to build (the first frame's has no count yet).
 		var line: String = input.load_progress_text()
 		if line.length() > progress.length() or line.contains(" of ") and not progress.contains(" of "):
@@ -75,6 +84,8 @@ func _test_preload(side: float, budget_mb: float, what: String) -> void:
 	var state: Dictionary = stream.get_terrain_preload()
 	print("[terrain_preload] %s: hand-over after %d frames, %.2f s; progress \"%s\"; %s"
 		% [what, frames, float(Time.get_ticks_msec() - start) / 1000.0, progress, status])
+	_expect(kept_frame < 0 or in_step_frame >= 0 and kept_frame > in_step_frame,
+		"%s: the fill builds only after the view is in step (frames %d, %d)" % [what, in_step_frame, kept_frame])
 	_expect(not stream.is_terrain_preloading() and input.load_progress_text().is_empty(),
 		"%s: the hand-over ends the preload and its line" % what)
 	_expect(int(status.get("fill_left", -1)) == 0, "%s: nothing left to fill at the hand-over: %s" % [what, status])

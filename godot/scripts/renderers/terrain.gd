@@ -698,7 +698,9 @@ func advance_preload() -> Dictionary:
 	if not _stream.is_terrain_preloading():
 		return {}
 	var status: Dictionary = _stream.get_terrain_preload()
-	if int(status["phase"]) == PRELOAD_VIEW and not has_pending_render_work(false) \
+	# `in_step`: a frame has set the wanted square (before the load's first frame nothing is
+	# pending yet) and no patch unit waits; the scripts' own queues then (the water's meshes).
+	if int(status["phase"]) == PRELOAD_VIEW and bool(status["in_step"]) and not has_pending_render_work(false) \
 			and (water_node == null or not water_node.has_pending_render_work(false)):
 		_stream.set_terrain_preload(PRELOAD_FILL)
 	status["pending"] = not bool(status["done"]) or not water_texture_sync_background.is_empty()

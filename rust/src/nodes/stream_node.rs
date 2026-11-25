@@ -1114,7 +1114,7 @@ impl StreamNode {
     /// A world load's preload of the base terrain (`TERRAIN-59`), while the load holds the game
     /// (`set_terrain_load_settling`): `phase` 0 none (the load hands over as before), 1 the view's
     /// own patches first with the fill held, 2 the fill. During 1 and 2 the patch units run under
-    /// the preload's time slice a frame ([`PRELOAD_SLICE_US`]) instead of without a limit, and
+    /// the preload's time slice a frame (`PRELOAD_SLICE_US`, 50 ms) instead of without a limit, and
     /// each layer hands out up to `PRELOAD_REQUESTS` (256) payload requests a frame; during 2 the
     /// fill no longer waits for the vegetation. The hold's end turns it off.
     #[func]
@@ -1129,8 +1129,9 @@ impl StreamNode {
     /// The preload's state (`TERRAIN-59`, the load flow's and its progress line's): `phase`
     /// (as [`Self::set_terrain_preload`]), `built` (terrain and water patches built), `left`
     /// (both layers' patches of the keep rectangle not built, and wanted ones built but not yet
-    /// shown: `built + left` is the preload's whole), and `done`: the fill phase has nothing left, the view
-    /// waits for no patch unit and the backdrop is ready (or there is none). `O(keep rectangle)`
+    /// shown: `built + left` is the preload's whole), `in_step` (a frame has set the wanted square
+    /// and no patch unit of either layer waits), and `done`: the fill phase has nothing left, the
+    /// view is in step and the backdrop is ready (or there is none). `O(keep rectangle)`
     /// for `left`: read once a frame while the load holds the game.
     #[func]
     pub fn get_terrain_preload(&self) -> VarDictionary {
@@ -1138,10 +1139,15 @@ impl StreamNode {
         let layers = [&self.terrain, &self.water];
         let built: usize = layers.iter().map(|layer| layer.built_count()).sum();
         let left: usize = layers.iter().map(|layer| layer.preload_left()).sum();
-        let in_step = !self.terrain.has_pending_work() && !self.water.has_pending_work();
+        // The view in step: a square was set by a frame (none before the load's first frame,
+        // when nothing is pending yet) and no patch unit of either layer waits.
+        let in_step = self.terrain.square().is_some()
+            && !self.terrain.has_pending_work()
+            && !self.water.has_pending_work();
         out.set("phase", self.preload as i64);
         out.set("built", built as i64);
         out.set("left", left as i64);
+        out.set("in_step", in_step);
         out.set(
             "done",
             self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready(),
