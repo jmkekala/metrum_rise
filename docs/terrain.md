@@ -20642,7 +20642,7 @@ budget holds a hole back; with round L1's measurement counters, without round L1
 The rendered rows below are diagnostic (perf channel on, the eight P-cores, 8 workers), not
 acceptance timing.
 
-**Round L1 is held, awaiting the user's decision.** L1 (one order across the terrain's and the
+**Round L1 was held at this round's landing** (brought onto `dev` with round B1 later, [below](#base-terrain-one-order-with-the-budgets-units-and-the-reflections-share-of-a-level-change-terrain-41-round-l1-with-b1-2026-11-25)). L1 (one order across the terrain's and the
 water's units, the units' measured prices, an in-view level change a layer a frame that a backlog
 of holes cannot hold back) keeps the vegetation and the near ground at their detail during a fast
 flight, which `dev` leaves coarse until the flight ends. That costs the draw: on the 60 km
@@ -21059,6 +21059,170 @@ fill starts with the game, not after a hand-over of its own. The default stays "
 until B2's setting: on a 60 km map that fills the whole map (+0.9 GiB of video memory here). A
 recycled set's land cover texture is still written in place when its size matches (only on maps
 where the budget releases; the water's depth textures are written in place on `dev` already).
+
+### Base terrain: one order with the budget's units, and the reflection's share of a level change (`TERRAIN-41` round L1 with B1, 2026-11-25)
+
+Round L1 of the item's plan (`PLAN-TERRAIN-41`), brought onto `dev` after round B1 (the memory
+budget) and its fix rounds, with the work behind the single slow frames L1 had shown on an earlier
+`dev` brought into the install ledger. Round L1's earlier landing (branch `terrain-41-l1-land`, on `dev` `f959970ab`) read
+the shipped Kuopio's camera jump at 16-17 ms in its worst frame against `dev`'s 10-13, the 0.5 s
+turns' maxima +3.3-3.7 ms and the far zoom-out's +3.5 ms, pooled over eight runs; here the turns
+and the far zoom-out are level with `dev` and the jump's worst frame is 11.7-12.4 ms (below). The
+rendered rows are diagnostic (the eight P-cores, 8 workers), not
+acceptance timing.
+
+**One order, with the budget's units in it.** `frame_layers` (`stream/layers/terrain.rs`) runs both
+patch layers as one frame, stated at the code:
+
+1. each layer's level of detail gate;
+2. the holes, the water's then the terrain's (the water's holes are terrain patches resident since
+   the last frame); a hole build takes a donor (the farthest kept patch beyond the release
+   rectangle, released inside the build's price) only while one more place would not fit the
+   budget (round B1c); each layer's payload requests right after its own holes (`TERRAIN-43`'s
+   ordering);
+3. both layers' queued level changes merged in one class order (in view first, nearest first, then
+   key); a level change runs on the budget only while no hole of the frame was held back, and each
+   layer's first in-view level change of a frame always runs;
+4. the hides, layer by layer;
+5. the releases that are not a donor, layer by layer, at their fixed price and never as the
+   frame's exempt first unit: only while nothing the view waits for is pending (no unit of the
+   frame held back, no hole of the layer, no work of the other layer, which is now read inside
+   the frame after both layers' holes, level changes and hides ran, and no vegetation hold), or,
+   the terrain's, while the counted bytes are over the budget (round B1's soft bound, in the room
+   the frame left);
+6. prewarm, the budget's fill, layer by layer, once no unit of the frame was held back, the layer
+   has nothing waiting and no release candidate is left.
+
+Before this round `dev` ran the water's whole frame (holes, level changes, hides, releases, fill)
+before the terrain's, and the terrain's releases waited for the water's work as it stood after the
+water's frame, the water's for the terrain's as it stood before. Prices as round L1 measured them
+(terrain show / hide 20 / 8 us, water 8 / 4 / 5 us, builds 200 and 120 us, releases round B1's 160
+and 140 us), except the terrain's level change (below).
+
+**The single slow frames.** Read from the per-frame records of a diagnostic Kuopio row with the
+reflection's proxy sync split by part (perf channel on): the jump's first frame runs 116 terrain
+and 117 water level changes (patch units 1.91 ms, inside the 2.0 ms ledger), then the water
+reflection's proxy sync visits the 116 terrain patches whose step changed in 4.53 ms: 3.94 ms
+refreshing each proxy's material copy (34 us a patch), 0.39 ms bringing the proxy instance in step
+(3.4 us), 0.18 ms finding the patch. A level change marked its patch for a whole refresh, which
+reads and compares every one of the terrain shader's parameters on the patch's material and its
+copy, while a step changes the patch's mesh and one parameter (`terrain_debug_lod_step`). The
+0.5 s turns' worst frames have the same shape (116 terrain level changes, proxy sync 4.5-5.0 ms).
+`dev` runs the same refresh for each level change, but its order runs fewer a frame (25-91 in its
+worst turn frames, proxy sync up to 3.6 ms).
+
+**What a proxy needs.** `terrain.gd` now tells exactly what changed: `patch_parameters_changed(key,
+names)` for a level of detail step (the node's new mesh and `terrain_debug_lod_step`), a water map
+(its four parameters) and a land cover (two), while `patch_render_will_change` stays for a restage
+and a removal (a whole refresh). On a world with water, where the proxies follow every frame, the
+reflection gives an in-step proxy the new mesh and exactly those values at once, inside the unit
+that changed them: the level change (a ledger unit), the water texture sync (its own 1.0 ms
+budget) or the land cover commit, so the ledger measures the reflection's share of a level change
+as part of it. A patch with a whole refresh pending, or without a proxy yet, is marked for the
+whole refresh as before. The terrain's level change is priced at its new measured mean, 19 us (was
+12: the mesh about 12 and the proxy 6-7; 18.7 at the mean on the shipped Kuopio, 23.5 on the 60 km
+flight). A hide's proxy is still freed at the sync: freeing it inside the hide cost about 0.9 ms
+once a frame (one free a frame stalled that long in a diagnostic run), so hides stay as they were.
+
+**The water's shows and hides.** With the proxies fixed, the jump's fourth frame and the far
+zoom-out's and jump back's worst frames were render CPU: 5-6 ms in one frame against 1-2. A water
+patch shown or hidden makes the terrain's water texture sync bind its water map to the terrain patch
+or unbind it (the terrain patch hidden a frame before): 3.7 us there and, measured by leaving the
+unbinds out in a diagnostic run (5.4 to 1.4 ms of render CPU for 128 of them in one frame), about
+31 us of render CPU for each material's update, which no ledger unit measures. Round L1's prices
+(water show 8 us, hide 4) let a jump hide 134 water patches in one frame and a re-shown view show
+69-99. The water's show and hide are now charged for that work, 43 and 40 us (`WATER_COSTS`), so
+they spread over a few frames as on `dev` (60 and 30 us there). The terrain's show and hide keep
+round L1's 20 and 8 us.
+
+**Not done here** (for rows): after a jump the vegetation's frees (3-4 ms in the jump's first two
+frames, on `dev` too: the ledger reads 4.4 against 2.0 ms there) run after the patch units without
+admission, and with round L1's order the patch units fill their room in the same frames; level
+changes run for resident patches that already left the wanted square (82-116 in a jump's first
+frame, for patches hidden in the next), which round L1's sweep test encodes as the scripts'
+behaviour; and a water patch hidden and shown again unbinds and binds its terrain patch's water map
+although the hidden terrain patch draws nothing.
+
+**Measured** (fresh; control `dev` `e06cfca08`'s release library with `dev`'s scripts, the branch's
+final library and scripts; both at the automatic 512 MB, which on the shipped Kuopio fits every
+patch, so nothing is filled or released there; rows pinned to the eight P-cores, perf channel off on
+Kuopio, `--detail --drawn` on the 60 km flight; sessions started at a 1-minute load under 2 with no
+other `godot`).
+
+Shipped Kuopio (turns, pan, zoom, jump), two C B B C sessions pooled (4 runs a side), ms:
+
+| phase | `dev` p50 | branch p50 | `dev` max | branch max |
+|---|---|---|---|---|
+| turn_out 0.5 s | 4.7-4.8 | 4.6-5.1 | 32.2-37.9 | 35.5-53.1 |
+| turn_back 0.5 s | 4.4-4.6 | 4.2-5.6 | 10.8-11.3 | 8.6-12.5 |
+| turn_repeat 0.5 s | 4.9-6.2 | 4.9-5.3 | 10.3-12.3 | 8.0-11.6 |
+| turn_out 1 s | 3.8-4.0 | 3.7-4.3 | 7.9-10.2 | 8.0-9.7 |
+| turn_back 1 s | 3.9-4.1 | 3.9-4.2 | 8.3-9.6 | 7.9-9.0 |
+| turn_repeat 1 s | 3.9-4.1 | 3.8-4.3 | 7.8-10.4 | 7.7-12.5 |
+| pan_out 3 s | 2.8-3.0 | 2.7-2.9 | 5.4-13.9 | 6.4-12.4 |
+| pan_back 3 s | 2.8-3.2 | 2.8-2.9 | 7.6-14.5 | 6.5-11.7 |
+| pan_repeat 3 s | 2.8-3.0 | 2.8-3.0 | 5.4-6.8 | 6.3-7.7 |
+| zoom_in 1.5 s | 2.5-2.9 | 2.7-3.6 | 7.4-9.5 | 6.2-10.1 |
+| zoom_out 1.5 s | 2.6-3.0 | 2.6-3.2 | 6.2-20.4 | 6.1-67.1 |
+| zoom_in_repeat 1.5 s | 2.5-3.0 | 2.6-3.1 | 7.5-10.3 | 7.1-9.5 |
+| far_zoom_out 2.3 s | 6.1-6.3 | 6.1-8.7 | 12.6-14.4 | 11.7-15.7 |
+| far_to_ground 4.8 s | 2.6-2.8 | 2.7-3.0 | 10.9-12.0 | 10.9-14.6 |
+| jump | 4.9-5.3 | 4.0-4.6 | 8.7-10.2 | 11.7-12.4 |
+| jump_back | 4.7-5.1 | 4.2-4.9 | 8.2-9.0 | 8.9-10.3 |
+
+(The first turn's maxima, 32-53 ms, are the first frames after the load on both sides; the
+zoom-out's 67 ms is one frame of a disturbed second session, inside both sides' spread there.)
+
+Every phase level at the median and at the maximum by the compare rule (delta of means against the
+larger side's range), **except the jump's maximum: 11.7-12.4 against 8.7-10.2 (+2.5 against a
+spread of 1.5)**, down from round L1's earlier 16-17. The 0.5 s turns' maxima, +3.3-3.7 then, and the
+far zoom-out's, +3.5, are level. The jump's slowest frame is now its second: the old view's 132
+terrain patches hidden (round L1's 8 us hide), their proxies freed at the sync (0.7 ms) and the
+graded book's work after the first frame's level changes, in the frame where the vegetation frees
+the old view's bands (4.0-4.4 ms, measured after the patch units and not admitted by the ledger;
+`dev` reads 4.4 ms of ledger in that frame too). Not fixed here (see above). Load to settled is
+level (report only).
+
+60 km `flight_high` at 512 MB, two C B B C sessions of the final library (the second session's
+first control row was disturbed, a 158 ms frame and missing at most 247; pooled without it: 3
+control runs, 4 branch runs):
+
+| | `dev` | branch | pooled (delta / spread) |
+|---|---|---|---|
+| frame p50 ms | 13.4, 13.3, 13.4 | 13.6, 13.7, 13.8, 13.8 | +0.36 / 0.20 (+0.03 with the disturbed row) |
+| missing at most | 102, 100, 117 | 78, 78, 77, 103 | level (-22 / 26) |
+| terrain wanted-to-drawn p95 frames | 48, 41, 62 | 19, 17, 17, 42 | better (-27 / 25) |
+| most in-view holes in a frame | 99, 99, 112 | 78, 78, 77, 103 | level (-19 / 26) |
+| settle after the start, s | 7.20, 7.37, 7.22 | 7.33, 7.12, 7.34, 7.45 | level (+0.05 / 0.33) |
+| settle after the turn, s | 4.99, 4.90, 5.16 | 4.98, 5.38, 5.03, 5.54 | level (+0.21 / 0.56) |
+| load to settled, s (report only) | 16.66-16.90 | 16.65-16.77 | level |
+| slowest frame of the flight, ms | 18.8-25.6 | 21.4-30.4 | |
+
+Where the frame median goes (means over the flight's frames, these runs): frame +0.42 ms (13.30 to
+13.72); render CPU +0.25 (3.46 to 3.71 ms) with 1.04 M primitives against 0.75 M (the vegetation and
+near ground at their detail); the scripts +0.12 ms (the patch frame +0.13, the vegetation +0.08,
+terrain +0.08, water +0.03, the reflection -0.21, its proxy share now inside the level changes); the
+install ledger measured 2.11 against 1.84 ms a frame (inside those scripts); terrain level changes
+1.6 a frame against 0.05. Round L1's first library here (before the water's show and hide prices,
+sessions with the same control) read +0.73 ms at the median (render CPU +0.58, 1.11 M primitives,
+scripts level): the water's re-show bursts were part of the draw cost. At 256 MB (one pair, for the
+record): frame p50 13.2 against 14.2 ms, missing at most 99 against 110, wanted-to-drawn p95 31
+against 38 frames, settles 7.35 / 6.87 against 7.45 / 7.25 s (the earlier libraries' pairs read
+better or level; one pair a library).
+
+**Exactness.** The proxy book check (`METRUM_STREAM_PROXY_CHECK=1`, untimed): in step in every
+frame of the shipped Kuopio row (3,913 frames) and of the 60 km `flight_high` and `flight_jump`
+(2,036), both sides; the copies' staleness at each sample's end: 0 on Kuopio, at the 20 km jump's
+turn 15 patches' water maps on the branch against 17 on `dev` (`RENDER-77`). Settle digests
+(untimed, a fresh `dev` run beside round B1c's `dev` run): the shipped Kuopio's 12 points equal in
+every family except the terrain and water steps at point 9 (the first far-to-ground settle, where
+the two `dev` runs differ too and the branch equals one of them, `TERRAIN-45`) and the vegetation at
+point 10, where the two `dev` runs agree and the branch's band flags differ (round L1's earlier
+landing saw the same point move; products equal there then; not traced); the 60 km flight's 4
+points equal in residency and steps, graded, buildings, roads, parked and vegetation, the built sets
+and their land cover differing by design (the fill), as between the two `dev` runs. The 30k pond (16 points): terrain and water residency and steps equal to round B1c's `dev` run at every point (the two earlier `dev` runs differ at point 8, `TERRAIN-45`); one graded tile differs at equal level and token from point 8 on, as between the `dev` runs (`TERRAIN-27`), and one is in its hysteresis band at point 4. The
+water mesh check: 0 mismatches at every point of every run. Drag probe: passes (`tools/graded_drag_probe.py`, budget 512 MB). Golden
+recordings replay (nothing recorded again). Level F (release test executables of `dev` `e06cfca08` and the branch): every metric level in the 30k 32x C B B C, the 1x day level or better, both 1x days pass the acceptance; in 32x three of the four rows on both sides miss the acceptance's worst unpreempted frame or p99.9 (rows the runner flags as noisy; the simulation rows run none of the patch frame).
 
 ## Implemented Runtime Contract
 

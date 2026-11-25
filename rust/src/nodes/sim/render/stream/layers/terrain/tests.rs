@@ -336,36 +336,6 @@ fn a_blocked_activation_stops_the_frames_activations() {
     assert!(work.activations > 0);
 }
 
-// `TERRAIN-41` L2: a frame counts the holes its budget refused (what the graded book's builds
-// wait behind), not the holes that wait for a payload or behind a blocked activation, and none
-// without a budget.
-#[test]
-fn only_holes_the_budget_refuses_count_as_held_back() {
-    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
-    layer.reset(Some(GRID));
-    let mut scripts = Scripts::default();
-    let eye = [0.0, 800.0, 0.0];
-    layer.set_square(GRID.target(eye, 16000.0, false));
-    let mut budget = FrameBudget::new(1000.0);
-    let mut run = |layer: &mut PatchStream, scripts: &mut Scripts, unbudgeted: bool| {
-        budget.begin_frame();
-        let work = layer.frame(Some(eye), 0.016, &mut budget, &FixedClock, unbudgeted, &|_| false, scripts);
-        deliver(layer, scripts);
-        work
-    };
-    let work = run(&mut layer, &mut scripts, false);
-    assert!(layer.pending()[0] > 0 && work.holes_deferred == 0, "holes wait for their payloads");
-    scripts.blocked = true;
-    let work = run(&mut layer, &mut scripts, false);
-    assert_eq!((work.activations, work.holes_deferred), (0, 0), "behind a blocked activation");
-    scripts.blocked = false;
-    let work = run(&mut layer, &mut scripts, false);
-    assert!(work.activations > 0 && work.holes_deferred > 0, "the budget held holes back");
-    assert!(work.holes_deferred <= work.deferred);
-    let work = run(&mut layer, &mut scripts, true);
-    assert!(work.activations > 0 && work.holes_deferred == 0, "no budget, none held back");
-}
-
 #[test]
 fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
     let mut terrain = PatchStream::new(TERRAIN_LIMITS, COSTS);
@@ -397,6 +367,117 @@ fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
     assert_eq!(terrain.halo(), Some(square));
     let halo = square_keys(GRID.widen(square, WATER_LIMITS.halo));
     assert!(halo.iter().all(|key| lake.built.contains(key)));
+}
+
+// Both layers in one frame (`frame_layers`): the water's holes, the terrain's, then both layers'
+// level changes; the water follows the terrain's residency as the stream node feeds it. Returns
+// both layers' work and whether the budget held a hole back.
+#[allow(clippy::too_many_arguments)]
+fn frame_pair(
+    terrain: &mut PatchStream,
+    land: &mut Scripts,
+    water: &mut PatchStream,
+    lake: &mut Scripts,
+    eye: [f32; 3],
+    delta: f64,
+    budget_us: f64,
+    in_view: &dyn Fn(PatchKey) -> bool,
+) -> (PatchWork, PatchWork, bool) {
+    terrain.set_square(GRID.target(eye, 3000.0, false));
+    water.set_halo(terrain.square().map(|square| GRID.widen(square, WATER_LIMITS.halo)));
+    let mut budget = FrameBudget::new(budget_us);
+    let held = frame_layers(
+        &mut [Some(LayerFrame::new(water, lake)), Some(LayerFrame::new(terrain, land))],
+        Some(eye),
+        delta,
+        &mut budget,
+        &FixedClock,
+        false,
+        in_view,
+    );
+    deliver(terrain, land);
+    deliver(water, lake);
+    for (key, resident) in terrain.take_changes() {
+        water.set_wanted(key, resident);
+    }
+    let _ = water.take_changes().count();
+    (terrain.work(), water.work(), held)
+}
+
+#[test]
+fn no_water_step_runs_ahead_of_a_held_terrain_hole() {
+    // `TERRAIN-41` L1: settled at one eye, then 3 km away under a tight budget, so the terrain's
+    // new strips wait as holes in view while both layers' resident patches queue level changes.
+    // In a frame that held back a terrain hole in view, each layer runs only its one guaranteed
+    // in-view change; the water's budgeted changes no longer run ahead of the terrain's holes.
+    let mut terrain = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    let mut water = PatchStream::new(WATER_LIMITS, COSTS);
+    terrain.reset(Some(GRID));
+    water.reset(Some(GRID));
+    let (mut land, mut lake) = (Scripts::default(), Scripts::default());
+    let all = |_: PatchKey| true;
+    let mut eye = [0.0_f32, 800.0, 0.0];
+    for _ in 0..200 {
+        let (.., held) = frame_pair(&mut terrain, &mut land, &mut water, &mut lake, eye, 0.1, f64::INFINITY, &all);
+        // `TERRAIN-41` L2: no budget, no hole held back.
+        assert!(!held);
+    }
+    assert!(!terrain.has_pending_work() && !water.has_pending_work());
+    eye = [3000.0, 800.0, 1500.0];
+    let (mut held, mut water_queued_while_held, mut steps_while_held) = (0, 0, [0, 0]);
+    for _ in 0..400 {
+        let water_queued = water.pending()[2];
+        let (land_work, lake_work, hole_held) =
+            frame_pair(&mut terrain, &mut land, &mut water, &mut lake, eye, 0.1, 300.0, &all);
+        // `TERRAIN-41` L2: the frame reports a hole held back (what the graded book's builds
+        // wait for) whenever one in view was.
+        assert!(hole_held || land_work.holes_deferred_in_view + lake_work.holes_deferred_in_view == 0);
+        if land_work.holes_deferred_in_view > 0 {
+            held += 1;
+            water_queued_while_held += usize::from(water_queued > 1);
+            assert!(lake_work.lod_changes <= 1, "{lake_work:?}");
+            assert!(land_work.lod_changes <= 1, "{land_work:?}");
+            steps_while_held[0] += land_work.lod_changes;
+            steps_while_held[1] += lake_work.lod_changes;
+        }
+    }
+    assert!(held > 10 && water_queued_while_held > 0, "{held} {water_queued_while_held}");
+    assert!(steps_while_held[0] > 0 && steps_while_held[1] > 0, "{steps_while_held:?}");
+    assert!(!terrain.has_pending_work() && !water.has_pending_work(), "it settles");
+    for (key, step) in terrain.resident_keys().map(|key| (key, terrain.installed_step(key))) {
+        assert_eq!(step, Some(lod_step(lod_distance(eye, GRID.centre(key)))), "{key:?}");
+    }
+}
+
+#[test]
+fn a_queued_in_view_step_runs_within_a_frame_while_holes_wait() {
+    // A budget that admits only the frame's first unit: the holes take it, and still one queued
+    // in-view level change runs every frame, so near ground does not stay at a stale step.
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    let mut scripts = Scripts::default();
+    let run = |layer: &mut PatchStream, scripts: &mut Scripts, eye: [f32; 3], budget_us: f64| {
+        layer.set_square(GRID.target(eye, 3000.0, false));
+        let mut budget = FrameBudget::new(budget_us);
+        let work = layer.frame(Some(eye), 0.1, &mut budget, &FixedClock, false, &|_| true, scripts);
+        deliver(layer, scripts);
+        work
+    };
+    for _ in 0..200 {
+        run(&mut layer, &mut scripts, [0.0, 800.0, 0.0], f64::INFINITY);
+    }
+    let eye = [3000.0, 800.0, 1500.0];
+    let mut frames_with_both = 0;
+    for _ in 0..400 {
+        let [holes, _, queued] = layer.pending();
+        let work = run(&mut layer, &mut scripts, eye, 1.0);
+        if queued > 0 && work.holes_deferred_in_view > 0 {
+            assert_eq!(work.lod_changes, 1, "{holes} holes, {queued} queued: {work:?}");
+            frames_with_both += 1;
+        }
+    }
+    assert!(frames_with_both > 10, "{frames_with_both}");
+    assert!(!layer.has_pending_work());
 }
 
 // The control's recorded decisions (`dev` `daec355a`'s `terrain.gd`, recorded by the round's
@@ -723,8 +804,9 @@ fn the_smallest_budget_keeps_its_places_and_releases_beyond_the_ring() {
             wide_frame(&mut plain, &mut plain_scripts, eye, f64::INFINITY);
             assert!(layer.built_count() as u64 <= places, "frame {step}: {} built", layer.built_count());
             assert_eq!(layer.built_count(), scripts.built.len());
-            // In a frame where a hole waits, a release is a build's donor only.
-            if layer.pending()[0] > 0 || work.holes_deferred > 0 {
+            // In a frame where a hole waits (a hole the budget held back stays missing), a
+            // release is a build's donor only.
+            if layer.pending()[0] > 0 {
                 assert_eq!(work.releases, work.donors, "frame {step}");
             }
         }

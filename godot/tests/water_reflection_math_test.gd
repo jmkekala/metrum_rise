@@ -142,6 +142,37 @@ func _run() -> void:
 	# In place (`RENDER-27` WR1b): the same copy and instance, holding what a new duplicate would.
 	_expect(renderer._grid_materials[material] == copy and renderer._proxies[id][0] == instance,
 		"a patch change must refresh the mirror's material and instance in place")
+	# A changed parameter set (`TERRAIN-41` L1b): before the first vote it waits for the sync's
+	# refresh; on a wet world the proxy takes the new mesh and values at once, nothing left marked.
+	source.mesh = PlaneMesh.new()
+	material.set_shader_parameter("terrain_debug_lod_step", 4.0)
+	renderer._on_terrain_patch_parameters_changed(Vector2i.ZERO, [&"terrain_debug_lod_step"] as Array[StringName])
+	_expect(renderer._dirty_terrain_patches.get(Vector2i.ZERO, false),
+		"a parameter change before the proxies follow must wait for the refresh")
+	renderer._sync_proxies()
+	_expect(renderer._proxies[id][1] == source.mesh.get_rid()
+		and copy.get_shader_parameter("terrain_debug_lod_step") == 4.0,
+		"the refresh must give the proxy its new mesh and step")
+	renderer._vote_sources = PackedInt64Array([0, 0, 1])
+	source.mesh = PlaneMesh.new()
+	material.set_shader_parameter("terrain_debug_lod_step", 8.0)
+	material.set_shader_parameter("watermap_texture_size", Vector2(3.0, 5.0))
+	renderer._on_terrain_patch_parameters_changed(Vector2i.ZERO, [&"terrain_debug_lod_step"] as Array[StringName])
+	renderer._on_terrain_patch_parameters_changed(Vector2i.ZERO, [&"watermap_texture_size"] as Array[StringName])
+	_expect(renderer._proxies[id][1] == source.mesh.get_rid()
+		and copy.get_shader_parameter("terrain_debug_lod_step") == 8.0
+		and copy.get_shader_parameter("watermap_texture_size") == Vector2(3.0, 5.0)
+		and renderer._grid_materials[material] == copy and renderer._proxies[id][0] == instance
+		and not renderer._dirty_terrain_patches.has(Vector2i.ZERO),
+		"on a wet world a parameter change must reach the proxy in place, unmarked")
+	# A refresh already pending for the patch stays the refresh.
+	material.set_shader_parameter("site_concrete_brightness", 7.0)
+	renderer._on_terrain_patch_will_change(Vector2i.ZERO)
+	renderer._on_terrain_patch_parameters_changed(Vector2i.ZERO, [&"terrain_debug_lod_step"] as Array[StringName])
+	renderer._sync_proxies()
+	_expect(copy.get_shader_parameter("site_concrete_brightness") == 7.0,
+		"a parameter change must not weaken a pending refresh")
+	renderer._vote_sources = PackedInt64Array()
 	material.set_shader_parameter("site_concrete_brightness", null)
 	renderer._on_terrain_patch_will_change(Vector2i.ZERO)
 	renderer._sync_proxies()
