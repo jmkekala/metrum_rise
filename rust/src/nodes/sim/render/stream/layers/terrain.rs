@@ -309,15 +309,16 @@ pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
     free_us: 8.0,
     release_us: 160.0,
 };
-/// Water's unit costs, measured as terrain's: a shown patch 5-9 us at the mean, a level change 4-6
-/// (its new mesh is the water's mesh pipeline's, charged there); a build (a depth image and
-/// texture, a material) as above. A hide is 3-4 us of its own, and its terrain patch (hidden a
-/// frame before) then loses the water map at the terrain's water texture sync: 3.7 us there and
-/// about 31 us of render CPU for the material's update (`TERRAIN-41` L1b: a camera jump's 128 at
-/// once read 5.4 ms of render CPU in one frame against 1.4 without them, on the shipped Kuopio),
-/// work no unit of the ledger measures; the hide is charged for it, 40 us.
+/// Water's unit costs, measured as terrain's: a level change 4-6 us at the mean (its new mesh is
+/// the water's mesh pipeline's, charged there); a build (a depth image and texture, a material) as
+/// above. A shown patch is 5-9 us of its own and a hide 3-4, and each changes its terrain patch's
+/// water map at the terrain's water texture sync (binds it, or unbinds it from the terrain patch
+/// hidden a frame before): 3.7 us there and about 31 us of render CPU for the material's update
+/// (`TERRAIN-41` L1b: a camera jump's 128 unbinds at once read 5.4 ms of render CPU in one frame
+/// against 1.4 without them, on the shipped Kuopio), work no unit of the ledger measures. The show
+/// and the hide are charged for it: 43 and 40 us.
 pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
-    activate_us: 8.0,
+    activate_us: 43.0,
     build_us: 120.0,
     lod_us: 5.0,
     free_us: 40.0,
