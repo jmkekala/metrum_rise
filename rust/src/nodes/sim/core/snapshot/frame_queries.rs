@@ -236,8 +236,10 @@ impl SimCore {
     }
 
     /// The key a water copy is current for: the world epoch, the water's render generation and
-    /// the surface stamp. A water edit replaces the water whole and restarts its render
-    /// generation, so the key holds the surface stamp every water edit bumps too (`ROAD-114`).
+    /// the surface stamp. A fill edit or a load replaces the water whole and restarts its render
+    /// generation, so the key holds the surface stamp every water edit bumps too (`ROAD-114`); a
+    /// terrain edit updates the water in place and advances the generation when any depth
+    /// changed (`TERRAIN-38`).
     pub(crate) fn water_copy_key(&self) -> (u64, u64, u64) {
         (
             self.world_epoch,

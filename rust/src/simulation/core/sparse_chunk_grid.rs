@@ -113,6 +113,92 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         chunk[local_idx] = value;
     }
 
+    /// Writes many cells in place (`(x, y, value)`, any order; cells outside the grid are
+    /// skipped). A chunk a write leaves all default is dropped once at the end, as
+    /// [`Self::replace_from_dense`] would not store it. O(cells + chunks given a default write
+    /// x chunk cells), one hash probe a cell.
+    pub(crate) fn set_many(&mut self, cells: impl IntoIterator<Item = (usize, usize, T)>) {
+        let chunk_len = self.chunk_len();
+        let default_value = self.default_value;
+        let mut defaulted = Vec::new();
+        for (x, y, value) in cells {
+            if x >= self.width || y >= self.height {
+                continue;
+            }
+            let (chunk_x, chunk_y, local_idx) = self.cell_address(x, y);
+            let key = Self::chunk_key(chunk_x, chunk_y);
+            if value == default_value {
+                if let Some(chunk) = self.chunks.get_mut(&key) {
+                    Arc::make_mut(chunk)[local_idx] = value;
+                    defaulted.push(key);
+                }
+                continue;
+            }
+            let chunk = self
+                .chunks
+                .entry(key)
+                .or_insert_with(|| Arc::new(vec![default_value; chunk_len]));
+            Arc::make_mut(chunk)[local_idx] = value;
+        }
+        defaulted.sort_unstable();
+        defaulted.dedup();
+        for key in defaulted {
+            if self
+                .chunks
+                .get(&key)
+                .is_some_and(|chunk| chunk.iter().all(|cell| *cell == default_value))
+            {
+                self.chunks.remove(&key);
+            }
+        }
+    }
+
+    /// Appends to `out` the row-major indices of the cells whose value differs from `older`'s,
+    /// an earlier clone of this grid: a stored chunk still shared with it by pointer is equal
+    /// without a look, so the cost is `O(stored chunks)` pointer comparisons plus a cell scan
+    /// of each chunk whose payload diverged. The order of `out` is unspecified.
+    pub(crate) fn changed_cells_since(&self, older: &Self, out: &mut Vec<usize>) {
+        debug_assert!(self.layout_matches(older));
+        let mut scan = |key: u64, now: Option<&[T]>, before: Option<&[T]>| {
+            let (chunk_x, chunk_y) = Self::decode_chunk_key(key);
+            let (origin_x, origin_y) = (chunk_x * self.chunk_size, chunk_y * self.chunk_size);
+            let value =
+                |chunk: Option<&[T]>, local: usize| chunk.map_or(self.default_value, |c| c[local]);
+            for local_y in 0..self.chunk_size.min(self.height.saturating_sub(origin_y)) {
+                for local_x in 0..self.chunk_size.min(self.width.saturating_sub(origin_x)) {
+                    let local = local_y * self.chunk_size + local_x;
+                    if value(now, local) != value(before, local) {
+                        out.push((origin_y + local_y) * self.width + origin_x + local_x);
+                    }
+                }
+            }
+        };
+        for (&key, chunk) in &self.chunks {
+            match older.chunks.get(&key) {
+                Some(before) if Arc::ptr_eq(chunk, before) => {}
+                before => scan(key, Some(chunk), before.map(|c| c.as_slice())),
+            }
+        }
+        for (&key, before) in &older.chunks {
+            if !self.chunks.contains_key(&key) {
+                scan(key, None, Some(before));
+            }
+        }
+    }
+
+    /// One stored chunk's cells, row-major with the chunk size as stride; `None` for a chunk
+    /// that holds only the default value. O(1).
+    pub(crate) fn chunk_slice(&self, chunk_x: usize, chunk_y: usize) -> Option<&[T]> {
+        self.chunks
+            .get(&Self::chunk_key(chunk_x, chunk_y))
+            .map(|chunk| chunk.as_slice())
+    }
+
+    /// The value every unstored cell holds.
+    pub(crate) fn default_value(&self) -> T {
+        self.default_value
+    }
+
     /// Returns the fixed storage-chunk width and height in cells.
     pub(crate) fn chunk_size(&self) -> usize {
         self.chunk_size

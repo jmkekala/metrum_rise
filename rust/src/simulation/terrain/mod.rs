@@ -612,6 +612,12 @@ impl TerrainSystem {
         Ok(())
     }
 
+    /// The source terrain grid itself, for a reader that keeps a [`Self::source_snapshot`] and
+    /// compares it with the live grid later. O(1).
+    pub(crate) fn source_grid(&self) -> &SparseChunkGrid<f32> {
+        &self.source_data
+    }
+
     /// The source terrain as a shared clone, for an undo record: `O(chunks)` pointer copies.
     /// The live grid's later writes copy only the chunks they touch (`Arc::make_mut` in
     /// `SparseChunkGrid::set`), so the record costs `O(edited chunks)` memory beyond the pointers.

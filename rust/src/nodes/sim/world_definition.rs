@@ -32,8 +32,11 @@ use godot::prelude::Vector2;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use water_fill::{FillDebugSource, FillFlood, PatchFillDebug};
+pub(crate) use water_update::AuthoredWaterBook;
+use water_update::{KeptFill, fill_kind_accepts};
 
 mod water_fill;
+mod water_update;
 
 impl SimCore {
     /// Resets the live runtime to one fresh blank world with the given terrain settings.
@@ -376,16 +379,21 @@ impl SimCore {
         self.rebuild_authored_water_preview_internal().is_ok()
     }
 
-    /// Rebuilds the runtime water preview from authored water records.
+    /// Rebuilds the runtime water preview from authored water records: the full solve, which
+    /// replaces the water whole (a new render generation count, every patch dirty). A load and
+    /// every fill edit run it; a terrain change updates the water in place instead
+    /// ([`Self::refresh_authored_water_after_terrain_change`]) from the book this solve keeps
+    /// when no preview is active.
     ///
     /// Cost (`A4c`): `O(W)` for the `W` world samples, each touched by one pass: the dense
     /// terrain copy, the zeroed depth buffer, and the sparse rebuild of the result; plus
-    /// `O(k)` per fill for its `k` flooded samples (the flood, the depth merge and the debug
-    /// cache's row-major sort, `O(k + 4096)` per sort pass), plus `O(fills)`. The visit stamps
-    /// and work lists are allocated once and reused by every fill; no fill allocates, clears or
-    /// scans a world-sized buffer. Every edit re-solves every fill.
+    /// `O(k)` per fill for its `k` flooded samples (the flood, the depth merge, the row-major
+    /// sort, `O(k + 4096)` per sort pass, the kept tile set and the debug cache), plus
+    /// `O(fills)`. The visit bits and work lists are allocated once and reused by every fill;
+    /// no fill allocates, clears or scans a world-sized buffer.
     pub(crate) fn rebuild_authored_water_preview_internal(&mut self) -> Result<(), String> {
         let mut water = WaterSystem::from_world_config(&self.config);
+        self.authored_water_book = None;
         if self.world_lake_fills.is_empty()
             && self.world_open_water_fills.is_empty()
             && self.world_lake_fill_preview.is_none()
@@ -407,6 +415,7 @@ impl SimCore {
             patch_debug: PatchFillDebug::new(&water),
             depth: vec![0.0; terrain_world.len()],
             debug_cache: HashMap::new(),
+            kept: Vec::new(),
         };
         let source =
             |kind, fill_index: usize, world_x, world_z, surface_elevation_m| FillDebugSource {
@@ -460,8 +469,11 @@ impl SimCore {
             );
         }
         let FillSolve {
+            flood,
+            patch_debug,
             depth,
             mut debug_cache,
+            kept,
             ..
         } = solve;
         for contributors in debug_cache.values_mut() {
@@ -473,6 +485,16 @@ impl SimCore {
 
         self.watermap = water;
         self.authored_water_patch_fill_debug_cache = debug_cache;
+        // A preview is re-evaluated by every solve, so a terrain change with one active takes
+        // the full solve and no book is kept.
+        if self.world_lake_fill_preview.is_none() {
+            self.authored_water_book = Some(Box::new(AuthoredWaterBook::new(
+                self.heightmap.source_snapshot(),
+                flood,
+                patch_debug,
+                kept,
+            )));
+        }
         self.water_dirty = true;
         self.bump_road_tool_query_generation();
         Ok(())
@@ -595,6 +617,7 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
+        self.authored_water_book = None;
         self.terrain_payload_patch_generations.clear();
         self.road_terrain_inputs.note_all();
         self.terrain_stroke_active = false;
@@ -624,21 +647,6 @@ impl SimCore {
         self.world_open_water_fills
             .iter()
             .position(|water| water.world_x == world_x && water.world_z == world_z)
-    }
-
-    /// Brings the authored water up to date with the terrain after anything wrote it: a brush
-    /// edit or stroke, and the undo that restores the terrain from its record (`TERRAIN-37`).
-    /// The one water update every terrain change goes through.
-    pub(crate) fn refresh_authored_water_after_terrain_change(&mut self) {
-        if self.has_authored_water_internal()
-            && let Err(err) = self.rebuild_authored_water_preview_internal()
-        {
-            debug_log!(
-                "world-editor",
-                "rebuild_authored_water_after_terrain_change failed: {}",
-                err
-            );
-        }
     }
 
     pub(crate) fn has_authored_water_internal(&self) -> bool {
@@ -715,7 +723,7 @@ fn evaluate_world_water_fill_preview(
 
     let (seed_x, seed_z) = water.world_to_grid_cell_clamped(world_x, world_z);
     let application = flood.flood(
-        terrain_world,
+        |idx| terrain_world[idx],
         water.width,
         water.height,
         seed_x,
@@ -750,7 +758,8 @@ fn evaluate_world_water_fill_preview(
     }
 }
 
-// One water solve: the dense inputs and outputs and the scratch its fills share.
+// One water solve: the dense inputs and outputs, the scratch its fills share and what it keeps
+// of each fill for the in-place updates (`TERRAIN-38`).
 struct FillSolve<'a> {
     terrain_world: &'a [f32],
     water: &'a WaterSystem,
@@ -758,30 +767,33 @@ struct FillSolve<'a> {
     patch_debug: PatchFillDebug,
     depth: Vec<f32>,
     debug_cache: HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
+    kept: Vec<KeptFill>,
 }
 
 impl FillSolve<'_> {
     // Floods one fill and merges it when its kind accepts where it reached: a lake must stay
     // inside the world, open water must reach the world edge. An accepted fill adds its depth
-    // and its debug contributions. `O(k)` for its `k` flooded samples.
+    // and its debug contributions; every fill is kept. `O(k)` for its `k` flooded samples.
     fn add_fill(&mut self, source: FillDebugSource, skip_log_label: &str) {
         let (seed_x, seed_z) = self
             .water
             .world_to_grid_cell_clamped(source.world_x, source.world_z);
+        let terrain_world = self.terrain_world;
         let application = self.flood.flood(
-            self.terrain_world,
+            |idx| terrain_world[idx],
             self.water.width,
             self.water.height,
             seed_x,
             seed_z,
             source.surface_elevation_m,
         );
-        let skip_reason = match (source.kind, application.touches_world_edge) {
-            (WorldWaterFillKind::Lake, true) => Some("edge_escape"),
-            (WorldWaterFillKind::OpenWater, false) => Some("not_edge_connected"),
-            _ => None,
-        };
-        if let Some(reason) = skip_reason {
+        self.flood.sort_flooded_row_major();
+        let mut patches = Vec::new();
+        if !fill_kind_accepts(source.kind, application) {
+            let reason = match source.kind {
+                WorldWaterFillKind::Lake => "edge_escape",
+                WorldWaterFillKind::OpenWater => "not_edge_connected",
+            };
             debug_log!(
                 "world-editor",
                 "{} world_x={:.1} world_z={:.1} surface={:.1} reason={}",
@@ -791,30 +803,48 @@ impl FillSolve<'_> {
                 source.surface_elevation_m,
                 reason
             );
-            return;
+        } else {
+            self.flood.merge_depth(
+                self.terrain_world,
+                source.surface_elevation_m,
+                &mut self.depth,
+            );
+            self.patch_debug.push_fill(
+                &mut self.debug_cache,
+                &self.flood,
+                |idx| terrain_world[idx],
+                self.water,
+                source,
+                application,
+                &mut patches,
+            );
         }
-        self.flood.merge_depth(
-            self.terrain_world,
-            source.surface_elevation_m,
-            &mut self.depth,
-        );
-        self.patch_debug.push_fill(
-            &mut self.debug_cache,
-            &mut self.flood,
-            self.terrain_world,
-            self.water,
+        self.kept.push(KeptFill::new(
             source,
+            seed_z * self.water.width + seed_x,
+            &self.flood,
+            self.water.width,
             application,
-        );
+            patches,
+        ));
     }
 }
 
+// Deepest sum first, then more samples, then the lower fill index, then lakes before open
+// water: a total order over one patch's entries (a fill has one entry a patch and only the
+// preview has index -1), equal to the solve's stable sort of its lakes-then-open-water pushes,
+// so an in-place update that re-pushes some fills' entries orders them as a full solve does.
 fn sort_authored_water_patch_fill_debug(contributors: &mut [AuthoredWaterPatchFillDebug]) {
+    let kind_rank = |entry: &AuthoredWaterPatchFillDebug| match entry.kind {
+        WorldWaterFillKind::Lake => 0,
+        WorldWaterFillKind::OpenWater => 1,
+    };
     contributors.sort_by(|a, b| {
         b.patch_sum_depth_m
             .total_cmp(&a.patch_sum_depth_m)
             .then_with(|| b.patch_nonzero_samples.cmp(&a.patch_nonzero_samples))
             .then_with(|| a.fill_index.cmp(&b.fill_index))
+            .then_with(|| kind_rank(a).cmp(&kind_rank(b)))
     });
 }
 
@@ -928,7 +958,7 @@ mod tests {
     ) -> LakeFillApplication {
         let mut flood = FillFlood::new(terrain_world.len());
         let application = flood.flood(
-            terrain_world,
+            |idx| terrain_world[idx],
             width,
             height,
             seed_x,
@@ -955,9 +985,10 @@ mod tests {
         }
     }
 
-    // `ROAD-114`: a water edit replaces the water whole and restarts its render generation, so
+    // `ROAD-114`: a fill edit replaces the water whole and restarts its render generation, so
     // two edits in a row leave equal generations; the road tool's view keys its water copy as
-    // the published surface does and sees the second edit's water.
+    // the published surface does and sees the second edit's water. (A terrain edit updates the
+    // water in place and advances the generation instead, `TERRAIN-38`.)
     #[test]
     fn the_road_tool_view_follows_two_water_edits_in_a_row() {
         let mut core = test_core_with_small_world();

@@ -643,6 +643,8 @@ impl SimCore {
             self.watermap
                 .replace_baseline_depth_from_snapshot(w_data.baseline_depth)
                 .expect("undo baseline water snapshot must match the live water dimensions");
+            // The water no longer is what the kept book solved (`TERRAIN-38`).
+            self.authored_water_book = None;
             self.water_dirty = true;
             self.bump_road_tool_query_generation();
         }

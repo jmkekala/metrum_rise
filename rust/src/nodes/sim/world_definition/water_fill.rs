@@ -5,14 +5,17 @@
 //!
 //! A fill reads the terrain only at its seed, at its flooded samples and at their 4-neighbours,
 //! so it costs `O(k)` for `k` flooded samples: no world-sized allocation, clear or scan per fill
-//! (`A4c`). The world-sized buffers (the visit stamps) are allocated once per solve.
+//! (`A4c`). The world-sized buffer (one visit bit a sample) is allocated once and cleared behind
+//! each flood, so a kept water book reuses it for every edit (`TERRAIN-38`). The terrain is read
+//! through a height function of the row-major sample index: a dense copy at a full solve, the
+//! sparse source grid at an edit.
 
 use crate::nodes::sim::core::{AuthoredWaterPatchFillDebug, WorldWaterFillKind};
 use crate::simulation::water::WaterSystem;
 use std::collections::HashMap;
 
 // Depths at or below this are not counted as a fill's visible water in the debug cache.
-const AUTHORED_WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
+pub(super) const AUTHORED_WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 
 // Radix digit for sorting a fill's flooded sample indices into row-major order.
 const RADIX_BITS: u32 = 12;
@@ -25,13 +28,13 @@ pub(super) struct LakeFillApplication {
     pub(super) filled_cells: usize,
 }
 
-/// Per-solve scratch for fill floods over one dense terrain buffer.
+/// Scratch for fill floods over one world's samples.
 pub(super) struct FillFlood {
-    // `stamp[i] == mark` marks sample `i` as flooded by the current fill. Each fill takes a new
-    // mark instead of clearing the world-sized array, so a fill never touches samples it does
-    // not visit.
-    stamp: Vec<u32>,
-    mark: u32,
+    // One bit a sample: set while the current fill has flooded it. The next flood clears the
+    // bits of the samples the last one flooded, so a fill never touches samples it does not
+    // visit and the array is never cleared whole.
+    visited: Vec<u64>,
+    samples: usize,
     // Depth-first work stack of sample indices.
     stack: Vec<usize>,
     // The current fill's flooded samples: in visit order after `flood`, row-major after
@@ -42,12 +45,12 @@ pub(super) struct FillFlood {
 }
 
 impl FillFlood {
-    /// Scratch for a solve over `samples` terrain samples. The stamps are zero-initialised in
-    /// one allocation (pages the floods never reach are never written).
+    /// Scratch for floods over `samples` terrain samples: `samples / 8` bytes of visit bits,
+    /// zero-initialised in one allocation.
     pub(super) fn new(samples: usize) -> Self {
         Self {
-            stamp: vec![0; samples],
-            mark: 0,
+            visited: vec![0; samples.div_ceil(64)],
+            samples,
             stack: Vec::new(),
             flooded: Vec::new(),
             sorted: Vec::new(),
@@ -59,32 +62,62 @@ impl FillFlood {
         &self.flooded
     }
 
+    /// The world samples the scratch is sized for.
+    pub(super) fn samples(&self) -> usize {
+        self.samples
+    }
+
+    /// Clears the last flood's visit bits and frees the work lists, which grow to the largest
+    /// fill (two words a sample of it): what a kept book holds between solves is the visit
+    /// bits alone. `O(k)` for the last flood.
+    pub(super) fn release_work_lists(&mut self) {
+        for &idx in &self.flooded {
+            self.visited[idx / 64] &= !(1 << (idx % 64));
+        }
+        for list in [&mut self.flooded, &mut self.stack, &mut self.sorted] {
+            *list = Vec::new();
+        }
+    }
+
+    /// The bytes the scratch holds: the visit bits and the work lists' capacity.
+    #[cfg(test)]
+    pub(super) fn held_bytes(&self) -> usize {
+        let words = |list: &Vec<usize>| list.capacity() * std::mem::size_of::<usize>();
+        self.visited.capacity() * 8
+            + words(&self.flooded)
+            + words(&self.stack)
+            + words(&self.sorted)
+    }
+
     /// Floods from `(seed_x, seed_z)` over the 4-connected samples at or below
-    /// `surface_elevation_m`. A seed at or above the surface floods nothing. `O(k)` for the `k`
-    /// flooded samples (each is pushed once and reads its 4 neighbours); the result does not
-    /// depend on visit order.
+    /// `surface_elevation_m`, reading heights through `terrain` (row-major sample index). A
+    /// seed at or above the surface floods nothing. `O(k + k')` for the `k` flooded samples
+    /// (each is pushed once and reads its 4 neighbours) and the `k'` the previous flood left
+    /// marked; the result does not depend on visit order. It reads the terrain only at the
+    /// seed, the flooded samples and their 4-neighbours.
     pub(super) fn flood(
         &mut self,
-        terrain_world: &[f32],
+        mut terrain: impl FnMut(usize) -> f32,
         width: usize,
         height: usize,
         seed_x: usize,
         seed_z: usize,
         surface_elevation_m: f32,
     ) -> LakeFillApplication {
+        for &idx in &self.flooded {
+            self.visited[idx / 64] &= !(1 << (idx % 64));
+        }
         self.flooded.clear();
-        if seed_x >= width || seed_z >= height || terrain_world.len() != self.stamp.len() {
+        if seed_x >= width || seed_z >= height || width * height != self.samples {
             return LakeFillApplication::default();
         }
         let seed = seed_z * width + seed_x;
-        if terrain_world[seed] >= surface_elevation_m {
+        if terrain(seed) >= surface_elevation_m {
             return LakeFillApplication::default();
         }
 
-        self.mark += 1;
-        let mark = self.mark;
         let mut touches_world_edge = false;
-        self.stamp[seed] = mark;
+        self.visited[seed / 64] |= 1 << (seed % 64);
         self.stack.clear();
         self.stack.push(seed);
         while let Some(idx) = self.stack.pop() {
@@ -100,9 +133,9 @@ impl FillFlood {
                 (z + 1 < height).then(|| idx + width),
             ];
             for neighbour in neighbours.into_iter().flatten() {
-                if self.stamp[neighbour] != mark && terrain_world[neighbour] <= surface_elevation_m
-                {
-                    self.stamp[neighbour] = mark;
+                let (word, bit) = (neighbour / 64, 1 << (neighbour % 64));
+                if self.visited[word] & bit == 0 && terrain(neighbour) <= surface_elevation_m {
+                    self.visited[word] |= bit;
                     self.stack.push(neighbour);
                 }
             }
@@ -110,6 +143,57 @@ impl FillFlood {
         LakeFillApplication {
             touches_world_edge,
             filled_cells: self.flooded.len(),
+        }
+    }
+
+    /// Grows a kept fill (`TERRAIN-38`): floods from each of `starts` over the 4-connected
+    /// samples at or below `surface_elevation_m` that `held` (the fill's samples) does not
+    /// hold, leaving them in [`Self::flooded`] in visit order. Starts above the surface or held
+    /// are skipped. `O(g + k')` for the `g` samples reached and the `k'` the previous flood left
+    /// marked, plus `held`'s cost a neighbour read.
+    pub(super) fn grow(
+        &mut self,
+        starts: &[usize],
+        mut terrain: impl FnMut(usize) -> f32,
+        mut held: impl FnMut(usize) -> bool,
+        width: usize,
+        height: usize,
+        surface_elevation_m: f32,
+    ) {
+        for &idx in &self.flooded {
+            self.visited[idx / 64] &= !(1 << (idx % 64));
+        }
+        self.flooded.clear();
+        self.stack.clear();
+        for &start in starts {
+            let (word, bit) = (start / 64, 1 << (start % 64));
+            if self.visited[word] & bit == 0
+                && !held(start)
+                && terrain(start) <= surface_elevation_m
+            {
+                self.visited[word] |= bit;
+                self.stack.push(start);
+            }
+        }
+        while let Some(idx) = self.stack.pop() {
+            let (x, z) = (idx % width, idx / width);
+            self.flooded.push(idx);
+            let neighbours = [
+                (x > 0).then(|| idx - 1),
+                (x + 1 < width).then(|| idx + 1),
+                (z > 0).then(|| idx - width),
+                (z + 1 < height).then(|| idx + width),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                let (word, bit) = (neighbour / 64, 1 << (neighbour % 64));
+                if self.visited[word] & bit == 0
+                    && terrain(neighbour) <= surface_elevation_m
+                    && !held(neighbour)
+                {
+                    self.visited[word] |= bit;
+                    self.stack.push(neighbour);
+                }
+            }
         }
     }
 
@@ -129,12 +213,12 @@ impl FillFlood {
     // LSD radix sort of the flooded indices, `RADIX_BITS` per pass: `O(k + buckets)` per pass,
     // and as many passes as the world's largest index needs (two below 16.7 M samples). A small
     // fill sorts by comparison instead (`O(k log k)` with `k` below the bucket count).
-    fn sort_flooded_row_major(&mut self) {
+    pub(super) fn sort_flooded_row_major(&mut self) {
         if self.flooded.len() < RADIX_BUCKETS {
             self.flooded.sort_unstable();
             return;
         }
-        let max_index = self.stamp.len().saturating_sub(1);
+        let max_index = self.samples.saturating_sub(1);
         self.sorted.resize(self.flooded.len(), 0);
         let mut shift = 0;
         while shift == 0 || (max_index >> shift) != 0 {
@@ -158,7 +242,7 @@ impl FillFlood {
 }
 
 // The depth a fill gives one flooded sample, as the dense solve wrote it into a zeroed buffer.
-fn fill_depth(terrain_m: f32, surface_elevation_m: f32) -> f32 {
+pub(super) fn fill_depth(terrain_m: f32, surface_elevation_m: f32) -> f32 {
     0.0f32.max(surface_elevation_m - terrain_m)
 }
 
@@ -200,24 +284,32 @@ impl PatchFillDebug {
         }
     }
 
+    /// The bytes the scratch holds.
+    #[cfg(test)]
+    pub(super) fn held_bytes(&self) -> usize {
+        self.stats.capacity() * std::mem::size_of::<PatchFillStats>()
+            + self.touched.capacity() * std::mem::size_of::<usize>()
+    }
+
     /// Adds the last flood's contribution to every render patch holding one of its visible
-    /// samples. The samples are visited in row-major order, so each patch sums its depths in
-    /// the order a row-by-row scan of the patch would. `O(k)` plus the sort, and the patches
-    /// the fill touches.
+    /// samples, and appends those patches to `patches`. The flood must be sorted row-major
+    /// ([`FillFlood::sort_flooded_row_major`]), so each patch sums its depths in the order a
+    /// row-by-row scan of the patch would. `O(k)` and the patches the fill touches.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn push_fill(
         &mut self,
         out: &mut HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
-        flood: &mut FillFlood,
-        terrain_world: &[f32],
+        flood: &FillFlood,
+        mut terrain: impl FnMut(usize) -> f32,
         water: &WaterSystem,
         source: FillDebugSource,
         application: LakeFillApplication,
+        patches: &mut Vec<(usize, usize)>,
     ) {
-        flood.sort_flooded_row_major();
         let (cols, rows) = (water.render_patch_cols(), water.render_patch_rows());
         let interval = water.render_patch_interval_cells();
         for &idx in flood.flooded() {
-            let depth_m = fill_depth(terrain_world[idx], source.surface_elevation_m);
+            let depth_m = fill_depth(terrain(idx), source.surface_elevation_m);
             if depth_m <= AUTHORED_WATER_DEBUG_VISIBLE_EPSILON {
                 continue;
             }
@@ -247,6 +339,7 @@ impl PatchFillDebug {
         }
         for slot in self.touched.drain(..) {
             let stats = std::mem::take(&mut self.stats[slot]);
+            patches.push((slot % cols, slot / cols));
             out.entry((slot % cols, slot / cols))
                 .or_default()
                 .push(AuthoredWaterPatchFillDebug {
@@ -270,7 +363,11 @@ impl PatchFillDebug {
 // `p * interval ..= min((p + 1) * interval, last sample)`) holds sample `coord`: patch
 // `coord / interval` when it exists (the last sample of an axis that ends on a boundary has
 // none), and the previous patch when `coord` lies on its far boundary.
-fn owning_patches(coord: usize, interval: usize, count: usize) -> impl Iterator<Item = usize> {
+pub(super) fn owning_patches(
+    coord: usize,
+    interval: usize,
+    count: usize,
+) -> impl Iterator<Item = usize> {
     let own = coord / interval;
     let previous = (coord > 0 && coord.is_multiple_of(interval)).then(|| own - 1);
     previous.into_iter().chain((own < count).then_some(own))
