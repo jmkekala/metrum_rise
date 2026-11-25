@@ -21637,6 +21637,17 @@ backdrop beyond the square): no vertex moves by construction (the cell's vertice
 code, and what changes is shading detail (the 64 m lattice normal against the 8 m texture's, no
 relief mask) and the water's look.
 
+**Rows** (`dev` `9918253d1`'s release library and scripts against the round's, 512 MB both sides, the
+eight P-cores, after a quiet wait). The shipped Kuopio (`turns,pan,zoom,jump`), two C B B C sessions:
+the first read `turn_back 0.5s` and `zoom_in` worse at the median (+0.24 and +0.27 ms against spreads
+of 0.13), the second nothing worse at the median; **pooled, all 16 phases level at the median and at
+the maximum**. At the benchmark's poses the square covers the shipped map (0 cells in the zoom
+phases, 36-144 hazed cells after the jump). Load to settled 7.62-7.78 against 7.12-7.52 s (+0.47 s,
+report only; the load's frames now draw the map's cells where they drew sky, which is the likely
+cost, not separated), the load call +40-60 ms (the backdrop's build and 27 textures at the setup).
+Video memory +158 KB (the cells' buffers and mesh; the textures are D1's), Godot's static memory
++1.5 MB.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
