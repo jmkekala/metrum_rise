@@ -645,7 +645,8 @@ impl PatchStream {
     }
 
     /// Holds the prewarm back (water: while the terrain still streams, so the water's halo
-    /// builds do not take the frames the terrain's holes need).
+    /// builds do not take the frames the terrain's holes need; both layers: while the
+    /// vegetation has patches the view waits for).
     pub(crate) fn hold_prewarm(&mut self, held: bool) {
         self.prewarm_held = held;
     }

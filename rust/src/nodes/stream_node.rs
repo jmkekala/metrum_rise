@@ -1471,11 +1471,20 @@ impl StreamNode {
         // the load like the terrain's.
         self.water
             .set_halo(self.terrain.square().map(|square| grid.widen(square, water_ring)));
-        self.water.hold_prewarm(self.terrain.has_pending_work());
+        // The budget's background work (the fill, and releases that are not a build's donor)
+        // also waits while the vegetation has patches the view waits for (`TERRAIN-41` B1c): its
+        // installs share this frame budget and its products the payload workers the fill's
+        // requests would fill, so a fill running beside it kept a settled view waiting seconds.
+        // O(1).
+        let vegetation_waits = self.residency.has_pending_work();
+        self.water
+            .hold_prewarm(self.terrain.has_pending_work() || vegetation_waits);
+        self.terrain.hold_prewarm(vegetation_waits);
         // Releases on their own wait while the other layer has work a settled view waits for
         // (holes, hides, level checks): the water's frame runs before the terrain's, so its
         // releases would take the room of the terrain's units.
-        self.water.hold_releases(self.terrain.has_pending_work());
+        self.water
+            .hold_releases(self.terrain.has_pending_work() || vegetation_waits);
         // Over the budget, the terrain's releases (its frame runs after both layers' holes)
         // give the bytes back; the water's run before the terrain's holes, so they stay donors.
         let over = self
@@ -1503,7 +1512,8 @@ impl StreamNode {
             self.water.take_generations().for_each(drop);
             self.water.take_released().for_each(drop);
         }
-        self.terrain.hold_releases(self.water.has_pending_work());
+        self.terrain
+            .hold_releases(self.water.has_pending_work() || vegetation_waits);
         if let Some(scripts) = self.terrain_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
             let budget = if window {
