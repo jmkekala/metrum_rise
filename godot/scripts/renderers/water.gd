@@ -523,6 +523,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	var signature_changed := int(patch.get("cover_generation", cover_generation - 1)) != cover_generation
 	var depth_signature_changed: bool = int(patch.get("depth_signature", depth_signature - 1)) != depth_signature
 	var depth_visibility_changed := int(patch.get("depth_nonzero_count", depth_nonzero_count - 1)) != depth_nonzero_count
+	var state_before := _water_state(patch)
 	var texture_shape_changed := int(patch.get("texture_width", texture_width)) != texture_width or int(patch.get("texture_height", texture_height)) != texture_height
 	var should_upload_textures := depth_signature_changed or texture_shape_changed
 	var texture_elapsed_ms := 0.0
@@ -598,6 +599,16 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	)
 	# A new mesh above (dry) or a new position.
 	patch_bounds_changed.emit(key)
+	# The ground's wait for its water (`TERRAIN-58`): a patch that dried has nothing to draw; a
+	# hidden one that turned wet, or whose mesh no longer matches its cover and depth, has no mesh
+	# when it is next shown. A shown patch that turned so keeps its ground drawn (no new wait under
+	# a drawn patch): its water follows with its mesh.
+	var state_after := _water_state(patch)
+	if (
+		_stream != null and state_after != state_before
+		and (state_after != 2 or not resident_patch_lookup.has(key))
+	):
+		_stream.water_patch_state(key, state_after)
 	if _terrain_debug_enabled:
 		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if total_elapsed_ms >= 2.0:
@@ -647,10 +658,11 @@ func stream_request(keys: PackedInt32Array, prewarm: bool) -> PackedInt32Array:
 	return answers
 
 ## Makes `key` resident at mesh step `step`, building its node from its payload if needed.
-## Answers Vector2i(status, -1): status 0 resident, 1 no payload (requested again).
+## Answers Vector2i(status, state): status 0 resident, 1 no payload (requested again); state its
+## water as `_water_state` (the backdrop holds its ground until its water draws, `TERRAIN-58`).
 func stream_activate(key: Vector2i, step: int) -> Vector2i:
 	if resident_patch_lookup.has(key):
-		return Vector2i(0, -1)
+		return Vector2i(0, _water_state(patches.get(key, {})))
 	if not patches.has(key):
 		_create_patch(key, step)
 	var patch: Dictionary = patches.get(key, {})
@@ -669,7 +681,7 @@ func stream_activate(key: Vector2i, step: int) -> Vector2i:
 		_water_mesh_reshow_kept_count += 1
 	_queue_height_texture_rebind(key)
 	_refresh_terrain_patch_binding(key)
-	return Vector2i(0, -1)
+	return Vector2i(0, _water_state(patch))
 
 ## Hides resident `key`, whose terrain patch left.
 func stream_deactivate(key: Vector2i) -> void:
@@ -684,8 +696,8 @@ func stream_deactivate(key: Vector2i) -> void:
 		_refresh_terrain_patch_binding(key)
 	patch_bounds_changed.emit(key)
 
-## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers -1, or -2 when nothing was
-## built (its payload went).
+## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers its water as
+## `_water_state`, or -2 when nothing was built (its payload went).
 func stream_build(key: Vector2i, step: int) -> int:
 	if not patches.has(key):
 		_create_patch(key, step)
@@ -693,7 +705,7 @@ func stream_build(key: Vector2i, step: int) -> int:
 		return -2
 	(patches[key]["node"] as MeshInstance3D).visible = false
 	patch_bounds_changed.emit(key)
-	return -1
+	return _water_state(patches[key])
 
 ## Gives resident `key` the mesh of step `step`.
 func stream_set_lod(key: Vector2i, step: int) -> void:
@@ -1293,6 +1305,14 @@ func _set_patch_mesh_lod(key: Vector2i, target_lod_step: int) -> void:
 		_set_empty_mesh(patch)
 		patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = mesh_stats
+
+## Built `patch`'s water as the backdrop's holds read it (`TERRAIN-58`): 0 nothing to draw (dry),
+## 1 its node holds a mesh of its cover and depth (at any step), 2 wet without one (`_mesh_need`'s
+## hole). O(1).
+func _water_state(patch: Dictionary) -> int:
+	if int(patch.get("depth_nonzero_count", 0)) <= 0:
+		return 0
+	return 2 if _mesh_need(patch) == MESH_NEED_HOLE else 1
 
 ## What resident `patch`'s node lacks (`TERRAIN-41` L2): MESH_NEED_NONE when it is dry or draws
 ## the mesh of its step, cover generation and depth signature; MESH_NEED_HOLE when it draws none
@@ -1907,6 +1927,7 @@ func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 		return false
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
+	var first_mesh := _water_state(patch) == 2
 	patch_node.mesh = _baked_water_patch_mesh(mesh_data)
 	_set_mesh_bytes(patch, _water_mesh_data_estimated_bytes(mesh_data))
 	patch["held_mesh"] = PackedInt64Array([lod_step, int(patch.get("cover_generation", 0)),
@@ -1914,6 +1935,9 @@ func _apply_water_patch_mesh_data(mesh_data: Dictionary) -> bool:
 	patch_bounds_changed.emit(key)
 	patch["mesh_stats"] = _water_mesh_stats_from_baked_data(mesh_data)
 	patch["held_mesh_stats"] = patch["mesh_stats"]
+	# A shown patch's first mesh: its ground, held for it, draws from the next pass (`TERRAIN-58`).
+	if first_mesh and _stream != null:
+		_stream.water_patch_state(key, 1)
 	return true
 
 func _water_patch_mesh_data_matches_patch(

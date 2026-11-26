@@ -16,7 +16,22 @@
 //! book's draw-nothing changes (taken in both passes), and [`Cells::flush`] sends the changed
 //! blocks before the frame draws (both of the stream node's passes end with it). The book marks
 //! a patch that turns resident without a known list as drawing nothing in the same pass, so its
-//! first frame draws its cell, not a PlaneMesh it would collapse a frame later. One `MultiMesh` and one instance a block of
+//! first frame draws its cell, not a PlaneMesh it would collapse a frame later.
+//!
+//! **The ground waits for its water** (`TERRAIN-58`): a patch whose water does not draw yet is
+//! held, so its cell draws in its place and its lake bed never shows where settled water lies.
+//! The water draws when it has nothing to draw here (dry, or its payload refused) or its patch is
+//! shown holding a mesh of any detail step; [`Cells::set_water_shown`] and
+//! [`Cells::set_water_state`] take the water layer's shows and hides and the water's reports
+//! (its answers to an activation or a build, and `water.gd`'s report of a waiting patch's first
+//! mesh). A resident patch is held while its water does not draw, holds are on (a water layer
+//! and a graded book to hold the patch's own draw) and its block draws its cells; the holds that
+//! changed wait in [`Cells::take_hold_news`] for the stream node, which hands them to the graded
+//! book in the same pass. So the rule in full: a patch is drawn as a patch when it is resident,
+//! not blank and not held, and its cell draws otherwise; a block that cannot draw its cells holds
+//! no patch of its own (the patch then draws its bed rather than nothing).
+//!
+//! One `MultiMesh` and one instance a block of
 //! [`BLOCK_PATCHES`] x [`BLOCK_PATCHES`] patches, holding that block's cells in a dense list (a
 //! swap-remove keeps it dense), drawn with the block's material; the engine culls a block by its
 //! bounds like any instance.
@@ -40,9 +55,39 @@ pub(crate) const CAPACITY: usize = BLOCK_PATCHES * BLOCK_PATCHES;
 // A patch drawn as a patch: no cell.
 const NOT_DRAWN: u16 = u16::MAX;
 // A patch's state bits: resident (the terrain layer's), and blank (resident but drawing nothing,
-// the graded book's). A cell draws unless the patch is resident and not blank.
+// the graded book's). A cell draws unless the patch is resident, not blank and not held.
 const RESIDENT: u8 = 1;
 const BLANK: u8 = 2;
+// The water's bits (`TERRAIN-58`): its patch is shown (the water layer's residency); its last
+// report: nothing to draw (dry, or its payload refused), or its node holds a mesh (any step).
+const WATER_SHOWN: u8 = 4;
+const WATER_DRY: u8 = 8;
+const WATER_MESH: u8 = 16;
+// The patch's own draw is held (as last sent to the graded book).
+const HELD: u8 = 32;
+
+/// What the water says of a patch's water (`water.gd`'s answers and reports, `TERRAIN-58`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaterState {
+    /// Nothing to draw: dry, or its payload refused.
+    Dry,
+    /// Wet, its node holding a mesh of some detail step.
+    Mesh,
+    /// Wet, its node holding no mesh yet.
+    Empty,
+}
+
+impl WaterState {
+    /// `water.gd`'s code: 0 dry, 1 a mesh, 2 wet without one (any other: none).
+    pub(crate) fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(Self::Dry),
+            1 => Some(Self::Mesh),
+            2 => Some(Self::Empty),
+            _ => None,
+        }
+    }
+}
 
 /// The cells of the map's patches not drawn as patches, by block.
 #[derive(Default)]
@@ -51,8 +96,16 @@ pub(crate) struct Cells {
     blocks_x: usize,
     // Per patch of the map (row-major): its cell's slot in its block's list, or `NOT_DRAWN`.
     slots: Vec<u16>,
-    // Per patch of the map: `RESIDENT` and `BLANK`.
+    // Per patch of the map: `RESIDENT`, `BLANK`, the water's bits and `HELD`.
     states: Vec<u8>,
+    // Whether a patch can be held at all (`TERRAIN-58`: a water layer follows the terrain and a
+    // graded book holds the patch's own draw), and per block whether it can draw its cells (a
+    // material and its three textures), as the last flush found it.
+    holds_on: bool,
+    ready: Vec<bool>,
+    // The holds changed since the last take, in order, and the patches held now.
+    hold_news: Vec<(PatchKey, bool)>,
+    held: usize,
     // Per block: the patches drawing a cell, as `local z x BLOCK_PATCHES + local x`, dense.
     lists: Vec<Vec<u16>>,
     // Per block: its `MultiMesh` and instance, made at its first draw; and whether it draws.
@@ -72,10 +125,17 @@ impl Cells {
     /// once a world.
     pub(crate) fn reset(&mut self, grid: Option<PatchGrid>) {
         let rows = std::mem::take(&mut self.rows);
+        let hold_news = std::mem::take(&mut self.hold_news);
+        let holds_on = self.holds_on;
         *self = Self {
             rows,
+            hold_news,
+            holds_on,
             ..Self::default()
         };
+        // The book forgets its holds with the world's patches (the news of the old map's holds
+        // are dropped: no key of them is resident in the new world).
+        self.hold_news.clear();
         let Some(grid) = grid.filter(|grid| grid.cols > 0 && grid.rows > 0) else {
             return;
         };
@@ -89,6 +149,7 @@ impl Cells {
         self.lists = (0..blocks).map(|_| Vec::with_capacity(CAPACITY)).collect();
         self.objects = vec![None; blocks];
         self.shown = vec![false; blocks];
+        self.ready = vec![false; blocks];
         self.dirty = vec![false; blocks];
         self.dirty_blocks = Vec::with_capacity(blocks);
         for index in 0..cols * map_rows {
@@ -108,6 +169,115 @@ impl Cells {
         self.touch_all();
     }
 
+    /// Whether patches can be held (`TERRAIN-58`): a water layer follows the terrain and a graded
+    /// book holds the patch's own draw. Off, no patch is held (a held one is let go). `O(patches)`
+    /// on a change, which comes with a world or a renderer.
+    pub(crate) fn set_holds_on(&mut self, on: bool) {
+        if self.holds_on == on {
+            return;
+        }
+        self.holds_on = on;
+        for index in 0..self.states.len() {
+            self.update(index);
+        }
+    }
+
+    /// The water layer showed (`shown`, with its answer `state`) or hid patch `key`'s water
+    /// (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn set_water_shown(&mut self, key: PatchKey, shown: bool, state: Option<WaterState>) {
+        let Some(index) = self.index(key) else {
+            return;
+        };
+        self.put(index, WATER_SHOWN, shown);
+        if let Some(state) = state {
+            self.put_water(index, state);
+        }
+        self.update(index);
+    }
+
+    /// The water's report of patch `key` (a build's answer, a waiting patch's first mesh, a
+    /// drying, or a refused payload: [`WaterState::Dry`]). `O(1)`.
+    pub(crate) fn set_water_state(&mut self, key: PatchKey, state: WaterState) {
+        let Some(index) = self.index(key) else {
+            return;
+        };
+        self.put_water(index, state);
+        self.update(index);
+    }
+
+    /// The water forgot patch `key`'s node (released, or freed by its script): nothing is known of
+    /// it until it is built or shown again. `O(1)`.
+    pub(crate) fn forget_water(&mut self, key: PatchKey) {
+        let Some(index) = self.index(key) else {
+            return;
+        };
+        self.states[index] &= !(WATER_SHOWN | WATER_DRY | WATER_MESH);
+        self.update(index);
+    }
+
+    /// The water started over: nothing of any patch's water is known. `O(patches)`, once a world
+    /// or a water reset.
+    pub(crate) fn forget_all_water(&mut self) {
+        for index in 0..self.states.len() {
+            self.states[index] &= !(WATER_SHOWN | WATER_DRY | WATER_MESH);
+            self.update(index);
+        }
+    }
+
+    /// The holds that changed since the last call, in order (`true`: patch held, its own draw
+    /// waits for its water), for the graded book. `O(news)`.
+    pub(crate) fn take_hold_news(&mut self) -> std::vec::Drain<'_, (PatchKey, bool)> {
+        self.hold_news.drain(..)
+    }
+
+    /// Patches held now (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn held_count(&self) -> usize {
+        self.held
+    }
+
+    /// Whether patch `key` is held (its own draw waits for its water). `O(1)`.
+    pub(crate) fn is_held(&self, key: PatchKey) -> bool {
+        self.index(key)
+            .is_some_and(|index| self.states[index] & HELD != 0)
+    }
+
+    // The water's report of the patch at `index`: dry, or wet with or without a mesh.
+    fn put_water(&mut self, index: usize, state: WaterState) {
+        self.put(index, WATER_DRY, state == WaterState::Dry);
+        self.put(index, WATER_MESH, state == WaterState::Mesh);
+    }
+
+    fn put(&mut self, index: usize, bit: u8, on: bool) {
+        if on {
+            self.states[index] |= bit;
+        } else {
+            self.states[index] &= !bit;
+        }
+    }
+
+    // Brings the patch at `index`'s hold and its cell in line with its bits: held while resident,
+    // its water not drawing, holds on and its block drawing its cells; its cell listed unless it
+    // is resident, not blank and not held. `O(1)`.
+    fn update(&mut self, index: usize) {
+        let state = self.states[index];
+        let water_draws =
+            state & WATER_DRY != 0 || state & (WATER_SHOWN | WATER_MESH) == WATER_SHOWN | WATER_MESH;
+        let (block, local) = self.place(index);
+        let hold = self.holds_on && state & RESIDENT != 0 && !water_draws && self.ready[block];
+        if hold != (state & HELD != 0) {
+            self.put(index, HELD, hold);
+            if hold {
+                self.held += 1;
+            } else {
+                self.held -= 1;
+            }
+            let key = self.key(block, local);
+            self.hold_news.push((key, hold));
+        }
+        let drawn_as_patch = self.states[index] & (RESIDENT | BLANK | HELD) == RESIDENT;
+        self.set_drawn(index, !drawn_as_patch);
+    }
+
     /// Patch `key` became resident or left: its cell goes when it is resident and not blank,
     /// and comes otherwise. `O(1)`.
     pub(crate) fn set_resident(&mut self, key: PatchKey, resident: bool) {
@@ -121,23 +291,18 @@ impl Cells {
         self.set_state(key, BLANK, blank);
     }
 
-    /// Whether patch `key` is drawn as a patch: resident and not blank. `O(1)`.
+    /// Whether patch `key` is drawn as a patch: resident, not blank and not held. `O(1)`.
     pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
         self.index(key)
-            .is_some_and(|index| self.states[index] & (RESIDENT | BLANK) == RESIDENT)
+            .is_some_and(|index| self.states[index] & (RESIDENT | BLANK | HELD) == RESIDENT)
     }
 
     fn set_state(&mut self, key: PatchKey, bit: u8, on: bool) {
         let Some(index) = self.index(key) else {
             return;
         };
-        if on {
-            self.states[index] |= bit;
-        } else {
-            self.states[index] &= !bit;
-        }
-        let drawn_as_patch = self.states[index] & (RESIDENT | BLANK) == RESIDENT;
-        self.set_drawn(index, !drawn_as_patch);
+        self.put(index, bit, on);
+        self.update(index);
     }
 
     /// Marks block `block` for the next flush (its readiness may have changed). `O(1)`.
@@ -190,7 +355,9 @@ impl Cells {
     /// Sends the blocks changed since the last flush: a block draws when `material` gives it a
     /// material (its textures exist) and it lists a cell; its rows, count and bounds (`heights`,
     /// the ground's lowest and highest metres) are sent again when it draws. `mesh` is the cell's
-    /// mesh (a catalogue index). `O(changed blocks x CAPACITY)`; nothing when nothing changed.
+    /// mesh (a catalogue index). A block that starts or stops being able to draw its cells first
+    /// brings its patches' holds in line (`TERRAIN-58`). `O(changed blocks x CAPACITY)`; nothing
+    /// when nothing changed.
     pub(crate) fn flush(
         &mut self,
         backend: &mut impl RenderBackend,
@@ -200,8 +367,12 @@ impl Cells {
     ) {
         for at in 0..self.dirty_blocks.len() {
             let block = self.dirty_blocks[at] as usize;
-            self.dirty[block] = false;
             let material = mesh.and_then(|_| material(block));
+            if material.is_some() != self.ready[block] {
+                self.ready[block] = material.is_some();
+                self.update_block(block);
+            }
+            self.dirty[block] = false;
             let count = self.lists[block].len();
             let mut show = material.is_some() && count > 0;
             if show {
@@ -237,6 +408,16 @@ impl Cells {
             }
         }
         self.dirty_blocks.clear();
+    }
+
+    // Every patch of block `block` brought in line with its bits (its readiness changed); the
+    // block is being flushed, so its list changes need no touch. `O(CAPACITY)`.
+    fn update_block(&mut self, block: usize) {
+        for local in 0..CAPACITY as u16 {
+            if let Some(index) = self.index(self.key(block, local)) {
+                self.update(index);
+            }
+        }
     }
 
     // The patch index of `key`, inside the map.
