@@ -87,6 +87,20 @@ const MESH_NEED_HOLE := 1
 const MESH_NEED_UPGRADE := 2
 # The detail step of a kept mesh (`TERRAIN-63`; Rust's `kept_meshes::KEPT_WATER_STEP`): the coarsest.
 const KEPT_WATER_STEP := 8
+# Behind the loading screen (the load's preload, `TERRAIN-63` round W2) no gameplay frame is shown,
+# so the mesh pipeline's per-frame counts above, which made its rate the display's, give way to a
+# time slice for all three causes (holes, upgrades, kept): applies until PRELOAD_MESH_APPLY_MS of
+# the frame (the preload's water texture sync slice, `terrain.gd`), every arrived mesh polled, and
+# requests submitted within PRELOAD_MESH_SUBMIT_MS while fewer than PRELOAD_MESH_IN_FLIGHT keys and
+# PRELOAD_MESH_IN_FLIGHT_BYTES of their largest meshes are out or waiting for their apply (a step-1
+# mesh is up to 786 KB: the bound keeps a near view's arrays from holding hundreds of megabytes).
+# The install ledger's room is the gameplay frame's and is not consulted. What is asked for and in
+# which order does not change. The cap functions read `_mesh_preload` (set once a frame) and return
+# today's numbers outside the preload.
+const PRELOAD_MESH_APPLY_MS := 25.0
+const PRELOAD_MESH_SUBMIT_MS := 5.0
+const PRELOAD_MESH_IN_FLIGHT := 256
+const PRELOAD_MESH_IN_FLIGHT_BYTES := 64 * 1024 * 1024
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -155,6 +169,10 @@ var _water_mesh_last_apply_elapsed_ms: float = 0.0
 var _water_mesh_applies_processed: int = 0
 # Where the mesh pipeline's next charge to the install ledger starts (Time ticks, us).
 var _mesh_charge_from_us: int = 0
+# The load's preload runs this frame (`TERRAIN-63` W2: the preload's caps), and the estimated mesh
+# bytes its submits may still put in flight this frame.
+var _mesh_preload := false
+var _mesh_preload_room_bytes := 0
 # Shown patches whose node kept the mesh they need, since the last perf record.
 var _water_mesh_reshow_kept_count: int = 0
 var _water_resource_pool_hit_count: int = 0
@@ -231,9 +249,11 @@ func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
 	var payload_poll_start_us := frame_start_us
-	# A world load's preload (`TERRAIN-59`) polls up to what the layer requests a frame then.
+	# A world load's preload (`TERRAIN-59`) polls up to what the layer requests a frame then, and
+	# its mesh pipeline runs on the preload's caps (`TERRAIN-63` W2).
+	_mesh_preload = _stream.is_terrain_preloading()
 	var payload_poll_count := _poll_ready_water_patch_payloads(
-		TerrainRenderer.PRELOAD_PAYLOAD_POLL_BUDGET if _stream.is_terrain_preloading()
+		TerrainRenderer.PRELOAD_PAYLOAD_POLL_BUDGET if _mesh_preload
 		else WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	_report_extras()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
@@ -1488,6 +1508,40 @@ func _upgrade_room_us() -> float:
 	_mesh_charge_from_us = now_us
 	return _stream.get_install_room_us()
 
+## Whether an upgrade or a kept mesh may be submitted or applied now: inside the install ledger's
+## upgrade room, or always during the load's preload (`TERRAIN-63` W2: no gameplay frame is shown).
+## O(1).
+func _mesh_room_for_upgrade() -> bool:
+	return _mesh_preload or _upgrade_room_us() > 0.0
+
+## Whether the preload's in-flight bytes admit one more request of any step (the largest mesh is
+## step 1's); always outside the preload. O(1).
+func _mesh_preload_admits() -> bool:
+	return not _mesh_preload or _mesh_preload_room_bytes >= _mesh_bytes_max(1)
+
+## Requests out or polled and waiting for their apply, of every cause. O(1).
+func _mesh_in_flight_count() -> int:
+	return (mesh_pending_lod.size() + mesh_apply_queue.size()
+		+ mesh_pending_kept.size() + mesh_kept_apply_queue.size())
+
+## The estimated mesh bytes of what is out (the largest mesh of each request's step) or polled
+## (its arrays). O(in flight), at most PRELOAD_MESH_IN_FLIGHT; read once a preload frame.
+func _mesh_in_flight_bytes() -> int:
+	var bytes := _water_mesh_apply_queue_estimated_bytes()
+	for step: int in mesh_pending_lod.values():
+		bytes += _mesh_bytes_max(step)
+	for mesh_data: Dictionary in mesh_kept_apply_queue:
+		bytes += _water_mesh_data_estimated_bytes(mesh_data)
+	return bytes + mesh_pending_kept.size() * _mesh_bytes_max(KEPT_WATER_STEP)
+
+## The largest mesh of `lod_step` on this grid, bytes as the meshes' `mesh_estimated_bytes` count
+## them: every mesh cell drawn on its own, two triangles of 32-byte vertices (Rust's
+## `kept_mesh_bytes_max` at the kept step). O(1).
+func _mesh_bytes_max(lod_step: int) -> int:
+	var intervals := _water_mesh_interval_count_for_sample_count(
+		maxi(2, terrain_patch_interval_cells + 1), lod_step)
+	return intervals * intervals * 6 * 32
+
 func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) -> Dictionary:
 	var perf_stats: Dictionary = {}
 	if collect_perf_stats:
@@ -1641,7 +1695,7 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 		submit_budget = _water_patch_mesh_submit_budget(budget, submit_backlog_active)
 		submitted_count = _submit_water_patch_mesh_requests(
 			submit_budget,
-			WATER_PATCH_MESH_SUBMIT_BUDGET_MS,
+			PRELOAD_MESH_SUBMIT_MS if _mesh_preload else WATER_PATCH_MESH_SUBMIT_BUDGET_MS,
 			perf_stats,
 			submit_backlog_active
 		)
@@ -1694,6 +1748,9 @@ func _compact_mesh_queue(queue: Array[Vector2i], upgrade: bool) -> int:
 	return removed_count
 
 func _water_patch_mesh_submit_budget(base_budget: int, backlog_active: bool) -> int:
+	if _mesh_preload:
+		_mesh_preload_room_bytes = PRELOAD_MESH_IN_FLIGHT_BYTES - _mesh_in_flight_bytes()
+		return maxi(0, PRELOAD_MESH_IN_FLIGHT - _mesh_in_flight_count())
 	var pending_count: int = mesh_pending_lod.size()
 	if pending_count >= WATER_PATCH_MESH_PENDING_HARD_LIMIT:
 		return 0
@@ -1706,7 +1763,8 @@ func _water_patch_mesh_submit_budget(base_budget: int, backlog_active: bool) -> 
 	return base_budget
 
 func _water_mesh_refresh_stage_budget_exhausted(start_us: int, completed_stage_count: int) -> bool:
-	if completed_stage_count <= 0:
+	# The preload's submits keep the jobs fed; their own slice and in-flight bounds limit them.
+	if completed_stage_count <= 0 or _mesh_preload:
 		return false
 	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= WATER_PATCH_MESH_REFRESH_SOFT_BUDGET_MS
 
@@ -1746,15 +1804,15 @@ func _submit_water_patch_mesh_requests(
 	# Holes first, then upgrades while the ledger's upgrade room lasts (`TERRAIN-41` L2).
 	for upgrade: bool in [false, true]:
 		var queue: Array[Vector2i] = mesh_upgrade_queue if upgrade else mesh_refresh_queue
-		while not core_busy and submitted_count < budget and not queue.is_empty():
+		while not core_busy and submitted_count < budget and not queue.is_empty() and _mesh_preload_admits():
 			if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
 				break
-			if upgrade and _upgrade_room_us() <= 0.0:
+			if upgrade and not _mesh_room_for_upgrade():
 				upgrades_held = queue.size()
 				break
 			var requests := PackedInt32Array()
 			var batch_remaining: int = mini(WATER_PATCH_MESH_SUBMIT_BATCH_SIZE, budget - submitted_count)
-			while batch_remaining > 0 and not queue.is_empty():
+			while batch_remaining > 0 and not queue.is_empty() and _mesh_preload_admits():
 				if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
 					break
 				var key: Vector2i = queue.pop_front()
@@ -1785,6 +1843,7 @@ func _submit_water_patch_mesh_requests(
 				requests.push_back(key.y)
 				requests.push_back(lod_step)
 				mesh_pending_lod[key] = lod_step
+				_mesh_preload_room_bytes -= _mesh_bytes_max(lod_step)
 				batch_remaining -= 1
 			if requests.is_empty():
 				continue
@@ -1815,14 +1874,15 @@ func _submit_water_patch_mesh_requests(
 	# The kept meshes last (`TERRAIN-63`), while the ledger's upgrade room lasts. A request whose
 	# patch was shown, released or changed since it was asked for has no entry any more (stale).
 	var kept_submitted := 0
-	while not core_busy and submitted_count < budget and not mesh_kept_queue.is_empty():
+	while (not core_busy and submitted_count < budget and not mesh_kept_queue.is_empty()
+			and _mesh_preload_admits()):
 		if _time_budget_exhausted(submit_start_us, submit_budget_ms, inspected_count):
 			break
-		if _upgrade_room_us() <= 0.0:
+		if not _mesh_room_for_upgrade():
 			break
 		var kept_requests := PackedInt32Array()
 		var kept_remaining: int = mini(WATER_PATCH_MESH_SUBMIT_BATCH_SIZE, budget - submitted_count)
-		while kept_remaining > 0 and not mesh_kept_queue.is_empty():
+		while kept_remaining > 0 and not mesh_kept_queue.is_empty() and _mesh_preload_admits():
 			var key: Vector2i = mesh_kept_queue.pop_front()
 			inspected_count += 1
 			if not mesh_kept_requested.has(key):
@@ -1831,6 +1891,7 @@ func _submit_water_patch_mesh_requests(
 			mesh_kept_requested.erase(key)
 			kept_requests.append_array(PackedInt32Array([key.x, key.y, KEPT_WATER_STEP]))
 			mesh_pending_kept[key] = KEPT_WATER_STEP
+			_mesh_preload_room_bytes -= _mesh_bytes_max(KEPT_WATER_STEP)
 			kept_remaining -= 1
 		if kept_requests.is_empty():
 			continue
@@ -1874,6 +1935,9 @@ func _submit_water_patch_mesh_requests(
 	return submitted_count
 
 func _water_patch_mesh_poll_budget() -> int:
+	# The preload's: every mesh asked for (what is out or polled is bounded at the submit).
+	if _mesh_preload:
+		return mesh_pending_lod.size() + mesh_pending_kept.size()
 	var apply_queue_count: int = mesh_apply_queue.size()
 	if apply_queue_count >= WATER_PATCH_MESH_APPLY_QUEUE_HARD_LIMIT:
 		return 0
@@ -1915,16 +1979,22 @@ func _water_patch_mesh_apply_boost_active() -> bool:
 	)
 
 func _water_patch_mesh_apply_limit(boost_active: bool) -> int:
+	if _mesh_preload:
+		return PRELOAD_MESH_IN_FLIGHT
 	if boost_active:
 		return WATER_PATCH_MESH_APPLY_HEADROOM_MAX_PER_FRAME
 	return WATER_PATCH_MESH_APPLY_MAX_PER_FRAME
 
 func _water_patch_mesh_apply_budget_ms(boost_active: bool) -> float:
+	if _mesh_preload:
+		return PRELOAD_MESH_APPLY_MS
 	if boost_active:
 		return WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_MS
 	return WATER_PATCH_MESH_APPLY_BUDGET_MS
 
 func _water_patch_mesh_apply_budget_bytes(boost_active: bool) -> int:
+	if _mesh_preload:
+		return PRELOAD_MESH_IN_FLIGHT_BYTES
 	if boost_active:
 		return WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_BYTES
 	return WATER_PATCH_MESH_APPLY_BUDGET_BYTES
@@ -2057,7 +2127,7 @@ func _apply_ready_water_patch_meshes(
 	while processed_count < max_patches and not mesh_apply_queue.is_empty():
 		var mesh_data: Dictionary = mesh_apply_queue.front()
 		var upgrade := _mesh_data_is_upgrade(mesh_data)
-		if upgrade and _upgrade_room_us() <= 0.0:
+		if upgrade and not _mesh_room_for_upgrade():
 			# No upgrade room: the queue's upgrades (holes sort first) go back to their requests
 			# (the bake cache answers them again), so they never hold a hole's mesh back.
 			returned_count += _return_upgrade_meshes()
@@ -2148,7 +2218,7 @@ func _apply_kept_water_patch_meshes(
 	while processed < max_patches and not mesh_kept_apply_queue.is_empty():
 		if float(Time.get_ticks_usec() - start_us) / 1000.0 >= apply_budget_ms:
 			break
-		if _upgrade_room_us() <= 0.0:
+		if not _mesh_room_for_upgrade():
 			break
 		var unit_start_us := Time.get_ticks_usec()
 		var mesh_data: Dictionary = mesh_kept_apply_queue.pop_front()
