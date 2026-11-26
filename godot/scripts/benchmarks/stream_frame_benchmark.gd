@@ -107,8 +107,8 @@
 ## the map's patches after each draw) records per row `bed`: [drawn terrain patches in the camera's
 ## view whose wet water patch does not draw (no water node, hidden, or no mesh of its cover and
 ## depth), the same over the map, drawn terrain patches in view]; and per sample `cell_spans`:
-## [hand-overs from a backdrop cell to the patch, frames a patch of the wanted square stayed a cell
-## before its hand-over at the median, the 90th percentile and most], read from the stream node's
+## [hand-overs from a backdrop cell to the patch, frames a resident patch stayed a cell before
+## its hand-over at the median, the 90th percentile and most], read from the stream node's
 ## whole-map probe, and `bed_max`, the sample's most lake beds in view in a frame.
 ## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
 ## rectangle the old way too) records per row the reflection's running counts `rect_check`:
@@ -1517,15 +1517,13 @@ func _on_bed_check_post_draw() -> void:
 	_bed_check = bed
 	_bed_max = maxi(_bed_max, bed[0])
 	_bed_frame += 1
-	# A patch of the wanted square drawn as a cell since which frame; its span closes when it is
-	# drawn as a patch (a patch that leaves the square first closes none).
-	var square: Vector4i = _stream.get_terrain_halo()
+	# A patch resident in the terrain's scripts but drawn as a cell since which frame; its span
+	# closes when it is drawn as a patch (a patch that leaves first closes none).
 	var map: PackedFloat32Array = _stream.probe_stream_layer("terrain_map")
 	for index in range(0, map.size(), 8):
 		var key := Vector2i(int(map[index]), int(map[index + 1]))
 		var drawn := (int(map[index + 3]) & 1) != 0
-		var wanted := key.x >= square.x and key.y >= square.y and key.x <= square.z and key.y <= square.w
-		if not wanted:
+		if not _terrain.resident_patch_lookup.has(key):
 			_cell_since.erase(key)
 		elif not drawn:
 			if not _cell_since.has(key):
