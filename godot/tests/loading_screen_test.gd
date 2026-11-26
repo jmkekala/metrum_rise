@@ -120,7 +120,7 @@ func _start_player_load(input: Node, path: String) -> void:
 # described above. `probe`: input sent under the screen and after it. `cancel_phase` (1 view, 2
 # fill): cancel by `how` ("esc" or "click") in the first frame of that phase.
 func _watch_load(what: String, probe: bool, cancel_phase := 0, how := "") -> void:
-	_seen = {"handed_over": false, "covered_frames": 0, "cancelled": false}
+	_seen = {"handed_over": false, "covered_frames": 0, "cancelled": false, "before_call": 0}
 	var start := Time.get_ticks_msec()
 	var last_fraction := 0.0
 	var probes: Array = []
@@ -142,6 +142,8 @@ func _watch_load(what: String, probe: bool, cancel_phase := 0, how := "") -> voi
 			var ready: bool = input.is_world_ready()
 			called = called or not ready
 		if in_world and not called:
+			# The world scene's frames before its load call (none drawn without the screen).
+			_seen.before_call += 1
 			_expect(covered, "%s: the scene showed before its load call" % what)
 		elif in_world:
 			var ready: bool = input.is_world_ready()
@@ -177,8 +179,8 @@ func _watch_load(what: String, probe: bool, cancel_phase := 0, how := "") -> voi
 		if covered:
 			_seen.covered_frames += 1
 	_expect(screen_seen, "%s: the screen was up" % what)
-	print("[loading_screen] %s: %d covered frames, handed over %s, cancelled %s" % [
-		what, _seen.covered_frames, _seen.handed_over, _seen.cancelled])
+	print("[loading_screen] %s: %d covered frames (%d of the world scene before its load call), handed over %s, cancelled %s"
+		% [what, _seen.covered_frames, _seen.before_call, _seen.handed_over, _seen.cancelled])
 	if cancel_phase > 0:
 		_expect(_seen.cancelled, "%s: the load reached phase %d under the screen" % [what, cancel_phase])
 	if probe and _seen.handed_over:
