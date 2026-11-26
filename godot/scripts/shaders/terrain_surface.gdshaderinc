@@ -162,8 +162,11 @@ varying vec3 var_world_pos;
 varying float var_view_distance_m;
 #ifdef TERRAIN_BACKDROP
 // The backdrop (`TERRAIN-41` D2, terrain_backdrop.gdshader): 1 where the vertex's lattice point is
-// under water (its water surface above its ground), interpolated across the cell.
+// under water (its water surface above its ground), interpolated across the cell; and the water
+// surface where it is (0 where dry), interpolated alike, so their ratio is the level of the wet
+// points about a fragment (`TERRAIN-60`).
 varying float var_backdrop_wet;
+varying float var_backdrop_level;
 // The skirt's drop below a cell's edge, metres: it hides the seam against a finer neighbour.
 const float BACKDROP_SKIRT_M = 48.0;
 // The backdrop's flat water (`TERRAIN-41` D3): no reflection, waves or second pass, but the real
@@ -568,6 +571,7 @@ void vertex() {
 	NORMAL = normalize(vec3(-gradient.x, 1.0, -gradient.y));
 	bool wet = surface > ground;
 	var_backdrop_wet = wet ? 1.0 : 0.0;
+	var_backdrop_level = wet ? surface : 0.0;
 	// A patch shorter than its full size (the map's last) ends at its own edge: the lattice
 	// points past it hold the edge sample.
 	vec2 local_m = min(vec2(k) * lattice_m, INSTANCE_CUSTOM.zw);
@@ -1146,15 +1150,19 @@ void fragment() {
 			ROUGHNESS = ground_roughness;
 			SPECULAR = 0.08;
 #ifdef TERRAIN_BACKDROP
-			// Flat water where the cell lies under it (half way between a wet and a dry lattice
-			// point): the real water's opaque terms as a far pixel draws them (water.gdshader), its
-			// deep colour darkened by its Schlick Fresnel against the level surface; the engine's
+			// Flat water where the cell's ground lies under it: the wet lattice points' level about
+			// the fragment above its interpolated ground (`TERRAIN-60`: the water's own rule, surface
+			// above ground, so the line falls where the cell's ground meets the lake's level rather
+			// than half way between a wet and a dry point; one varying and one division a fragment).
+			// The real water's opaque terms as a far pixel draws them (water.gdshader), its deep
+			// colour darkened by its Schlick Fresnel against the level surface; the engine's
 			// sky ambient and sky reflection (IRRADIANCE and RADIANCE with alpha 0: the engine's
 			// own, as the water leaves them) at water's reflectance (0.25 in Godot's encoding); the
 			// roughness of its unresolved ripples at the sea state. Left out: its screen and planar
 			// reflections, the reflected moving clouds, the sun glitter and the waves' shading
 			// (`TERRAIN-41` D3); the bed through its last 2 % of opacity is the ground's albedo.
-			if (var_backdrop_wet > 0.5) {
+			float backdrop_level = var_backdrop_level / max(var_backdrop_wet, 1e-6);
+			if (var_backdrop_wet > 0.0 && backdrop_level > h) {
 				vec3 up_view = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
 				float fresnel = 0.02 + 0.98 * pow(
 					1.0 - clamp(dot(up_view, normalize(-VERTEX)), 0.0, 1.0), backdrop_water_fresnel.x);
