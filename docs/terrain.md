@@ -20834,8 +20834,10 @@ four-texel border a side), the land cover (R8 at the vegetation's 8 m texel, a t
 side) and the water depth (R32F, a texel of border a side): 25,672 + 17,956 = 43,628 bytes at 8 m
 cells, the same at every detail step, an edge patch charged in full. The extras are reported by the
 scripts once a frame as totals (`set_patch_extras`): the spare height and land cover textures of
-built patches, the bytes of the water meshes the built water patches hold (the arrays uploaded),
-and the resource sets in each pool (a place of its layer each). Counted bytes are the built places
+built patches, the bytes of the water meshes the built water patches hold (the arrays uploaded;
+since `TERRAIN-63` less the kept water meshes, counted apart in the room the places leave:
+[record](#kept-water-meshes-terrain-63-plan-round-w1-2026-11-26)), and the resource sets in each
+pool (a place of its layer each). Counted bytes are the built places
 of both layers plus the extras. Not counted: nodes, materials, what the driver adds a texture, the
 mask pages (allocated for the whole world at the load) and the graded pages.
 
@@ -22604,6 +22606,178 @@ no screen. Rust: `the_preload_units_count_what_the_preload_still_waits_for` (eve
 preload, the units equal the keep rectangle less what `preload_left` reads, all done at the end, a
 wanted patch's own condition holds its unit back) and the cells' hold test reads `water_waits`
 against its model.
+
+
+### Kept water meshes (`TERRAIN-63`, plan round W1, 2026-11-26)
+
+A water patch the budget keeps beyond the view is built hidden by the fill (or the load's preload)
+with no mesh: `water.gd` asked for a mesh only for a shown patch. So the first zoom-out over kept
+patches waited for their meshes (4 to 6 applied a frame), and since `TERRAIN-58` their ground drew
+its backdrop cell meanwhile. Now every built, hidden, wet water patch without a mesh of its cover
+and depth gets one of the coarsest step in the background, so a patch shown later draws its water
+in the frame it is shown, and its own finer step follows as an upgrade.
+
+**The book** (`stream/layers/terrain/kept_meshes.rs`, beside the budget's): one byte a patch
+(built, shown, wet, holding a mesh, asked, kept, barred), the counts of wanting, asked and kept
+patches, and two lists of patch indices, sorted by the fill's order (exact squared ground distance
+from the eye, then index) only when they changed or the eye's patch moved, and only in a frame
+that asks or drops (`O(n log n)` then, nothing otherwise). It is fed by the events the backdrop's
+holds read (`TERRAIN-58`): the water's answers to builds and activations, its shows, hides and
+releases, `water_patch_state`, a script's own free and a reset; `O(1)` each. In debug builds a
+cross-check after every frame asserts that the book and the backdrop agree on every built patch's
+water (wet, holding a mesh), `O(patches)`. `water.gd` executes and decides nothing:
+`stream_request_meshes(keys)` queues each key by the kept cause (answering the keys it cannot take
+with their state) and `stream_drop_mesh(key)` empties a kept mesh's node and answers the bytes
+freed. Neither calls the stream node back. A "kept" mesh is one that came by this cause to a patch
+not shown since; a show makes it the patch's ordinary mesh (counted with the extras and kept after
+a later hide, as before).
+
+**The step** (decision D6 (a)): the coarsest, 8. A patch enters the wanted square at least 9.5 km
+from the eye (`TERRAIN-41`'s half side of 8 km, a patch and two of hysteresis), where its own step
+is 4 or 8: at 8 the kept mesh is its mesh; at 4 the kept mesh draws at once and the step-4 mesh
+comes inside the ledger's upgrade room (round L2). A finer mesh a patch already holds is never
+replaced by a coarser one.
+
+**Pricing** (decision D5 (a)): kept meshes take the room the places leave and never a place. The
+places `N`, the ring and the keep and release rectangles are computed as before from the extras
+**without** the kept meshes' bytes `H` (`water.gd` reports its mesh bytes less `H` as the extras and
+`H` apart, `set_kept_water_mesh_bytes`, after its mesh pipeline each frame), so every set that
+existed before (drawn, built, kept, released) is the same at every target. With `W` the largest
+mesh of the kept step on the grid (`kept_mesh_bytes_max`: every mesh cell drawn on its own, 8 x 8
+cells of 6 vertices of 32 bytes, 12,288 bytes at 8 m; a fully wet patch's indexed grid is 4,128),
+a request goes out only while `counted + H + W x (asked + 1)` fits the target, and while `counted +
+H` passes it kept meshes are dropped, farthest first, each a unit charged to the frame like a water
+hide. Between the two lies a band of `W`, so a still camera neither asks nor drops in a loop; and
+because an arrived mesh is at most `W`, the kept set at rest is the nearest-first prefix whose real
+bytes leave less than `W` of room, whatever order or pace the meshes arrive in. Without a target
+every wanting patch is asked for. The budget's status and the console's `terrain` report show `H`
+(`kept_water_mesh_bytes`), the kept, wanting and asked counts, the drops and refusals since the
+load, `W`, and `kept_held` (what held the requests back in the last frame).
+
+**Rate** (background only; the load's preload waiting for them is round W2): requests go out only
+in a frame after the load's hold and the post-load window, in which neither layer has a hole, hide
+or level change waiting, no unit was held back, no ground is held for its water, the vegetation has
+no patch the view waits for, and the frame's install ledger has room for one kept apply (priced 85
+us, its measured mean); at most 8 a frame and 16 out at once. In `water.gd` the kept cause is a
+third queue beside holes and upgrades: submitted after them, applied after them, each submit and apply only inside the
+ledger's upgrade room (`_upgrade_room_us`, as upgrades); the polled kept meshes wait in their own
+apply queue, so they never take the view's apply queue's room, and the kept requests are left out
+of what a settled view waits for (`has_pending_render_work` and the ready-backlog estimate).
+
+**The four risks, each with its rule:**
+
+1. *The reflection's books never take in a hidden patch for its mesh.* The rectangle's hull
+   (`RENDER-76`) and the proxies (`RENDER-75`) take a water patch only while its node is visible
+   and resident, unchanged; a kept apply to a hidden node emits its bounds' change, which removes an
+   absent key (nothing). `water_reflection_math_test` holds hidden patches with wet meshes beside
+   shown ones: the hull holds the shown patches only, the kept rectangle equals the walk's, a shown
+   kept patch enters with its mesh box at once and leaves when hidden.
+2. *The mesh pipeline's resident-only gates and a release while a kept request is in flight.* A
+   hole or upgrade keeps its resident-only gates; a kept request passes for a built, hidden, wet
+   patch without a mesh, and its result applies only to such a patch, of the kept step, cover and
+   depth it was asked for. A show ends a kept request (the show asks for its own step if it must),
+   a submitted kept request makes the patch busy for a release (`stream_release` answers 3; the
+   core takes the next candidate and retries it later), a queued one is dropped with the release.
+   The mesh jobs publish a result only while its key is still in flight: a patch released while its
+   job ran (an existing race for holes, seen in a test) used to leave its mesh in the jobs' cache
+   for good; it is now dropped.
+3. *One step kept a patch; what a zoom-out and a zoom-in do.* A kept patch shown is never a hole:
+   its state answers "holds a mesh", so its ground is not held (`TERRAIN-58`), and a finer step is
+   an upgrade under the ledger.
+4. *A terrain edit or a water re-solve under a kept hidden patch.* A hidden patch whose cover or
+   depth changed drops its mesh in that call (never drawn, its bytes freed) with any kept request of
+   the old cover and depth, and reports its state even when it did not change; the book then asks
+   again by its rule (or not, if it dried). The same rule drops a hidden, previously shown patch's
+   stale mesh, which before stayed until its next show and drew there until the hole's mesh came.
+
+**Measured** (untimed; release libraries, `dev` `708101079` against the branch, the stream benchmark
+on P-cores, one run a side):
+
+- *Equal to before.* The shipped Kuopio's stream row (turns, pan, zoom, jump, trip) with settle
+  digests at 256, 512, 1,024 MB and Whole map: at all 14 settle points of each target the terrain's
+  and the water's built set (`built_digest`), residency, land cover, graded tiles, buildings, roads
+  and parked cars equal to `dev`, the water mesh check 0 mismatches and 0 hidden stale meshes; the
+  ring equal in every sample. Differences, the same between two runs of `dev` (a second control at
+  1,024 MB): the steps of 9 patches at the first `far_to_ground` settle (`TERRAIN-45`), one
+  vegetation digest at the next, and the places at a sample's end by up to 30 (the extras of that
+  moment). The 60 km map with a player's preload at 256, 512 and 1,024 MB: `built_digest`,
+  residency and the counted bytes at the hand-over equal (3,844 / 9,604 / 13,689 patches; 224.0 /
+  475.3 / 653.5 MB), the kept meshes then growing in the background (56, 116, about 310-340 at the
+  three settle points). On this row nothing is kept on the shipped map (its wanted square holds the
+  whole map at the centre; patches hidden later were shown before and keep their meshes as before).
+- *The visible gain* (the `TERRAIN-58` analysis' bed-check phase, `METRUM_STREAM_BED_CHECK=1`: a
+  player's load off the map's centre (-5376, -256), the camera settled low, then 600 frames for the
+  background fill on both sides, then at 60 frames a second a zoom-out from 300 m to 16 km in 2.0 s,
+  a zoom-in and a second zoom-out, at pitch -0.95 and -0.6). Frames a patch stayed a backdrop cell
+  after it became resident, p50 / p90 / most, on the first zoom-out:
+
+  | Map, target | Hand-overs | `dev` | W1 |
+  |---|---:|---:|---:|
+  | Shipped Kuopio, Automatic (512 MB) | 343 | 12 / 25 / 193 | 2 / 3 / 4 |
+  | Shipped Kuopio, 1,024 MB | 343 | 12 / 25 / 190 | 2 / 3 / 3 |
+  | 60 km map, 1,024 MB (report only) | 12,274 | 3 / 67 / 889 | 2 / 3 / 5 |
+
+  The later legs (the second zoom-out, the second pose) were 1-2 / 2-3 / 2-4 on both sides: their
+  patches had been shown before. The bed count stayed 0 in every frame on both sides
+  (`TERRAIN-58`'s own bar). What is left of the wait is the water patch's own show, a frame or two
+  after its ground (`TERRAIN-58` "shown late").
+- *Kept meshes and their memory.* Shipped Kuopio after that load: 324 water patches built hidden,
+  259 of them wet and holding a kept mesh, `H` 1.77 MB, the largest 12,288 bytes (`W` exactly), no
+  drop, no refusal; the counted bytes (113.7 MB), places and ring equal to `dev`'s at the same
+  moment; the engine's video memory +1.2 MiB. A kept mesh is 6.8 KB at the mean, so every wet patch
+  of the map (1,028) would hold about 7.0 MB (the plan's estimate 6.9-8.1 MB). The 60 km map at
+  1,024 MB: 6,564 kept meshes, `H` 35.9 MB (the plan's 42.5 MB for all 7,602 wet patches at Whole
+  map), video memory +27.9 MiB, the jobs' mesh cache 7,679 entries (one step-8 entry a kept patch
+  besides the shown patches' own; not bounded, as before). The background fill had ended within
+  the low settle on both maps (it waits for nothing the view waits for, then asks 8 a frame).
+- *Inside the install ledger* (the 60 km map at 1,024 MB loaded as a player does, then 30 s of a
+  still camera, the perf channel on; `dev` against the branch): the branch applied 6,261 kept
+  meshes in 3,131 frames of the still, 2 a frame at most. A kept apply took 81 us at the mean, 106
+  at the 95th percentile (its price is 85 us); the frame's whole ledger in those frames 0.37 ms at
+  the mean, 0.47 ms at the 95th percentile, against 0.07 / 0.04 ms (mean / p95 of the still) on
+  `dev`, which applied nothing; the frame time's median 4.06 against 3.61 ms (uncapped). Two frames
+  passed the 2.0 ms ledger (2.27 and 2.02 ms; none in `dev`'s still): in each the kept meshes' mesh
+  request call (`request_water_patch_meshes`, the request path holes use too) took 1.8-2.0 ms where
+  it takes 0.10 ms at the median and 0.16 ms at the 95th percentile (3 of 3,074 calls over 1 ms;
+  not traced). In the load's own settle both sides passed 2.0 ms in 21-23 frames (the graded
+  book's and the water's dirty-upload work, as before); no kept apply ran there.
+- *The reflection's books.* The shipped Kuopio's stream row with `METRUM_WATER_RECT_CHECK=1` and
+  `METRUM_STREAM_PROXY_CHECK=1`: 3,178 rectangles, 0 unequal, 0 walks; the proxy book in step in all
+  3,529 frames. The bed-check row at Automatic, whose first pose holds 259 kept meshes, the same per
+  leg: 2,619 rectangles, 0 unequal, 0 walks; the proxy book in step in all 1,756 frames.
+
+**Timing** (the shipped Kuopio stream row: turns, pan, zoom, jump, trip at 512 MB, P-cores; two
+C B B C sessions, `dev` `708101079`'s library and scripts against the branch's): pooled over four
+runs a side every phase is level at the median and at the maximum (`far_zoom_out`'s median better);
+the frame means differ by -0.24 to +0.13 ms a phase, with overlapping ranges. Session 1 alone read
+`zoom_out`'s median worse (+0.38 ms against a spread of 0.25) and session 2 not (+0.20 / 0.41);
+session 2 read `turn_back 1s` and `jump_back` medians worse and session 1 not. Nothing is kept on
+this row (above), so the branch runs there only the book's `O(1)` frame and the scripts' `O(1)`
+checks.
+
+**Proof** (fresh): Rust `kept_meshes::tests` (the kept set is one set under six arrival orders and
+paces and is the nearest-first prefix the rule names; with room for `k` meshes exactly the nearest
+`k` are kept; without a target every wanting patch is asked for, 8 a frame and 16 out at once; over
+the target the farthest go first and a still camera then calls the script nothing for 120 frames;
+a show, a report, a release and a refusal end a request; nothing is asked while the view waits),
+`the_kept_step_s_largest_mesh_is_the_kept_meshes_bound` (`W` against the mesh builder), and
+`a_patch_forgotten_while_its_mesh_job_runs_keeps_no_cache_entry` (fails before the publication
+fix). `water_kept_mesh_test` (headless, in the gate's main chain, about 30 s): part one drives the
+water renderer's books with a recording simulation and stream node: a kept request queued,
+submitted and applied, each met by a show (at the kept step and at step 4: never a hole, no hole
+queued, the mesh an ordinary one), a release (busy while submitted, the patch's jobs forgotten, no
+bytes left), a drop and a changed depth wet and dry (no request and no stale mesh left in that call,
+the state reported once, an old job's mesh dropped). Part two runs the game scene on a 20 km blank
+world with four lakes beyond the view: every hidden wet patch holds a kept mesh of its cover and
+depth after the hand-over (32, in about 300 frames of a debug build), a still camera asks, applies
+and drops nothing for 120 frames, a target that leaves the places alone drops the farthest kept
+meshes until they fit and releases nothing, a zoom-out over them meets no hole, a tight target
+releases 730 patches and leaves no cached mesh of an unbuilt patch, and a water re-solve under a
+kept patch (its lake drained, then filled again) drops its stale mesh in the frame its depth
+changes and the book wants it again; after each step the book's asked and kept counts and bytes
+equal the script's. Not driven live: a terrain edit under hidden patches (in this headless scene its
+road publication can stay unacknowledged and hold the water's payloads back); part one drives the
+same `_upload_patch` rule. `water_reflection_math_test` gains the hidden kept patches' case.
 
 
 ## Implemented Runtime Contract
