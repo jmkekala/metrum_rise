@@ -15,6 +15,9 @@
 ## "ready" (docs/terrain.md "Godot tile renderer", T53 (a), TERRAIN-15); until then the screen shows
 ## what the renderer draws and the graded work takes the whole frame. The farther terrain streams on
 ## within the frame budget while the player plays, its unready patches showing the background.
+## A player's load (the menus' Load and New Game) also preloads the base terrain the terrain memory
+## target keeps, nearest the camera first, before the hand-over (`TERRAIN-59`), with a progress
+## line; the API's loads (tests, benchmarks, tools) keep the hand-over above unless they ask.
 extends Node
 
 ## Emitted when a loaded world is handed over to the player (is_world_ready()).
@@ -60,6 +63,7 @@ const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 const SaveBrowser := preload("res://scripts/ui/save_browser.gd")
+const LoadProgress := preload("res://scripts/ui/load_progress.gd")
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
@@ -68,6 +72,9 @@ var _simulation_speed: float = 0.0
 # False from a world load until the terrain renderer settles: no input, no camera control and no
 # clock (set_simulation_speed refuses a running speed) until then.
 var _world_ready := true
+# The load's progress line while a preload runs (`TERRAIN-59`), and when the load began (usec).
+var _load_progress: LoadProgress = null
+var _load_started_us := 0
 var _selected_industry_resource_id := ""
 var _industry_deposits_overlay_forced := false
 var _industry_previous_overlay_mode := 0
@@ -215,16 +222,37 @@ func is_world_ready() -> bool:
 # per frame, before the renderers' frames (this node's process priority), so the frame it hands
 # over in follows one with the near ring ready. O(patches within the radius).
 func _await_world_ready() -> void:
+	# A player's load also waits for its terrain preload (`TERRAIN-59`): O(keep rectangle) a frame.
+	var preloading: Dictionary = terrain_node.advance_preload() if terrain_node != null else {}
+	if bool(preloading.get("pending", false)):
+		_show_load_progress(int(preloading["built"]), int(preloading["built"]) + int(preloading["left"]))
+		return
 	if terrain_node != null and terrain_node.unready_patches_near_camera(WORLD_READY_RADIUS_M) > 0:
 		return
 	# The road chunks of the near ring too: a load's chunks stream in nearest first (RENDER-32-P).
 	var roads := get_node_or_null("../NetworkRenderer/RoadChunkHydration")
 	if roads != null and roads.holes_near(WORLD_READY_RADIUS_M) > 0:
 		return
+	if not preloading.is_empty():
+		MetrumDebug.log("terrain", "load preload done: %d patches built, %.2f s from the load call"
+			% [int(preloading["built"]), float(Time.get_ticks_usec() - _load_started_us) / 1e6])
+	if _load_progress != null:
+		_load_progress.queue_free()
+		_load_progress = null
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
 	_world_ready = true
 	world_ready.emit()
+
+func _show_load_progress(built: int, total: int) -> void:
+	if _load_progress == null:
+		_load_progress = LoadProgress.new()
+		add_child(_load_progress)
+	_load_progress.show_counts(built, total)
+
+## The load's progress line while a preload runs (`TERRAIN-59`): its text, empty without one.
+func load_progress_text() -> String:
+	return _load_progress.text() if _load_progress != null else ""
 
 func _input(event):
 	if not _world_ready or not _camera_window_focused:
@@ -555,7 +583,10 @@ func _default_save_name() -> String:
 		return _current_save_path.get_file()
 	return "savegame.sqlite"
 
-func _refresh_after_world_load():
+# `preload_terrain` (`TERRAIN-59`): the hold also preloads the base terrain within the terrain
+# memory target before the hand-over (a player's load).
+func _refresh_after_world_load(preload_terrain := false):
+	_load_started_us = Time.get_ticks_usec()
 	if road_tool and road_tool.is_drawing():
 		road_tool.cancel_road()
 	_cancel_active_tool()
@@ -589,6 +620,8 @@ func _refresh_after_world_load():
 	_world_ready = false
 	if terrain_node != null:
 		terrain_node.set_load_settling(true)
+		if preload_terrain:
+			terrain_node.begin_load_preload()
 	_await_world_ready()
 
 func _handle_save_game():
@@ -610,7 +643,7 @@ func _finish_save_game_selection(path: String) -> void:
 		push_error("Save failed: " + path)
 
 func _finish_load_game_selection(path: String) -> void:
-	if not menu_load_game_from_path(path):
+	if not menu_load_game_from_path(path, true):
 		# The running city stays; the browser opens again saying why the save was refused.
 		SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_LOAD, SAVES_DIR,
 			_finish_load_game_selection).show_refusal(world_load_error())
@@ -789,12 +822,14 @@ func menu_save_game() -> void:
 func menu_load_game() -> void:
 	_handle_load_game()
 
-func menu_load_game_from_path(path: String) -> bool:
+## Loads the save at `path`; `preload_terrain` (a player's load, `TERRAIN-59`): the hand-over
+## also waits for the base terrain's preload.
+func menu_load_game_from_path(path: String, preload_terrain := false) -> bool:
 	if path.is_empty():
 		return false
 	if simulation_node.load_game(path):
 		_current_save_path = path
-		_refresh_after_world_load()
+		_refresh_after_world_load(preload_terrain)
 		print("Loaded game from: ", path)
 		return true
 	push_error("Load failed: " + path)
@@ -805,12 +840,13 @@ func menu_load_game_from_path(path: String) -> bool:
 func world_load_error() -> String:
 	return simulation_node.get_world_load_error()
 
-func menu_load_world_definition(path: String) -> bool:
+## Loads the world definition at `path` (`preload_terrain` as menu_load_game_from_path).
+func menu_load_world_definition(path: String, preload_terrain := false) -> bool:
 	if path.is_empty():
 		return false
 	if simulation_node.load_world_definition(path):
 		_current_save_path = ""
-		_refresh_after_world_load()
+		_refresh_after_world_load(preload_terrain)
 		print("Loaded world definition: ", path)
 		return true
 	push_error("Load world definition failed: " + path)
@@ -818,7 +854,8 @@ func menu_load_world_definition(path: String) -> bool:
 
 ## Starts a game on a world definition with the vegetation parameters the dialog chose.
 ## Missing keys fall back to the Rust defaults, and Rust sanitises the values it receives.
-func menu_start_new_game(path: String, vegetation: Dictionary) -> bool:
+## `preload_terrain` as menu_load_game_from_path.
+func menu_start_new_game(path: String, vegetation: Dictionary, preload_terrain := false) -> bool:
 	if path.is_empty():
 		return false
 	var defaults: Dictionary = VegetationOptions.new().get_default_config()
@@ -830,7 +867,7 @@ func menu_start_new_game(path: String, vegetation: Dictionary) -> bool:
 		float(vegetation.get("canopy_stems_per_ha", defaults["canopy_stems_per_ha"]))
 	)
 	if started:
-		_refresh_after_world_load()
+		_refresh_after_world_load(preload_terrain)
 		set_simulation_speed(0.0)
 		print("Started new game on world: ", path)
 		return true

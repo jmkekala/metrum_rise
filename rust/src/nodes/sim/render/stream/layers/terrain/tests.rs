@@ -1257,3 +1257,97 @@ fn a_vegetation_replacement_runs_among_the_level_changes_by_class_and_distance()
     let (work, _) = run(&mut trees, 1900.0);
     assert_eq!((trees.ran.len(), trees.at, work.lod_changes), (1, 1, 0), "{work:?}");
 }
+
+// `TERRAIN-59`: a load's preload on `WIDE` at `places`: frames under a slice of `slice_us`
+// (predicted costs, the clock reads 0), payloads handed back at most `per_frame` a frame in
+// request order (the workers' pace), the fill held for `view_frames` frames (the view phase),
+// until the fill has nothing left. Returns the layer, its scripts and the frames it took.
+fn preload(
+    places: Option<u64>,
+    slice_us: f64,
+    per_frame: usize,
+    view_frames: usize,
+) -> (PatchStream, Scripts, usize) {
+    let eye = [-12000.0, 800.0, -3000.0];
+    let mut layer = wide_layer(places);
+    let mut scripts = Scripts::default();
+    layer.set_preload(true);
+    for frame in 0..20_000 {
+        layer.hold_prewarm(frame < view_frames);
+        layer.set_square(WIDE.target(eye, 1.0e6, false));
+        let mut budget = FrameBudget::new(slice_us);
+        let work = layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+        assert!(work.requests <= PRELOAD_REQUESTS, "frame {frame}: {} requests", work.requests);
+        let take = per_frame.min(scripts.requested.len());
+        for key in scripts.requested.drain(..take).collect::<Vec<_>>() {
+            layer.payload(key, Payload::Ready);
+        }
+        let _ = layer.take_changes().count();
+        let _ = layer.take_generations().count();
+        if frame >= view_frames && !layer.has_pending_work() && layer.fill_left() == 0 {
+            layer.set_preload(false);
+            return (layer, scripts, frame + 1);
+        }
+    }
+    panic!("the preload never ended");
+}
+
+#[test]
+fn a_preload_builds_the_keep_nearest_first_whatever_the_slice_and_the_workers() {
+    let eye = [-12000.0, 800.0, -3000.0];
+    let distance = |key: PatchKey| {
+        let centre = WIDE.centre(key);
+        let (dx, dz) = (f64::from(centre[0] - eye[0]), f64::from(centre[1] - eye[2]));
+        dx * dx + dz * dz
+    };
+    for places in [Some(3500), Some(u64::MAX)] {
+        let (layer, scripts, _) = preload(places, 2_000.0, 7, 30);
+        // The fill's builds (`b`) run nearest the eye first, then by key, as its list is sorted.
+        let fill: Vec<PatchKey> = scripts.calls.iter().filter(|call| call.0 == b'b').map(|call| call.1).collect();
+        assert!(!fill.is_empty());
+        for pair in fill.windows(2) {
+            let (a, b) = (distance(pair[0]), distance(pair[1]));
+            let in_order = a < b || a == b && WIDE.index(pair[0]) < WIDE.index(pair[1]);
+            assert!(in_order, "{:?} ({b}) built after {:?} ({a})", pair[1], pair[0]);
+        }
+        // The keep rectangle whole, nothing beyond it.
+        let keep = layer.halo().unwrap();
+        assert_eq!(scripts.built, square_keys(keep), "places {places:?}");
+        // Another slice and another workers' pace build the same set in the same fill order.
+        for (slice_us, per_frame, view_frames) in [(50_000.0, 300, 3), (f64::INFINITY, 1, 0), (200.0, 64, 90)] {
+            let (_, other, _) = preload(places, slice_us, per_frame, view_frames);
+            let other_fill: Vec<PatchKey> =
+                other.calls.iter().filter(|call| call.0 == b'b').map(|call| call.1).collect();
+            assert_eq!(other.built, scripts.built, "slice {slice_us}, {per_frame} a frame");
+            assert_eq!(other_fill, fill, "slice {slice_us}, {per_frame} a frame");
+            assert!(other.released.is_empty());
+        }
+    }
+}
+
+#[test]
+fn after_a_preload_a_still_view_builds_requests_and_releases_nothing() {
+    let eye = [-12000.0, 800.0, -3000.0];
+    let (mut layer, mut scripts, _) = preload(Some(3500), 50_000.0, 300, 3);
+    let calls = scripts.calls.len();
+    for _ in 0..200 {
+        let work = wide_frame(&mut layer, &mut scripts, eye, 2000.0);
+        assert_eq!((work.builds, work.activations, work.requests, work.releases), (0, 0, 0, 0));
+    }
+    assert_eq!(scripts.calls.len(), calls);
+    assert_eq!(layer.fill_left(), 0);
+}
+
+#[test]
+fn the_preload_lifts_the_request_limit_and_only_while_it_runs() {
+    let eye = [-12000.0, 800.0, -3000.0];
+    for (preload, limit) in [(false, TERRAIN_LIMITS.requests), (true, PRELOAD_REQUESTS)] {
+        let mut layer = wide_layer(Some(u64::MAX));
+        layer.set_preload(preload);
+        let mut scripts = Scripts::default();
+        layer.set_square(WIDE.target(eye, 1.0e6, false));
+        let mut budget = FrameBudget::new(f64::INFINITY);
+        let work = layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+        assert_eq!(work.requests, limit, "preload {preload}");
+    }
+}

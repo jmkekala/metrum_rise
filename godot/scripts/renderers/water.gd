@@ -213,7 +213,10 @@ func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
 	var payload_poll_start_us := frame_start_us
-	var payload_poll_count := _poll_ready_water_patch_payloads(WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	# A world load's preload (`TERRAIN-59`) polls up to what the layer requests a frame then.
+	var payload_poll_count := _poll_ready_water_patch_payloads(
+		TerrainRenderer.PRELOAD_PAYLOAD_POLL_BUDGET if _stream.is_terrain_preloading()
+		else WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	_report_extras()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0

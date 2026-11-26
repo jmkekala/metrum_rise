@@ -606,7 +606,7 @@ godot_main_chain() {
         zoning_road_tool_test zoning_cells_tool_test zoning_stock_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test water_reflection_math_test \
         street_lights_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test \
-        terrain_payload_request_test terrain_budget_save_test terrain_memory_setting_test terrain_backdrop_handover_test water_mesh_upgrade_return_test; do
+        terrain_payload_request_test terrain_budget_save_test terrain_memory_setting_test terrain_backdrop_handover_test terrain_preload_test water_mesh_upgrade_return_test; do
         if [ "$script" = graded_tile_renderer_test ]; then
             run_graded_bridge_trace_test || return 1
             continue
