@@ -44,7 +44,7 @@
 //! Storage is dense per patch, sized once per world; a frame allocates nothing.
 
 use super::super::rings::{Cell, Lattice, RingBand, RingSet};
-use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, later_hole, orders_before};
+use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, orders_before};
 
 mod budget;
 mod units;
@@ -465,10 +465,6 @@ pub(crate) struct PatchWork {
     pub(crate) unit_us: [f64; UNIT_KINDS],
     /// The longest unit by kind, microseconds.
     pub(crate) unit_max_us: [f64; UNIT_KINDS],
-    /// The last of the frame's holes in the order that ran (class, squared ground distance from
-    /// the eye): a vegetation product pulled after the patch units that orders before it takes
-    /// its place in the order (`VEG-35` R1b).
-    pub(crate) last_hole: Option<(Class, f64)>,
 }
 
 /// One layer's patches: terrain's (wanted: the square) or water's (wanted: terrain's resident).
@@ -1345,7 +1341,6 @@ impl PatchStream {
             let start = frame.clock.now_us();
             let (done, generation) = exec.activate(key, step);
             self.account(frame.budget, kind, cost, frame.clock.now_us() - start);
-            self.work.last_hole = later_hole(self.work.last_hole, (class, distance));
             if done == Activation::Done && self.flags[index] & BUILT == 0 {
                 self.generations.push((key, generation));
             }

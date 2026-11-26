@@ -71,12 +71,6 @@ pub(crate) fn orders_before(a: (Class, f64), b: (Class, f64)) -> bool {
     a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
 }
 
-/// The later in the order of `last` and `unit` (class, squared ground distance from the eye;
-/// [`orders_before`]): the frame's last hole unit so far (`VEG-35` R1b). `O(1)`.
-pub(crate) fn later_hole(last: Option<(Class, f64)>, unit: (Class, f64)) -> Option<(Class, f64)> {
-    Some(last.filter(|last| orders_before(unit, *last)).unwrap_or(unit))
-}
-
 /// A source of monotonic microseconds.
 pub(crate) trait Clock {
     /// Microseconds since an arbitrary fixed point.

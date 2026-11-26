@@ -1973,15 +1973,6 @@ impl StreamNode {
             self.terrain_work = self.terrain.work();
             self.releases_total[0] += self.terrain_work.releases as u64;
         }
-        // The installs after the patch units place a product pulled since by the frame's order
-        // (`VEG-35` R1b), where the patch units run on the frame's budget.
-        if frame_budget {
-            for (ran, work) in ran.into_iter().zip([self.water_work, self.terrain_work]) {
-                if ran {
-                    self.vegetation.note_patch_holes(work.last_hole);
-                }
-            }
-        }
         self.follow_terrain();
         // The window closes when the patches first settle with residents, or after
         // `POST_LOAD_WINDOW_S` of frames outside the load's hold (a view never let settle).

@@ -399,37 +399,6 @@ fn the_hole_cursor_takes_the_holes_in_the_install_order_and_leaves_the_rest_to_i
 }
 
 #[test]
-fn a_hole_pulled_after_the_patch_units_takes_its_place_in_the_frames_order() {
-    // `VEG-35` R1b: the frame's patch units ran holes up to a near one out of view; with the
-    // room spent, the holes pulled since that order before it (the two in view) install, the
-    // rest wait; the next frame starts without the place.
-    let mut backend = Recorder::new();
-    let mut layer = layer(1024, 64);
-    let clock = StepClock::new(1.0);
-    let keys: [PatchKey; 6] = [[2, 0, 4], [5, 0, 4], [1, 0, 4], [6, 0, 4], [3, 3, 1], [0, 2, 4]];
-    for (serial, &key) in keys.iter().enumerate() {
-        layer.deliver(delivery(key, serial as u64 + 2, product(12, serial, true, true)));
-    }
-    let in_view = |low: [f32; 3], _: [f32; 3]| low[0] >= 5.0 * SPAN && low[2] < SPAN;
-    let full = || {
-        let mut full = FrameBudget::new(STREAM_BUDGET_US);
-        full.record(STREAM_BUDGET_US, STREAM_BUDGET_US);
-        full
-    };
-    layer.begin_pass(1);
-    layer.note_patch_holes(Some((Class::HoleNear, 0.0)));
-    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 2);
-    assert!(layer.installed([5, 0, 4]).is_some() && layer.installed([6, 0, 4]).is_some());
-    layer.begin_pass(1);
-    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 0, "the same frame");
-    layer.note_patch_holes(Some((Class::Hole, 0.0)));
-    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 3, "before a later hole");
-    layer.begin_pass(2);
-    assert_eq!(layer.install(&mut backend, &mut full(), &clock, &in_view, false), 0, "a new frame");
-    assert_eq!(layer.pending(), 1);
-}
-
-#[test]
 fn the_cursor_passes_the_products_the_frames_residency_does_not_keep() {
     // `VEG-35` R1b: the order test's patches with two of them no longer kept (the camera left
     // them): the cursor gives the others in the same order and leaves those two waiting.
