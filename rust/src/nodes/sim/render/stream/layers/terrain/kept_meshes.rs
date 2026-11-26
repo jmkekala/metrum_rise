@@ -39,10 +39,11 @@ pub(crate) const ASK_PER_FRAME: usize = 8;
 /// Kept requests in flight at once, at most.
 pub(crate) const ASKED_MAX: usize = 16;
 /// The predicted price of one kept mesh's apply in `water.gd`, microseconds: the book asks only
-/// in a frame whose install ledger has this much room. Measured on the shipped Kuopio after the
-/// hand-over (`TERRAIN-63`): about 40 us at the mean a kept apply (a step-8 mesh: an `ArrayMesh`
-/// of at most 384 vertices, or the shared full grid).
-pub(crate) const APPLY_PRICE_US: f64 = 60.0;
+/// in a frame whose install ledger has this much room (the apply itself is admitted by the
+/// ledger's room in `water.gd`, charged as measured). Measured (`TERRAIN-63`, release library, the
+/// 60 km map's background fill after a player's load): 84 us at the mean, 98 at the 95th
+/// percentile, a step-8 mesh (an `ArrayMesh` of at most 384 vertices, or the shared full grid).
+pub(crate) const APPLY_PRICE_US: f64 = 85.0;
 /// The predicted price of a drop (its node's mesh emptied), as a water hide's.
 pub(crate) const DROP_PRICE_US: f64 = 40.0;
 
