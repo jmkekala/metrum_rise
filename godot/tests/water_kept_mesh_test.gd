@@ -8,8 +8,10 @@
 ## Part two runs the game scene on a 20 km blank world with lakes beyond the view: after the
 ## hand-over every hidden wet patch gets a kept mesh of the coarsest step, a still camera then asks,
 ## applies and drops nothing, a water re-solve under a kept patch drops its stale mesh in that frame
-## and a new one comes when it is wet again, a zoom-out over them meets no hole, a tight target drops kept meshes and
-## releases patches, and no mesh job state outlives its patch. Part three (round W2) loads that
+## and a new one comes when it is wet again, a zoom-out over them meets no hole and draws every
+## patch built hidden on its ground's height texture from its show's frame on (`TERRAIN-66`), a tight target drops kept meshes and
+## releases patches, no mesh job state outlives its patch, and a terrain edit under a shown water
+## patch binds the water to its ground's new height texture in the commit's frame. Part three (round W2) loads that
 ## world as a player does: the preload hands over only once every hidden wet patch holds its kept
 ## mesh (the units at `units_total - 1` exactly then), a still camera after it asks, applies and
 ## drops nothing; at a target with room for only a few kept meshes the load waits for those and
@@ -341,6 +343,16 @@ func _test_world() -> void:
 	var holes := 0
 	var shown := 0
 	var kept_now := _kept_keys(water)
+	# The patches built hidden before the zoom (`TERRAIN-66`): in the frame that shows one, its
+	# material reads its terrain patch's height texture, not the zero fallback it may have been
+	# built with. Checked at the next frame's start, before any node processes, so it reads what the
+	# show's frame drew (headless runs draw nothing, so there is no frame_post_draw).
+	var built_hidden: Array[Vector2i] = []
+	for key: Vector2i in water.patches:
+		if not water.resident_patch_lookup.has(key):
+			built_hidden.append(key)
+	var first_shows := {}
+	var unbound := 0
 	var start := Time.get_ticks_msec()
 	var stable := 0
 	while stable < 10 and Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
@@ -350,10 +362,19 @@ func _test_world() -> void:
 			if water.resident_patch_lookup.has(key):
 				shown += 1
 				holes += int(water._mesh_need(water.patches[key]) == water.MESH_NEED_HOLE)
+		for key: Vector2i in built_hidden:
+			if water.resident_patch_lookup.has(key) and not first_shows.has(key):
+				first_shows[key] = true
+				var bound: Variant = (water.patches[key]["material"] as ShaderMaterial).get_shader_parameter("heightmap")
+				unbound += int(bound != terrain.get_patch_height_texture(key) or bound == water.fallback_height_texture)
 		stable = stable + 1 if terrain.is_render_settled() else 0
-	print("[water_kept_mesh] zoom-out: kept patches shown %d patch-frames, holes %d" % [shown, holes])
+	print("[water_kept_mesh] zoom-out: kept patches shown %d patch-frames, holes %d; hidden-built patches shown %d, on another height texture than their ground's in their show's frame %d"
+		% [shown, holes, first_shows.size(), unbound])
 	_expect(shown > 0, "the zoom-out shows kept patches")
 	_expect(holes == 0, "a kept patch shown is never a hole (%d)" % holes)
+	_expect(first_shows.size() > 0, "the zoom-out shows patches built hidden")
+	_expect(unbound == 0, "a hidden-built patch draws its show's frame on its ground's height texture (%d of %d did not)"
+		% [unbound, first_shows.size()])
 	view[5] = 400.0
 	_expect(camera.set_view_state(view), "the view state must apply")
 	await _frames_until_settled(camera, terrain, "the zoom back in")
@@ -377,6 +398,7 @@ func _test_world() -> void:
 	stream.set_terrain_budget_mb(0.0)
 	await _frames_until_kept(camera, stream, water)
 	await _edit_under_kept(camera, stream, water, sim, _kept_keys(water))
+	await _edit_under_shown(camera, terrain, water, sim)
 	main.queue_free()
 	await process_frame
 
@@ -553,6 +575,29 @@ func _edit_under_kept(camera: Node, stream: Node, water: Node, sim: Node, kept: 
 				and int(budget.get("kept_held", 0)) & 32 != 0)
 			_expect(came or waits, "%s: a kept mesh of the new depth came, or the book wants it and waits for ledger room" % edit)
 		_check_books(stream, water, sim, "after the %s" % edit)
+
+# A terrain edit under the eye's shown water patch (`TERRAIN-66`): the terrain's commit gives the
+# patch another height texture (the old one becomes the spare its next stage writes into), and the
+# water over it reads the new one from that frame on (checked at the next frame's start, as above).
+func _edit_under_shown(camera: Node, terrain: Node, water: Node, sim: Node) -> void:
+	var key := Vector2i(floori((EYE.x + 10240.0) / 512.0), floori((EYE.y + 10240.0) / 512.0))
+	_expect(water.resident_patch_lookup.has(key), "the eye's water patch %s is shown" % key)
+	var before: Texture2D = terrain.get_patch_height_texture(key)
+	sim.sculpt_terrain(EYE, 60.0, 2.0)
+	var replaced := -1
+	for frame in KEPT_FRAMES:
+		camera.advance_motion(1.0 / 60.0)
+		await process_frame
+		if terrain.get_patch_height_texture(key) != before:
+			replaced = frame
+			break
+	var bound: Variant = (water.patches.get(key, {}).get("material") as ShaderMaterial).get_shader_parameter("heightmap") \
+		if water.patches.has(key) else null
+	print("[water_kept_mesh] edit under shown patch %s: height texture replaced at frame %d, the water on the new one %s"
+		% [key, replaced, bound == terrain.get_patch_height_texture(key)])
+	_expect(replaced >= 0, "the edit's commit replaces the eye's patch's height texture")
+	_expect(water.resident_patch_lookup.has(key) and bound == terrain.get_patch_height_texture(key),
+		"the shown water reads its ground's new height texture from the commit's frame on")
 
 # Frames until the budget's fill has nothing left, the kept fill nothing wanting or asked and the
 # script nothing queued.

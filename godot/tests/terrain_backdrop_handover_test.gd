@@ -9,7 +9,8 @@
 ## whole-map probe reports it covered. The resident patches drawing nothing must be covered by their
 ## cells, and the run must meet some. Then the same world under water (`TERRAIN-58`: an open water
 ## fill over the whole map, then a jump and the zoom again): a terrain patch's node never draws while
-## its wet water patch does not draw (no water node, hidden, or no mesh of its cover and depth): its
+## its wet water patch does not draw (no water node, hidden, no mesh of its cover and depth, or bound to
+## another height texture than its ground's, `TERRAIN-66`): its
 ## cell draws instead, and the run must meet such patches. One patch's water payload is refused at
 ## the start: its ground must not wait for it (drawn as a patch once resident). Headless; the game
 ## scene as the load flow builds it, without its input and camera processing.
@@ -161,11 +162,16 @@ func _check(stream: Node, terrain: Node, what: String) -> void:
 		if _wet and node_draws and key != REFUSED:
 			var lake: Dictionary = water.patches.get(key, {})
 			var dry := not lake.is_empty() and int(lake.get("depth_nonzero_count", 0)) <= 0
-			if not dry and (lake.is_empty() or not water.resident_patch_lookup.has(key) or water._mesh_need(lake) == 1):
+			# A shown water bound to another height texture than its ground's draws its surface on
+			# those heights (`TERRAIN-66`: the zero fallback put it under its bed).
+			var unbound: bool = not lake.is_empty() and (lake["material"] as ShaderMaterial).get_shader_parameter("heightmap") \
+				!= terrain.get_patch_height_texture(key)
+			if not dry and (lake.is_empty() or not water.resident_patch_lookup.has(key) or water._mesh_need(lake) == 1 or unbound):
 				_bed += 1
 				if _first_bed.is_empty():
 					_first_bed = "%s frame %d patch %s water %s" % [what, _frames, key,
-						"none" if lake.is_empty() else ("hidden" if not water.resident_patch_lookup.has(key) else "no mesh")]
+						"none" if lake.is_empty() else ("hidden" if not water.resident_patch_lookup.has(key)
+						else ("no mesh" if water._mesh_need(lake) == 1 else "unbound"))]
 
 		if node_draws == cell:
 			if node_draws:

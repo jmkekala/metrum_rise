@@ -1255,6 +1255,10 @@ func _commit_staged_patch_data(
 
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
 	material.set_shader_parameter("heightmap", stage["height_texture"])
+	# The water over the patch reads its ground from this texture: bound to the new one in the same
+	# frame, not left on the old one, now the spare the next stage writes into (`TERRAIN-66`). O(1).
+	if water_node != null and water_node.has_method("bind_patch_height_texture"):
+		water_node.bind_patch_height_texture(key)
 	# The layer is written here, with the heightmap swap, so the masks never lead the heights.
 	_apply_patch_masks(key, material, stage["mask_image"],
 		int(stage["texture_width"]), int(stage["texture_height"]))
