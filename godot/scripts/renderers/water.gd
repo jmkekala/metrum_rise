@@ -599,14 +599,15 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	)
 	# A new mesh above (dry) or a new position.
 	patch_bounds_changed.emit(key)
-	# The ground's wait for its water (`TERRAIN-58`): a patch that dried has nothing to draw; a
-	# hidden one that turned wet, or whose mesh no longer matches its cover and depth, has no mesh
-	# when it is next shown. A shown patch that turned so keeps its ground drawn (no new wait under
-	# a drawn patch): its water follows with its mesh.
+	# The ground's wait for its water (`TERRAIN-58`): a patch that dried has nothing to draw; one
+	# that turned wet has no mesh, shown or hidden (an edit's flood, or a payload that lands after its
+	# patch was shown with the old one), and its ground waits for the first. Only a shown patch whose
+	# mesh no longer matches its cover and depth keeps its ground drawn: its old mesh still draws
+	# while the new one comes (no wait under every edit near water).
 	var state_after := _water_state(patch)
 	if (
 		_stream != null and state_after != state_before
-		and (state_after != 2 or not resident_patch_lookup.has(key))
+		and (state_after != 2 or state_before != 1 or not resident_patch_lookup.has(key))
 	):
 		_stream.water_patch_state(key, state_after)
 	if _terrain_debug_enabled:

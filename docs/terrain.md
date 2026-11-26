@@ -21802,9 +21802,12 @@ layer or without a graded book holds nothing: the patch then draws its bed rathe
   mesh of its cover and depth, 2 wet without one) where the terrain's answers a surface generation
   (the stream node's `WaterExecutor` keeps it; the layer sees -1 as before, so the units, their order
   and prices are L1's and the stream goldens replay unchanged); `water_patch_state` when a shown patch
-  takes its first mesh, when a built patch dries, and when a hidden one turns wet or its mesh no
-  longer matches. A shown, drawn patch that turns wet under an edit keeps its ground (no new wait
-  under a drawn patch); its water follows with its mesh, as before.
+  takes its first mesh, when a built patch dries, when a patch turns wet (shown or hidden: an
+  edit's flood, or a payload that lands after its patch was shown with the old one) and when a
+  hidden one's mesh no longer matches. Only a shown patch whose mesh no longer matches keeps its
+  ground drawn: its old mesh still draws while the new one comes (no wait under every edit near
+  water). (The round's first version also kept the ground of a shown patch turning wet; see the
+  completion below.)
 - A refused water payload counts as dry; a water node released by the budget or freed by its script
   is forgotten (the ground waits for it again if it is still resident); the water's reset forgets
   every patch's water.
@@ -21878,6 +21881,14 @@ release library of the branch's Rust against `15d18cee7`'s with its scripts):
   410, second 7,034 at 1 / 4 / 247; 1,024 MB 12,200 at 3 / 65 / 685 and 6,643 at 1 / 2 / 3 (`dev`
   12,130 at 2 / 2 / 3 on its first zoom-outs, its beds drawn meanwhile; none on its second). The
   branch's 512 MB row ran beside a build (its spans may read long).
+- A defect found by the gates and fixed: `terrain_backdrop_handover_test` failed under load (another
+  session at load 20-98; 3 of 3 runs, 4-31 beds) and passed at load 8. Reproduced on two CPUs
+  (`taskset`): 10,555 bed patch-frames, 7,779 of patches resident since the flood (shown when the
+  edit wet them) and 2,776 of patches shown after it, whose water had answered its show with the
+  old payload's state (dry) and whose new payload then landed while they were shown: both were
+  the first version's exception for a shown patch turning wet. Now only a shown patch whose mesh
+  goes stale keeps its ground; one turning wet waits for its first mesh (`water.gd`, one condition):
+  0 beds on two CPUs (38,640 held patch-frames).
 - Timing, the shipped Kuopio stream row (turns, pan, zoom, jump, trip; 512 MB; P-cores; C B B C
   against `15d18cee7`'s library and scripts), three sessions because the first read two phases worse
   (`zoom_out`'s maximum, `trip_hold`'s median) and the second the 0.5 s turn's median; pooled over
