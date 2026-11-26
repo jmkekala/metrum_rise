@@ -64,6 +64,23 @@ fn temp_path(name: &str) -> std::path::PathBuf {
     ))
 }
 
+// The Load list's verdict (`UI-16`) is the load's outcome, with the load's message.
+fn listing_agrees(
+    path: &Path,
+    registry: &crate::assets::AssetRegistry,
+    expected: Option<RefusalKind>,
+    case: &str,
+) {
+    let listed = check_save(path);
+    let loaded = load_from_sqlite(path, registry);
+    assert_eq!(listed.as_ref().err().map(|r| r.kind), expected, "{case}");
+    assert_eq!(
+        listed.err().map(|r| r.message),
+        loaded.err().map(|e| e.to_string()),
+        "{case}"
+    );
+}
+
 fn register_test_asset(
     allocator: &mut BuildingAllocator,
     pack_id: &str,
@@ -1336,6 +1353,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     conn.execute("UPDATE households SET replenishment_offset_hours = 23", [])
         .unwrap();
     let current = load_from_sqlite(&path, &allocator.registry).expect("load current offsets");
+    listing_agrees(&path, &allocator.registry, None, "current format");
     assert_eq!(
         current.households.households[0].replenishment_offset_hours,
         23
@@ -1345,6 +1363,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     conn.execute("UPDATE save_meta SET version = ?1", [PRE_METRES_SAVE_VERSION])
         .unwrap();
     let legacy = load_from_sqlite(&path, &allocator.registry).expect("a format-130 save loads");
+    listing_agrees(&path, &allocator.registry, None, "format 130");
     let metres: Vec<f32> = terrain.clone_source_dense().iter().map(|h| h * 20.0).collect();
     assert_eq!(legacy.terrain.clone_source_dense(), metres);
     assert_eq!(
@@ -1360,6 +1379,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             load_from_sqlite(&path, &allocator.registry).is_err(),
             "a format-{version} save must not load"
         );
+        let kind = if version > SAVE_VERSION {
+            RefusalKind::Newer
+        } else {
+            RefusalKind::Older
+        };
+        listing_agrees(&path, &allocator.registry, Some(kind), "refused format");
     }
     // A save off the world rules (the aligned grid) is refused with the rule it breaks.
     conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION])
@@ -1380,8 +1405,31 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             .expect("a save off the world rules must not load")
             .to_string();
         assert!(error.contains(rule), "{error}");
+        listing_agrees(
+            &path,
+            &allocator.registry,
+            Some(RefusalKind::BeforeGrid),
+            rule,
+        );
     }
+    conn.execute("DROP TABLE world_config", []).unwrap();
+    listing_agrees(
+        &path,
+        &allocator.registry,
+        Some(RefusalKind::Damaged),
+        "no world_config",
+    );
     drop(conn);
+    for (bytes, case) in [
+        (&b""[..], "empty file"),
+        (
+            &b"not a save, just bytes that are long enough to be no SQLite header"[..],
+            "not SQLite",
+        ),
+    ] {
+        fs::write(&path, bytes).unwrap();
+        listing_agrees(&path, &allocator.registry, Some(RefusalKind::Damaged), case);
+    }
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);

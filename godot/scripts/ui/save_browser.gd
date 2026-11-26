@@ -5,13 +5,15 @@
 ## with the time saved and size, newest first; clicking a column header sorts by it, again to
 ## reverse. A search line is always ready: typing filters the list by fuzzy match, best match
 ## first, with the matched letters lit. Load and New Game pick a row; Save takes a name (a row
-## fills it in) and says before it replaces a save. A view: the caller's callback gets the full
-## path. Takes the keyboard while open; Esc clears the search, then cancels; Enter confirms;
-## Up/Down move.
+## fills it in) and says before it replaces a save. Load and New Game grey out a file the game
+## would refuse, with the reason, and never pick it (`UI-16`; the files and Rust's verdicts come
+## from save_list.gd). A view: the caller's callback gets the full path. Takes the keyboard while
+## open; Esc clears the search, then cancels; Enter confirms; Up/Down move.
 extends CanvasLayer
 
 const FuzzyMatch = preload("res://scripts/ui/fuzzy_match.gd")
 const OptionsRows = preload("res://scripts/ui/options_rows.gd")
+const SaveList = preload("res://scripts/ui/save_list.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 ## Pick a save to load.
@@ -21,7 +23,7 @@ const MODE_SAVE := 1
 ## Pick a world for a new game.
 const MODE_WORLD := 2
 ## The only file type listed; the extension is never shown.
-const EXTENSION := "sqlite"
+const EXTENSION := SaveList.EXTENSION
 const COLUMN_WIDTH := 760.0
 const NODE_NAME := "SaveBrowser"
 const WHEN_WIDTH := 170.0
@@ -58,8 +60,9 @@ var _search_box: PanelContainer
 var _search_icon: TextureRect
 var _headers: Dictionary = {}
 var _group := ButtonGroup.new()
-# One per listed file: file, name (shown), time, size, row (its Button), label (the name cell)
-# and match (FuzzyMatch result for the current query, empty when filtered out).
+# One per listed file: file, name (shown), time, size, refusal (Rust's reason the game would not
+# load it, empty when it loads), row (its Button), label (the name cell) and match (FuzzyMatch
+# result for the current query, empty when filtered out).
 var _entries: Array[Dictionary] = []
 var _sort_key := "time"
 var _sort_desc := true
@@ -299,19 +302,16 @@ func _footer_button(footer: HBoxContainer, label: String, action: Callable) -> B
 
 func _refresh_list() -> void:
 	for entry in _entries:
+		# Out of the group now: a freed row stays in it until the frame ends, and a picked one
+		# would stand for the pick of the list built next.
+		entry.row.button_group = null
 		_list.remove_child(entry.row)
 		entry.row.queue_free()
 	_entries.clear()
-	var native := ProjectSettings.globalize_path(_dir)
 	var now := int(Time.get_unix_time_from_system())
-	for file in DirAccess.get_files_at(native):
-		if file.get_extension().to_lower() != EXTENSION or file.begins_with("."):
-			continue
-		var path := native.path_join(file)
-		var entry := {
-			"file": file, "name": _display_name(file),
-			"time": FileAccess.get_modified_time(path), "size": _file_size(path),
-		}
+	# Load and New Game check each file once here; Save may write over any file.
+	for entry in SaveList.read(ProjectSettings.globalize_path(_dir), _mode != MODE_SAVE, _mode == MODE_WORLD):
+		entry.name = _display_name(entry.file)
 		entry.row = _row(entry, _when(entry.time, now), _size_text(entry.size))
 		_list.add_child(entry.row)
 		_entries.append(entry)
@@ -335,8 +335,9 @@ func _apply_view() -> void:
 	if picked and not picked.visible:
 		picked.set_pressed_no_signal(false)
 		picked = null
-	if _mode != MODE_SAVE and not shown.is_empty() and (picked == null or not query.is_empty()):
-		shown[0].row.button_pressed = true
+	var pickable := shown.filter(func(entry: Dictionary) -> bool: return entry.refusal.is_empty())
+	if _mode != MODE_SAVE and not pickable.is_empty() and (picked == null or not query.is_empty()):
+		pickable[0].row.button_pressed = true
 		_scroll.scroll_vertical = 0
 	_empty.visible = shown.is_empty()
 	if _entries.is_empty():
@@ -450,16 +451,26 @@ func _row(entry: Dictionary, when: String, size: String) -> Button:
 	name_label.add_theme_color_override("default_color", UIStyle.TEXT_PRIMARY)
 	line.add_child(name_label)
 	entry.label = name_label
-	var when_label := _cell(line, when, 13, UIStyle.TEXT_DIM)
+	var refused: bool = not entry.refusal.is_empty()
+	if refused:
+		_cell(line, str(entry.refusal.reason), 13, UIStyle.TEXT_DIM)
+	# A file the game would refuse is greyed and never picked: by click, double click or the
+	# keys. The tooltip holds the load's own message.
+	var faded := Color(UIStyle.TEXT_DIM, 0.45) if refused else UIStyle.TEXT_DIM
+	var when_label := _cell(line, when, 13, faded)
 	when_label.custom_minimum_size.x = UIStyle.scaled_px(WHEN_WIDTH)
-	var size_label := _cell(line, size, 13, UIStyle.TEXT_DIM)
+	var size_label := _cell(line, size, 13, faded)
 	size_label.custom_minimum_size.x = UIStyle.scaled_px(SIZE_WIDTH)
 	size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	if refused:
+		row.disabled = true
+		row.tooltip_text = "Cannot load: %s." % entry.refusal.message
+		name_label.add_theme_color_override("default_color", faded)
 	row.toggled.connect(func(on: bool):
 		if on:
 			_on_row_picked(row))
 	row.gui_input.connect(func(event: InputEvent):
-		if event is InputEventMouseButton and event.double_click and event.button_index == MOUSE_BUTTON_LEFT:
+		if not row.disabled and event is InputEventMouseButton and event.double_click and event.button_index == MOUSE_BUTTON_LEFT:
 			_on_confirm())
 	return row
 
@@ -487,7 +498,7 @@ func _on_name_edited() -> void:
 
 # Steps through the rows the search leaves, in their shown order.
 func _move_selection(step: int) -> void:
-	var rows := _list.get_children().filter(func(row: Button): return row.visible)
+	var rows := _list.get_children().filter(func(row: Button): return row.visible and not row.disabled)
 	if rows.is_empty():
 		return
 	var index := rows.find(_group.get_pressed_button())
@@ -527,8 +538,10 @@ func _sync_state() -> void:
 			return
 		_confirm.text = "SAVE"
 	elif _group.get_pressed_button() == null:
-		reason = "" if _empty.visible else "Pick one from the list."
-	_confirm.disabled = not reason.is_empty() or (_mode != MODE_SAVE and _empty.visible)
+		# Nothing listed, or only files the game refuses (each row says why): no hint.
+		var pickable := _list.get_children().any(func(row: Button): return row.visible and not row.disabled)
+		reason = "Pick one from the list." if pickable else ""
+	_confirm.disabled = not reason.is_empty() or (_mode != MODE_SAVE and _group.get_pressed_button() == null)
 	_status.text = reason
 
 func _typed_file() -> String:
@@ -536,10 +549,6 @@ func _typed_file() -> String:
 
 static func _display_name(file: String) -> String:
 	return file.get_basename() if file.get_extension().to_lower() == EXTENSION else file
-
-static func _file_size(path: String) -> int:
-	var file := FileAccess.open(path, FileAccess.READ)
-	return file.get_length() if file else 0
 
 ## "Today 08:03", "Yesterday 21:10" or "3 Nov 2026 14:00", in local time.
 static func _when(unix: int, now: int) -> String:

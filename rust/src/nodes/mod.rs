@@ -15,6 +15,7 @@ pub mod camera_node;
 pub mod debug_bridge;
 pub mod lod_policy;
 pub mod road_wording;
+pub mod save_files;
 pub mod sim;
 pub mod simulation_node;
 pub mod stream_node;
