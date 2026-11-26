@@ -22729,7 +22729,12 @@ on P-cores, one run a side):
   1,024 MB: 6,564 kept meshes, `H` 35.9 MB (the plan's 42.5 MB for all 7,602 wet patches at Whole
   map), video memory +27.9 MiB, the jobs' mesh cache 7,679 entries (one step-8 entry a kept patch
   besides the shown patches' own; not bounded, as before). The background fill had ended within
-  the low settle on both maps (it waits for nothing the view waits for, then asks 8 a frame).
+  the low settle on both maps. Its rate is the mesh poll's: with at most 16 kept requests out, the
+  poll takes 2 meshes a frame (below its backlog threshold), so after a player's load of the 60 km
+  map at 1,024 MB the first kept mesh came when the post-load window closed and the last of 6,545
+  about 3,100 frames later (52 s at 60 frames a second); 20 of the kept submits found the core's
+  lock taken and went again a frame later; no kept mesh was stale at its poll. On the shipped
+  Kuopio that is about 130 frames for its 259. Lifting the caps behind the loading screen is W2's.
 - *Inside the install ledger* (the 60 km map at 1,024 MB loaded as a player does, then 30 s of a
   still camera, the perf channel on; `dev` against the branch): the branch applied 6,261 kept
   meshes in 3,131 frames of the still, 2 a frame at most. A kept apply took 81 us at the mean, 106
