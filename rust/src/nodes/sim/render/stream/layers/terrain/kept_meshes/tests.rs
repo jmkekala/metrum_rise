@@ -91,11 +91,10 @@ fn book(dry: &[PatchKey]) -> KeptMeshes {
 struct Run {
     kept: Vec<PatchKey>,
     held: u64,
-    frames: usize,
 }
 
-// Frames of the book with `counted` bytes and `budget`, the meshes arriving `pace(frame)` a frame
-// in an order `pick` chooses among those in flight, until nothing is in flight or asked and the
+// Frames of the book with `counted` bytes and `budget`, up to `max_pace` meshes arriving a frame in
+// an order the generator of `seed` picks among those in flight, until nothing is in flight and the
 // book asked nothing for 10 frames.
 fn run(
     book: &mut KeptMeshes,
@@ -140,7 +139,6 @@ fn run(
     Run {
         kept: water.held.keys().copied().collect(),
         held,
-        frames,
     }
 }
 

@@ -13,10 +13,10 @@
 //! **Pricing** (decision D5 (a)): the places, the ring and the keep and release rectangles are the
 //! budget's as before, counted without the kept meshes' bytes `H`; a kept mesh only takes the room
 //! the places leave. A request is handed out only while `counted + H + W x (asked + 1) <= B`,
-//! with `W` the largest kept mesh the grid can give ([`kept_mesh_bytes_max`]); while `counted + H
-//! > B` kept meshes are dropped, farthest first. Between the two lies a band of `W`, so a still
-//! camera neither asks nor drops in a loop, and the end state does not depend on the order or the
-//! pace in which the meshes arrive. Without a budget every wanting patch is asked for.
+//! with `W` the largest kept mesh the grid can give ([`kept_mesh_bytes_max`]); while
+//! `counted + H > B` kept meshes are dropped, farthest first. Between the two lies a band of `W`,
+//! so a still camera neither asks nor drops in a loop, and the end state does not depend on the
+//! order or the pace in which the meshes arrive. Without a budget every wanting patch is asked for.
 //!
 //! **Kept** means the patch's mesh came by this cause and the patch has not been shown since; a
 //! show makes it an ordinary mesh (counted with the extras, kept after a later hide, as before).
