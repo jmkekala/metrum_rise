@@ -21849,8 +21849,45 @@ layer or without a graded book holds nothing: the patch then draws its bed rathe
   (meshes held) 46-326 patches at 1 / 2 / 3 at most, against none on `dev` (each drew in its residency
   frame, its water a frame or more later).
 
-Not run in the round (time): the 60 km copy at 512 and 1,024 MB (report only), the analysis' two
-stills reproduced against their settled frames, and the shipped Kuopio stream row's C B B C (owed).
+**Completed 2026-11-26** (the round's second session, same branch; untimed rows one run a side, the
+release library of the branch's Rust against `15d18cee7`'s with its scripts):
+- Review: each patch draws exactly one of patch and cell in every frame because the cells' listing
+  and the graded book's hold change in the same pass (the hold news are drained after the cells'
+  flush in both of the stream node's passes, also for holds made by `water.gd`'s reports between
+  passes or by a block's readiness in the flush); a node released by the book (`release_patch_node`)
+  leaves residency in the same pass. No defect found.
+- The reflection's books in step with the branch: the proxy book check (`METRUM_STREAM_PROXY_CHECK`)
+  and the rectangle check (`METRUM_WATER_RECT_CHECK`) on the shipped Kuopio stream row (turns, pan,
+  zoom, jump, trip; 512 MB): every frame in step, 2,795 rectangles, 0 unequal, 0 walks; on the
+  bed-check zoom rows (Automatic, 2.0 s, and 1,024 MB, 1.0 s, two poses, 60 frames a second): every
+  frame of every leg in step, 1,475 and 1,253 rectangles, 0 unequal, 0 walks. What a held patch's
+  mirror shows: its proxy follows the node's visibility, which a hold leaves on, so the reflection
+  draws the patch's own ground (its full mesh with the mirror's clip, as when drawn): no hole and no
+  bed above the mirror's plane. The backdrop is not in the reflection at all (its cells draw in the
+  main scenario only).
+- The analysis' stills (60 km copy, 1,024 MB, the first zoom-out's hold frame 153 and the second's
+  frame 110 against their settled frames; gamescope headless): `dev` reproduces the pale squares in
+  open water (45 and 2 dense 32 px tiles of ground green where the settled frame is water); the
+  branch none (largest tile 22 and 23 pixels: shore pixels only).
+- The 60 km copy, report only (pose (-6144, 1024), pitch -0.95, 300 m to 16 km in 2.0 s at 60
+  frames a second, the player's load): drawn patches in view over water that does not draw, 0 in
+  every frame of the branch at 512 and 1,024 MB; `dev` at 512 MB first zoom-out 1,723 frames up to
+  301, second 42 frames up to 17 (and its water shown late in 227 frames up to 47), at 1,024 MB first
+  zoom-out 1,099 frames up to 291, second shown late in 234 frames up to 48. A resident patch stays a
+  cell (frames from its residency, p50 / p90 / max): 512 MB first zoom-out 12,216 patches at 3 / 28 /
+  410, second 7,034 at 1 / 4 / 247; 1,024 MB 12,200 at 3 / 65 / 685 and 6,643 at 1 / 2 / 3 (`dev`
+  12,130 at 2 / 2 / 3 on its first zoom-outs, its beds drawn meanwhile; none on its second). The
+  branch's 512 MB row ran beside a build (its spans may read long).
+- Timing, the shipped Kuopio stream row (turns, pan, zoom, jump, trip; 512 MB; P-cores; C B B C
+  against `15d18cee7`'s library and scripts), three sessions because the first read two phases worse
+  (`zoom_out`'s maximum, `trip_hold`'s median) and the second the 0.5 s turn's median; pooled over
+  the six runs a side, 16 of 18 phases are level at the median and the maximum (`zoom_out` maximum
+  -0.3 ms, `trip_hold` median +0.09 within its runs' range). Not level: `turn_out 0.5s` median 5.05
+  against 4.79 ms (+0.26; the branch's runs 4.8-5.7, the control's 4.7-4.8, four of six branch runs
+  above every control run) and `turn_back 0.5s` 4.69 against 4.49 (+0.20, two of six above). In those
+  phases no patch is held, no cell is drawn and the water reports nothing (every patch resident,
+  `held` 0, `cells_listed` 0); the round's frame paths drain empty lists there. Cause not found; the
+  sessions ran beside another session's test suites (load 2-11).
 
 ### Trees after a far trip: the vegetation's installs in the hole order (`VEG-35`, 2026-11-25)
 
