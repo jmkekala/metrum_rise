@@ -5,7 +5,9 @@
 ## worlds from res://bootstrap/ into them (`TOOLS-17`): Rust plans every step from the bundle
 ## manifest, the profile's receipt `user://bundled.toml` and the installed copies; this script
 ## only copies out of the bundle, moves a stale pre-receipt pack to the system Trash, hands each
-## step back to Rust and logs. An installed copy the player changed stays theirs.
+## step back to Rust and logs. An installed copy the player changed stays theirs until they
+## restore the game's version (Options > Mods > Restore, `restore_bundled`), which takes the same
+## steps.
 extends RefCounted
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
@@ -57,6 +59,31 @@ static func reconcile_bundled(bundle: String, profile: String, plan: Dictionary,
 	if not err.is_empty():
 		push_warning("The bundled install receipt was not updated: %s" % err)
 
+## Gives the game's version of the bundled pack `pack` back over the player's changed copy in
+## `profile` (Options > Mods > Restore): Rust's restore step, carried out as a start carries out
+## its own trash-and-replace (`trash` moves the player's copy away, the bundled one is staged from
+## `bundle` and committed), then recorded as the game's. Returns "" on success, else what
+## happened, in the player's words; when the Trash fails nothing has changed.
+static func restore_bundled(bundle: String, profile: String, pack: String, trash: Callable) -> String:
+	var action := AssetAuthoringFiles.bundled_restore(profile, pack)
+	if action.has("error"):
+		return str(action.error)
+	var err := _trash_installed(profile, action, trash)
+	if err != OK:
+		return "Could not move your copy of %s to the Trash (%s). Nothing was changed." % [pack, error_string(err)]
+	# The player's copy is in the Trash: a step failing now leaves the pack absent (or a staging
+	# sibling), which the next start cleans and seeds as the game's.
+	if not _stage(bundle, profile, action):
+		return "Your copy of %s is in the Trash, but the game's version could not be copied. It is installed at the next start." % pack
+	var error := _commit(profile, action)
+	if not error.is_empty():
+		return "Your copy of %s is in the Trash, but the game's version was not installed (%s). It is installed at the next start." % [pack, error]
+	var done: Array[Dictionary] = [action]
+	error = AssetAuthoringFiles.bundled_record(profile, done)
+	if not error.is_empty():
+		return "The game's version of %s is installed, but the install receipt was not updated (%s)." % [pack, error]
+	return ""
+
 # One planned step; true when it succeeded.
 static func _take_step(bundle: String, profile: String, action: Dictionary, trash: Callable) -> bool:
 	var path: String = action.path
@@ -65,8 +92,7 @@ static func _take_step(bundle: String, profile: String, action: Dictionary, tras
 			# Decision D2 (a): a pack from before the receipt that differs from the bundle goes to
 			# the Trash once. Without a Trash it is kept, never deleted; the step fails and the next
 			# start keeps the copy as the player's.
-			var native := ProjectSettings.globalize_path(profile.path_join(path))
-			var err: Error = trash.call(native)
+			var err := _trash_installed(profile, action, trash)
 			if err != OK:
 				push_warning("Kept %s: it differs from the game's copy and could not be moved to the Trash (error %d)." % [path, err])
 				return false
@@ -78,13 +104,22 @@ static func _take_step(bundle: String, profile: String, action: Dictionary, tras
 		"keep_players":
 			# Decision D3 (a): no message on screen, one line here and the documented rule.
 			_log("kept the player's copy of %s; delete it to get the game's version" % path)
+	return _commit(profile, action).is_empty()
+
+# Moves the installed entry to the Trash with `trash` (it gets the native path, returns an Error).
+static func _trash_installed(profile: String, action: Dictionary, trash: Callable) -> Error:
+	return trash.call(ProjectSettings.globalize_path(profile.path_join(action.path)))
+
+# Rust's profile side of a step, logged; returns its error, empty on success.
+static func _commit(profile: String, action: Dictionary) -> String:
+	var path: String = action.path
 	var error := AssetAuthoringFiles.bundled_commit(profile, action)
 	if not error.is_empty():
 		push_warning("Bundled %s step for %s failed: %s" % [action.operation, path, error])
-		return false
+		return error
 	if action.operation in ["seed", "replace", "trash_and_replace", "remove"]:
 		_log("%s %s" % [action.operation, path])
-	return true
+	return ""
 
 # Copies the bundled entry into its staging sibling; a staging entry already there (a cleanup that
 # failed) is never merged into.

@@ -1,18 +1,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Per-pack actions in Options → Mods (`TOOLS-11`): verify, show folder and remove.
-## Rust checks removal eligibility and verifies files; this script only presents and dispatches.
+## Per-pack actions in Options → Mods (`TOOLS-11`): verify, show folder, remove and, for a
+## bundled pack the player changed, restore the game's version (`TOOLS-17`). Rust checks removal
+## eligibility, verifies files and decides which copies are the player's and how a restore goes
+## (through the start-up's own steps, `UserDataBootstrap.restore_bundled`); this script only
+## presents and dispatches.
 extends RefCounted
 
 const BackgroundTask = preload("res://scripts/core/background_task.gd")
+const UserDataBootstrap = preload("res://scripts/core/user_data_bootstrap.gd")
 
 const MODS := "user://mods"
 const BUNDLED := "res://bootstrap/mods"
+const BUNDLE := "res://bootstrap"
+const PROFILE := "user://"
 ## Most paths listed per kind of difference; the rest are counted.
 const SHOWN := 12
 
 ## Emitted after a pack folder has moved to Trash.
 signal removed(pack_id: String)
+## Emitted after the game's version of a bundled pack replaced the player's copy.
+signal restored(pack_id: String)
 
 var host: Control
 ## Replaceable for tests: the isolated profile must not reach the desktop Trash or file manager.
@@ -26,6 +34,11 @@ func _init(owner: Control) -> void:
 
 func is_bundled(pack_id: String) -> bool:
 	return pack_id in DirAccess.get_directories_at(BUNDLED)
+
+## The bundled packs whose installed copy is the player's (the install receipt says so): no
+## start replaces them, and Restore is offered. One receipt read; nothing hashed.
+func players_copies() -> PackedStringArray:
+	return AssetAuthoringFiles.bundled_restorable(PROFILE)
 
 func can_verify(pack_id: String) -> bool:
 	return FileAccess.file_exists(MODS.path_join(pack_id).path_join("checksums.sha256"))
@@ -92,6 +105,40 @@ func remove(pack_id: String) -> String:
 	if error != OK:
 		return "Could not move %s to Trash (%s). Nothing was deleted." % [pack_id, error_string(error)]
 	removed.emit(pack_id)
+	return ""
+
+## Returns null when a running city uses the pack (as Remove and an import over it are refused).
+## Refusals and failures go to `message`; success is reported through `restored`.
+func restore_dialog(pack_id: String, message: Callable) -> ConfirmationDialog:
+	var reason := _restore_refusal(pack_id)
+	if not reason.is_empty():
+		message.call(reason)
+		return null
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "Restore the game's version?"
+	dialog.get_ok_button().text = "Restore"
+	_label(dialog, "Your changed copy of %s moves to the system Trash and the game's version is installed in its place. From then on it follows the game's updates again.\n\nThe game's version loads when a city starts. Recovery of your copy is through your system Trash." % pack_id)
+	dialog.confirmed.connect(func():
+		var error := restore(pack_id)
+		if not error.is_empty(): message.call(error)
+		dialog.queue_free()
+	)
+	_show(dialog)
+	return dialog
+
+## Revalidates, then moves the player's copy to Trash and installs the game's version. Returns
+## why it did not (or what is left to happen), or "" on success.
+func restore(pack_id: String) -> String:
+	var reason := _restore_refusal(pack_id)
+	if not reason.is_empty(): return reason
+	var error := UserDataBootstrap.restore_bundled(BUNDLE, PROFILE, pack_id, trash_operation)
+	if not error.is_empty(): return error
+	restored.emit(pack_id)
+	return ""
+
+func _restore_refusal(pack_id: String) -> String:
+	if pack_in_use.call(pack_id):
+		return "%s is enabled in the running city. Return to the main menu to restore it." % pack_id
 	return ""
 
 func _removal_refusal(pack_id: String) -> String:

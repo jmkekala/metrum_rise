@@ -8,6 +8,7 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
+use crate::simulation::save::refusal::{RefusalKind, Refused};
 use crate::simulation::save::sqlite::write_sqlite_snapshot;
 use crate::simulation::terrain::{LEGACY_HEIGHT_UNIT_M, TerrainSystem};
 use rusqlite::{Connection, params};
@@ -296,11 +297,22 @@ fn write_world_definition(
     Ok(())
 }
 
-/// Loads one authored blank-world definition from a single-file SQLite asset.
-pub(crate) fn load_world_definition_from_sqlite(
-    path: &Path,
-) -> WorldDefinitionResult<LoadedWorldDefinition> {
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+// The part of a world definition the New Game list reads.
+struct WorldHeader {
+    format_version: i64,
+    name: String,
+    // Base elevation in metres, converted from an older format's unit.
+    config: WorldConfig,
+    // The stored base elevation in the file's unit, which unset terrain samples hold.
+    stored_base_elevation: f32,
+    // 1 in metres (format 6), `LEGACY_HEIGHT_UNIT_M` for formats 1-5.
+    height_unit_m: f32,
+}
+
+// The world's format, name and config, refused as the load refuses them: a format outside 1 to
+// the current one, an empty name, then a world from before the aligned grid with the rule it
+// breaks. One one-row query: no terrain chunk is read.
+fn read_world_header(conn: &Connection) -> Result<WorldHeader, Refused> {
     let (format_version, name, width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m): (
         i64,
         String,
@@ -328,12 +340,22 @@ pub(crate) fn load_world_definition_from_sqlite(
             ))
         },
     )?;
-    if !(1..=WORLD_DEFINITION_FORMAT_VERSION).contains(&format_version) {
-        return Err(WorldDefinitionError::custom(
-            "world definition version mismatch",
+    if format_version > WORLD_DEFINITION_FORMAT_VERSION {
+        return Err(Refused::new(
+            RefusalKind::Newer,
+            format!(
+                "world format {format_version} is newer than this game's \
+                 ({WORLD_DEFINITION_FORMAT_VERSION})"
+            ),
         ));
     }
-    validate_world_name(&name)?;
+    if format_version < 1 {
+        return Err(Refused::new(
+            RefusalKind::Older,
+            format!("world format {format_version} is older than the oldest this game loads (1)"),
+        ));
+    }
+    validate_world_name(&name).map_err(Refused::damaged)?;
     // One multiply per stored sample of an older format, at load: `O(samples)`, off the frame.
     let height_unit_m = if format_version < 6 {
         LEGACY_HEIGHT_UNIT_M
@@ -346,7 +368,41 @@ pub(crate) fn load_world_definition_from_sqlite(
     // The stored chunk rows are laid out on the stored span; only the fixed 512 m loads.
     config
         .validate_stored(terrain_chunk_m)
-        .map_err(WorldDefinitionError::custom)?;
+        .map_err(|rule| Refused::new(RefusalKind::BeforeGrid, rule))?;
+    Ok(WorldHeader {
+        format_version,
+        name,
+        config,
+        stored_base_elevation: terrain_base_elevation_m,
+        height_unit_m,
+    })
+}
+
+/// Whether a new game can start from the world definition at `path`, decided from its header
+/// as [`load_world_definition_from_sqlite`] decides it (`UI-16`): the format, the name, then the
+/// aligned grid; an unreadable file is damaged. Opens the file read-only and reads one one-row
+/// table: O(1) pages, whatever the world's size. Terrain damaged past the header is found only
+/// by the load.
+pub(crate) fn check_world_definition(path: &Path) -> Result<(), Refused> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    read_world_header(&conn).map(drop)
+}
+
+/// Loads one authored blank-world definition from a single-file SQLite asset.
+pub(crate) fn load_world_definition_from_sqlite(
+    path: &Path,
+) -> WorldDefinitionResult<LoadedWorldDefinition> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // The format, the name and the grid are checked by the New Game list's own header read
+    // (`UI-16`).
+    let WorldHeader {
+        format_version,
+        name,
+        config,
+        stored_base_elevation: terrain_base_elevation_m,
+        height_unit_m,
+    } = read_world_header(&conn)
+        .map_err(|refused| WorldDefinitionError::custom(refused.message))?;
 
     let mut terrain = TerrainSystem::from_world_config(&config);
     let chunk_size = config.terrain_storage_chunk_cells();
@@ -936,6 +992,86 @@ CREATE TABLE world_terrain_chunks(
             assert!(error.contains(rule), "{error}");
         }
         drop(conn);
+        std::fs::remove_file(path).ok();
+    }
+
+    // The New Game list's verdict (`UI-16`) is the load's outcome, with the load's message, for
+    // a current world, an older format the loader converts, a world from before the aligned
+    // grid, a newer format and damaged files.
+    #[test]
+    fn the_listing_verdict_matches_the_load() {
+        let path = temp_path("listing_verdict");
+        let config = WorldConfig::new(256.0, 256.0, 40.0, 10.0);
+        save_world_definition_to_sqlite(
+            &path,
+            WorldDefinitionView {
+                name: "Listed",
+                config: &config,
+                terrain: &TerrainSystem::from_world_config(&config),
+                lake_fills: &[],
+                open_water_fills: &[],
+                resource_deposits: &ResourceDepositSystem::from_world_config(&config),
+            },
+        )
+        .expect("world definition should save");
+        let agrees = |expected: Option<RefusalKind>, case: &str| {
+            let listed = check_world_definition(&path);
+            let loaded = load_world_definition_from_sqlite(&path);
+            assert_eq!(listed.as_ref().err().map(|r| r.kind), expected, "{case}");
+            assert_eq!(
+                listed.err().map(|r| r.message),
+                loaded.err().map(|e| e.to_string()),
+                "{case}"
+            );
+        };
+        agrees(None, "current format");
+        let conn = Connection::open(&path).unwrap();
+        for (update, expected, case) in [
+            (
+                "UPDATE world_definition_meta SET format_version = 5",
+                None,
+                "format 5, heights converted",
+            ),
+            (
+                "UPDATE world_definition_meta SET format_version = 7",
+                Some(RefusalKind::Newer),
+                "newer format",
+            ),
+            (
+                "UPDATE world_definition_meta SET format_version = 0",
+                Some(RefusalKind::Older),
+                "format 0",
+            ),
+            (
+                "UPDATE world_definition_meta SET format_version = 6, terrain_chunk_m = 520.0",
+                Some(RefusalKind::BeforeGrid),
+                "before the aligned grid",
+            ),
+            (
+                "UPDATE world_definition_meta SET terrain_chunk_m = 512.0, name = ' '",
+                Some(RefusalKind::Damaged),
+                "empty name",
+            ),
+            (
+                "DROP TABLE world_definition_meta",
+                Some(RefusalKind::Damaged),
+                "no header table",
+            ),
+        ] {
+            conn.execute(update, []).unwrap();
+            agrees(expected, case);
+        }
+        drop(conn);
+        for (bytes, case) in [
+            (&b""[..], "empty file"),
+            (
+                &b"not a world, just bytes that are long enough to be no SQLite header"[..],
+                "not SQLite",
+            ),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            agrees(Some(RefusalKind::Damaged), case);
+        }
         std::fs::remove_file(path).ok();
     }
 }

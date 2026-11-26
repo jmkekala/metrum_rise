@@ -27,6 +27,10 @@
 //! 3. Once every step was tried, [`record`] writes the receipt once, atomically, with the steps
 //!    that succeeded. A failed step is not recorded and is planned again at the next start.
 //!
+//! Options > Mods > Restore takes the same path for one pack the receipt holds as the player's:
+//! [`restore`] yields the [`Operation::TrashAndReplace`] step, the caller carries it out as the
+//! start does, and [`record`] makes the entry the game's again.
+//!
 //! Recording at the end, not after each step: every finished file step leaves its entry equal
 //! to the bundle (planned as an adoption) or absent (seeded again), so a crash before the
 //! record loses nothing and repeats only hashing. And a profile from before the receipt stays
@@ -122,9 +126,10 @@ pub(crate) enum Operation {
     /// rename the installed copy to its retired sibling, rename staging into place and remove
     /// the retired copy. Records the game's revision.
     Replace,
-    /// A pack from before the receipt that differs from the bundle (decision D2 (a)): the
-    /// installed folder goes to the system Trash, then the bundled one is staged and renamed
-    /// into place. Without a Trash nothing is removed and the step fails.
+    /// A pack from before the receipt that differs from the bundle (decision D2 (a)), or the
+    /// player's copy they asked to restore ([`restore`]): the installed folder goes to the
+    /// system Trash, then the bundled one is staged and renamed into place. Without a Trash
+    /// nothing is removed and the step fails.
     TrashAndReplace,
     /// The game's untouched copy of a world it no longer bundles: delete it. Drops the record.
     Remove,
@@ -406,6 +411,72 @@ impl Planner<'_, '_> {
             self.push(path, Operation::Remove, "");
         }
     }
+}
+
+/// The step that gives the game's version of the bundled pack `name` back (Options > Mods >
+/// Restore): the receipt holds the installed copy as the player's, so no start replaces it. The
+/// step is the start-up's own [`Operation::TrashAndReplace`] at the manifest's revision, carried
+/// out the same way (the caller moves the player's copy to the system Trash and stages the
+/// bundled one, [`commit`] renames it into place, [`record`] makes the entry the game's again).
+/// Refused for a pack the game does not bundle, a copy the receipt holds as the game's (or a
+/// profile without a receipt), an entry that is not a pack folder (a link, a file) and a pack
+/// whose staging or retired sibling an earlier step left. Reads the receipt and stats three
+/// paths; hashes nothing.
+pub(crate) fn restore(manifest: &str, user_dir: &Path, name: &str) -> Result<Action, String> {
+    let manifest = parse_manifest(manifest)?;
+    let receipt = read_receipt(user_dir)?.unwrap_or_default();
+    let path = format!("mods/{name}");
+    let bundled = manifest
+        .get(path.as_str())
+        .ok_or_else(|| format!("{name} is not a pack the game bundles"))?;
+    restore_step(user_dir, &path, bundled, receipt.get(&path))
+}
+
+/// The names of the bundled packs [`restore`] accepts in the profile at `user_dir`: the player's
+/// copies, by the receipt. Empty without a readable receipt. O(manifest entries) stats.
+pub(crate) fn restorable(manifest: &str, user_dir: &Path) -> Vec<String> {
+    let (Ok(manifest), Ok(Some(receipt))) = (parse_manifest(manifest), read_receipt(user_dir))
+    else {
+        return Vec::new();
+    };
+    manifest
+        .iter()
+        .filter_map(|(&path, &bundled)| {
+            let name = path.strip_prefix("mods/")?;
+            restore_step(user_dir, path, bundled, receipt.get(path)).ok()?;
+            Some(name.to_owned())
+        })
+        .collect()
+}
+
+// The restore step for the bundled pack `path` at revision `bundled`, or why there is none.
+fn restore_step(
+    user_dir: &Path,
+    path: &str,
+    bundled: &str,
+    record: Option<&Record>,
+) -> Result<Action, String> {
+    let name = path.strip_prefix("mods/").unwrap_or(path);
+    if !path.starts_with("mods/") {
+        return Err(format!("{path} is not a pack"));
+    }
+    if record.map(|record| record.owner) != Some(Owner::Player) {
+        return Err(format!("{name} is the game's copy and follows its updates"));
+    }
+    if !fs::symlink_metadata(user_dir.join(path)).is_ok_and(|meta| meta.is_dir()) {
+        return Err(format!("{name} is not an installed pack folder"));
+    }
+    let action = Action {
+        path: path.to_owned(),
+        operation: Operation::TrashAndReplace,
+        revision: bundled.to_owned(),
+    };
+    if present(&user_dir.join(action.staging())) || present(&user_dir.join(action.retired())) {
+        return Err(format!(
+            "{name}: an earlier copy was left unfinished; restart the game and try again"
+        ));
+    }
+    Ok(action)
 }
 
 fn shipped(legacy: &[(&str, &[&str])], path: &str, digest: &str) -> bool {

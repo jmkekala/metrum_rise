@@ -51,6 +51,7 @@ mod demand_queues;
 pub(crate) mod gridlock;
 mod handles;
 pub mod network;
+pub(crate) mod refusal;
 mod scheduler;
 pub mod schema;
 pub(crate) mod sqlite;
@@ -62,6 +63,7 @@ mod workplace_quotes;
 pub mod world;
 
 pub(crate) use camera::SavedCameraState;
+use refusal::{RefusalKind, Refused};
 use schema::*;
 
 /// View of the live simulation state for serialization. A save is a function of this view
@@ -595,15 +597,97 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
     Ok(graph)
 }
 
+// The part of a save the Load list reads: its format and world config, as stored.
+struct SaveHeader {
+    version: i64,
+    // Base elevation in metres, converted from an older format's unit.
+    config: WorldConfig,
+}
+
+// Every format the loader reads: the current one and each `PRE_*_SAVE_VERSION` it converts.
+fn loads_format(version: i64) -> bool {
+    [
+        SAVE_VERSION,
+        PRE_METRES_SAVE_VERSION,
+        PRE_CROSSING_SAVE_VERSION,
+        PRE_KERB_FREIGHT_SAVE_VERSION,
+        PRE_DROP_OFF_SAVE_VERSION,
+        PRE_FIXED_LOOK_SAVE_VERSION,
+        PRE_CAR_WAYS_SAVE_VERSION,
+        PRE_STANDS_SAVE_VERSION,
+        PRE_ROUTES_SAVE_VERSION,
+        PRE_DOCKS_SAVE_VERSION,
+        PRE_RETIRED_NODES_SAVE_VERSION,
+        PRE_SAVED_IDS_SAVE_VERSION,
+        PRE_CONTINUATION_SAVE_VERSION,
+        PRE_CONGESTION_SAVE_VERSION,
+    ]
+    .contains(&version)
+}
+
+// The save's format and world config, refused as the load refuses them: a format the loader
+// does not read, then a world from before the aligned grid (10 m cells, 520 m chunks, other
+// sides), with the rule it breaks. Two one-row queries: no terrain, network or city table is
+// read.
+fn read_save_header(conn: &Connection) -> Result<SaveHeader, Refused> {
+    let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
+        row.get(0)
+    })?;
+    if version > SAVE_VERSION {
+        return Err(Refused::new(
+            RefusalKind::Newer,
+            format!("save format {version} is newer than this game's ({SAVE_VERSION})"),
+        ));
+    }
+    if !loads_format(version) {
+        return Err(Refused::new(
+            RefusalKind::Older,
+            format!(
+                "save format {version} is older than the oldest this game loads \
+                 ({PRE_CONGESTION_SAVE_VERSION})"
+            ),
+        ));
+    }
+    let (mut config, terrain_chunk_m) = conn.query_row(
+        "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
+        [],
+        |r| {
+            Ok((
+                WorldConfig::new(r.get(0)?, r.get(1)?, r.get(5)?, r.get(6)?)
+                    .with_terrain_resolution(r.get(2)?)
+                    .with_base_elevation(r.get(4)?),
+                r.get::<_, f32>(3)?,
+            ))
+        },
+    )?;
+    // Formats before 131 hold heights in units of 20 m.
+    if version != SAVE_VERSION {
+        config.terrain_base_elevation_m *= LEGACY_HEIGHT_UNIT_M;
+    }
+    config
+        .validate_stored(terrain_chunk_m)
+        .map_err(|rule| Refused::new(RefusalKind::BeforeGrid, rule))?;
+    Ok(SaveHeader { version, config })
+}
+
+/// Whether the game loads the save at `path`, decided from its header as [`load_from_sqlite`]
+/// decides it (`UI-16`): the format, then the aligned grid; an unreadable file is damaged.
+/// Opens the file read-only and reads two one-row tables: O(1) pages, whatever the city's size.
+/// Content damaged past the header is found only by the load.
+pub(crate) fn check_save(path: &Path) -> Result<(), Refused> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    read_save_header(&conn).map(drop)
+}
+
 /// Entry point to load a simulation state from a SQLite database.
 pub(crate) fn load_from_sqlite(
     path: &Path,
     registry: &crate::assets::AssetRegistry,
 ) -> SaveLoadResult<LoadedSimulation> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
-        row.get(0)
-    })?;
+    // The format and the grid are checked by the Load list's own header read (`UI-16`).
+    let SaveHeader { version, config } =
+        read_save_header(&conn).map_err(|refused| SaveLoadError::custom(refused.message))?;
     // `SIM-02` cut over the save format: only the current version loads, format 119 without the
     // freight route validity, ledger baseline and input telemetry (`PRE_CONTINUATION_SAVE_VERSION`,
     // `SAVE-08`, `SAVE-09`) and format 118 without congestion state either
@@ -629,28 +713,7 @@ pub(crate) fn load_from_sqlite(
     let ids_saved = retired_holes || version == PRE_RETIRED_NODES_SAVE_VERSION;
     let continuation_saved = ids_saved || version == PRE_SAVED_IDS_SAVE_VERSION;
     let congestion_saved = continuation_saved || version == PRE_CONTINUATION_SAVE_VERSION;
-    if !congestion_saved && version != PRE_CONGESTION_SAVE_VERSION {
-        return Err(SaveLoadError::custom("version mismatch"));
-    }
     let camera = camera::load_camera_state(&conn)?;
-    let (mut config, terrain_chunk_m) = conn.query_row(
-        "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
-        [],
-        |r| {
-            Ok((
-                WorldConfig::new(r.get(0)?, r.get(1)?, r.get(5)?, r.get(6)?)
-                    .with_terrain_resolution(r.get(2)?)
-                    .with_base_elevation(r.get(4)?),
-                r.get::<_, f32>(3)?,
-            ))
-        },
-    )?;
-    if !heights_in_metres {
-        config.terrain_base_elevation_m *= LEGACY_HEIGHT_UNIT_M;
-    }
-    // A save from before the aligned grid (10 m cells, 520 m chunks, other sides) is refused
-    // with the rule it breaks.
-    config.validate_stored(terrain_chunk_m)?;
     let vegetation = {
         let row: (i64, i64, f32, f32) = conn.query_row(
             "SELECT enabled, seed, coverage, canopy_stems_per_ha FROM vegetation_config LIMIT 1",
