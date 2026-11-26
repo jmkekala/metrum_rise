@@ -21777,6 +21777,81 @@ landed cover with the 64 m normal. No patchwork beyond that shows at this pose; 
 from the lattice normal's one-sided difference shows in the stills (an edge every 8,192 m), not
 measured. Row `TERRAIN-60`.
 
+### The ground waits for its water (`TERRAIN-58` option (a), 2026-11-26)
+
+The user's pale green squares in open water while zooming out: a terrain patch drawn while its water
+patch drew nothing, so the lake bed showed. Two forms, both reproduced on `dev` the same day: the water
+patch shown a frame or more after its ground (its holes run before the terrain's and it becomes
+wanted only after the frame's units, `follow_terrain`), and a water node built by the fill or the
+preload with no mesh until it is first shown (the mesh pipeline takes resident patches only and
+applies 4-6 meshes a frame).
+
+**The rule** (round D3's with one more term, `backdrop/cells.rs`): a patch is drawn as a patch when
+it is resident, its node draws something (not blank in the graded book) **and its water draws**: the
+water patch has nothing to draw (dry, or its payload refused), or it is shown holding a mesh of its
+cover and depth at any detail step. Until then the patch is *held*: the graded book collapses its
+PlaneMesh and hides its cell set whatever its draw state (`hold_draw`, no trace line and no draw state
+changed, so recorded graded traces replay unchanged), and its backdrop cell draws in its place in the
+same pass. A block that cannot draw its cells (no material or textures yet), a world without a water
+layer or without a graded book holds nothing: the patch then draws its bed rather than nothing.
+- The cells keep, beside D3's two bits, the water's: shown (the water layer's residency changes, taken
+  after the patch units), and its last report, dry or holding a mesh; and the hold as sent. Fed by
+  events, `O(changes)` a frame, nothing allocated on the frame path (the news vectors are reused);
+  a block whose readiness changes re-reads its 256 patches once.
+- `water.gd` only reports: its answer to an activation or a build is the water's state (0 dry, 1 a
+  mesh of its cover and depth, 2 wet without one) where the terrain's answers a surface generation
+  (the stream node's `WaterExecutor` keeps it; the layer sees -1 as before, so the units, their order
+  and prices are L1's and the stream goldens replay unchanged); `water_patch_state` when a shown patch
+  takes its first mesh, when a built patch dries, and when a hidden one turns wet or its mesh no
+  longer matches. A shown, drawn patch that turns wet under an edit keeps its ground (no new wait
+  under a drawn patch); its water follows with its mesh, as before.
+- A refused water payload counts as dry; a water node released by the budget or freed by its script
+  is forgotten (the ground waits for it again if it is still resident); the water's reset forgets
+  every patch's water.
+- What stands on a held patch: roads, buildings and vegetation follow the terrain's residency as
+  before and draw over the backdrop cell, as they do over a blank patch (D3). The water reflection's
+  terrain proxies follow the patch node's visibility, which a hold does not change (as for a blank
+  patch).
+- The load and the settle flag: the stream node's `has_water_pending_work` and the preload's
+  `in_step` also wait while a patch is held. Before, the view phase already waited for the water's
+  mesh queues of the resident patches, which a held patch implies, so the load reads the same; the
+  fill phase's `done` now also waits for every held patch's water.
+
+**Proof.**
+- Rust (`backdrop/cells/tests.rs`): a scripted sequence (resident before the water is known, shown
+  without a mesh, first mesh, hidden and shown again, dry and refused, water forgotten while the ground
+  stays, holds off and on) and 300 shuffled frames of every kind of news in any order: in every frame
+  each patch draws exactly one of patch and cell, the holds told to the book are exactly the resident
+  patches whose water does not draw, and with every water drawing nothing stays held; a block without
+  textures holds nothing.
+- Godot (`terrain_backdrop_handover_test`, `./run.sh --test`): D3's blank world, then the whole map
+  under water (an open water fill at 5 m), a jump and the zoom out and in, 600 frames a phase (a whole
+  map flooded at once does not settle within the test's timeout on `dev` either: the water's uploads
+  keep the terrain's water texture syncs queued), one water payload refused at the start. The round:
+  0 neither, 0 both in 2,747 frames, no terrain node drawing over wet water that does not draw, 24
+  held patch-frames, the refused patch drawn as a patch. `dev`'s library and scripts: 39 such lake
+  beds (the first a water patch still hidden) and no hold.
+- The analysis' counter (the stream benchmark's diagnostic `t58` phase: a player's load off the
+  map's centre with the preload, two poses at pitch -0.95 and -0.6, a zoom-out from 300 m to 16 km, a
+  zoom-in and a second zoom-out, each held until settled; drawn terrain patches in view whose wet water
+  patch does not draw), the shipped Kuopio, the round's release library: 0 in every frame at Automatic
+  and 1,024 MB, zoom in 2.0 s capped at 60 frames a second and in 1.0 s uncapped, and at 1,024 MB in
+  1.0 s capped (6 runs, 36 legs). `dev` on the same rows at 1,024 MB (3 runs): 2.0 s, first zoom-out 180-181 frames
+  with up to 22 in view, and shown late in 4-10 frames of the other legs, up to 45 in view; 1.0 s,
+  first zoom-out 51 frames up to 104 in view, shown late up to 35. The benchmark's permanent check
+  (`METRUM_STREAM_BED_CHECK=1`: per row `bed`, per sample `bed_max` and `cell_spans`) reads the same:
+  0 on the round, up to 27 / 105 / 45 on `dev`.
+- How long a resident patch stays a cell before its hand-over (frames from its residency, the stream
+  node's whole-map probe; counted are patches that stayed a cell at least one frame after turning
+  resident), the shipped Kuopio at 1,024 MB, 2.0 s at 60 frames a second, one run a side: the first
+  zoom-out (water meshes not yet made) 342 patches at p50 11, p90 26, at most 202 frames, against 324
+  at 2 / 3 / 3 on `dev` (whose patches drew their bed meanwhile); the zoom-in and the later zoom-outs
+  (meshes held) 46-326 patches at 1 / 2 / 3 at most, against none on `dev` (each drew in its residency
+  frame, its water a frame or more later).
+
+Not run in the round (time): the 60 km copy at 512 and 1,024 MB (report only), the analysis' two
+stills reproduced against their settled frames, and the shipped Kuopio stream row's C B B C (owed).
+
 ### Trees after a far trip: the vegetation's installs in the hole order (`VEG-35`, 2026-11-25)
 
 The user's report: on the 60 km test map, after a zoom-out, a long move and a zoom-in, trees and
