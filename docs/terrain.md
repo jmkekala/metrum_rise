@@ -22433,9 +22433,10 @@ phases (`StreamNode.set_terrain_preload`, `get_terrain_preload`; `terrain.gd` `a
    it fits) is built hidden, terrain and water, nearest the camera first (the fill's sorted list:
    exact squared ground distance, then key), the fill no longer waiting for the vegetation.
 3. **Done** when the keep rectangle has nothing left to build (`fill_left` 0 for both layers), no
-   patch unit waits, the backdrop is ready (its land covers from the preload's payloads uploaded)
-   and no kept patch's water texture sync waits; and, as before, the patches within 2 km draw and
-   the near ring's road chunks are in. Then the hold ends and gameplay is shown.
+   patch unit waits, the backdrop is ready (its land covers from the preload's payloads uploaded),
+   no kept patch's water texture sync waits and every kept hidden wet patch the target has room for
+   holds its kept water mesh (`TERRAIN-63` round W2, below); and, as before, the patches within
+   2 km draw and the near ring's road chunks are in. Then the hold ends and gameplay is shown.
 
 "The target is full" is the budget's rule, not a separate estimate: the preload ends when the keep
 rectangle is built, which is where one more ring's release rectangle would not fit. A target below
@@ -22458,7 +22459,7 @@ still, the fill has nothing left within the target: no build, show or release of
 | The fill's wait for the vegetation (round B1c) | holds the fill | lifted in the fill phase | the workers and the frame the vegetation shares |
 | The water's fill while the terrain has work | holds it | unchanged (the terrain has none in the fill phase) | order |
 | Backdrop uploads, graded tile work | all at once in the hold | unchanged | (already unmetered in the hold) |
-| Water mesh pipeline (8 requests, 4-6 applies, 2.5 ms a frame) | as listed | unchanged: it bounds the view phase (the Kuopio's 956 queued meshes take about 0.9 s) | frame time |
+| Water mesh pipeline (8 requests, 4-6 applies, 2.5 ms a frame; kept meshes 8 asked a frame, 16 out, applied inside the ledger's room) | as listed | a time slice (`TERRAIN-63` round W2): applies of every cause until 25 ms of the frame, every arrived mesh polled, submits within 5 ms while fewer than 256 requests and 64 MB of their largest meshes are out or waiting, kept meshes 256 asked a frame and out, the ledger's room not consulted | frame time; the in-flight bound holds a near view's step-1 arrays (up to 786 KB each) |
 | Land cover jobs' poll (32) | 32 | unchanged (payloads carry their land cover) | edits only |
 
 The slice is the one place a wall-time rule is honest: what it protects is the window, not a result.
@@ -22553,8 +22554,9 @@ A player's load shows one opaque screen from the click until the hand-over
   units_total - 1`, equal exactly when `done`, and the bar cannot stand at 100 % while anything is
   waited for. The load flow shows the largest fraction so far (the keep rectangle can shrink in the
   view phase while the drawn patches' water meshes arrive) and 1 from the hand-over. Before a frame
-  has set the wanted square both counts are 0. The kept water meshes of plan rounds W1/W2 extend
-  the water unit to kept hidden patches.
+  has set the wanted square both counts are 0. Since the kept water meshes' round W2
+  (`TERRAIN-63`) a hidden water patch's unit also waits for its kept mesh while one is asked for
+  it, or wanted and the target has room for one more, as the preload's `done` waits for them.
 - **Unchanged.** The preload's phases, built sets and hand-over rule; the API's loads (tests,
   benchmarks, tools) open no screen and read no units. The stream benchmark's
   `METRUM_STREAM_PRELOAD=1` loads through `player_load` (its `load_call_ms` then includes the
@@ -22654,7 +22656,7 @@ every wanting patch is asked for. The budget's status and the console's `terrain
 (`kept_water_mesh_bytes`), the kept, wanting and asked counts, the drops and refusals since the
 load, `W`, and `kept_held` (what held the requests back in the last frame).
 
-**Rate** (background only; the load's preload waiting for them is round W2): requests go out only
+**Rate** (in the background; behind the loading screen see round W2 below): requests go out only
 in a frame after the load's hold and the post-load window, in which neither layer has a hole, hide
 or level change waiting, no unit was held back, no ground is held for its water, the vegetation has
 no patch the view waits for, and the frame's install ledger has room for one kept apply (priced 85
@@ -22734,7 +22736,7 @@ on P-cores, one run a side):
   map at 1,024 MB the first kept mesh came when the post-load window closed and the last of 6,545
   about 3,100 frames later (52 s at 60 frames a second); 20 of the kept submits found the core's
   lock taken and went again a frame later; no kept mesh was stale at its poll. On the shipped
-  Kuopio that is about 130 frames for its 259. Lifting the caps behind the loading screen is W2's.
+  Kuopio that is about 130 frames for its 259. Behind the loading screen round W2 lifts these caps.
 - *Inside the install ledger* (the 60 km map at 1,024 MB loaded as a player does, then 30 s of a
   still camera, the perf channel on; `dev` against the branch): the branch applied 6,261 kept
   meshes in 3,131 frames of the still, 2 a frame at most. A kept apply took 81 us at the mean, 106
@@ -22783,6 +22785,128 @@ changes and the book wants it again; after each step the book's asked and kept c
 equal the script's. Not driven live: a terrain edit under hidden patches (in this headless scene its
 road publication can stay unacknowledged and hold the water's payloads back); part one drives the
 same `_upload_patch` rule. `water_reflection_math_test` gains the hidden kept patches' case.
+
+**The load waits for them (round W2, 2026-11-26; decision D7 (a)).** A player's load hands over
+only once the kept meshes are in: `get_terrain_preload`'s `done` also needs no kept request out and
+no hidden wet patch wanting one while the target admits one more (`kept_waits`; the admission rule
+above, so a patch left out for lack of room is not waited for: the target is full, and a tight
+target cannot hold the load). The book asks during the preload as soon as nothing the view waits
+for is pending, beside the fill: the preload's fill does not wait for the vegetation, so neither do
+its kept meshes, and the gameplay frame's install ledger does not apply behind the loading screen;
+up to 256 a frame and out at once (`PRELOAD_ASKED_MAX`), drops under the preload's slice. What is
+asked and in which order is the same as in the background, and because the kept bytes never move
+the places the built sets are those of before. The loading screen's water unit of a hidden patch
+waits for the same thing (asked, or wanting with room), so the bar reaches its last unit exactly
+when `done` does. After the hand-over a still camera asks for, applies and drops nothing.
+
+**The pipeline behind the loading screen.** No gameplay frame is shown during the preload, so the
+water mesh pipeline's per-frame counts, which made its rate the display's (8 requests, 4 to 6
+applies a frame), give way to a time slice for all three causes: applies until 25 ms of the frame
+(the preload's texture sync slice), every arrived mesh polled, submits within 5 ms while fewer than
+256 requests and 64 MB of their largest meshes are out or waiting for their apply (a step-1 mesh is
+up to 786 KB; the bound keeps a near view's arrays from holding hundreds of megabytes), the ledger's
+room not consulted (`water.gd`: the cap functions read one flag set once a frame and return
+today's numbers outside the preload). What is asked and in which order does not change.
+
+**Measured** (untimed, release libraries, `dev` `75ee58e08` against the branch, the stream
+benchmark on P-cores, one run a side unless named):
+
+- *What the hand-over finds.* The shipped Kuopio loaded off the centre (-5376, -256; the bed
+  check's pose) at Automatic: at the hand-over 291 kept meshes (2.00 MB), none wanting or asked;
+  `dev` hands over with none and 291 wanting (they came in the background after). The counted
+  bytes (113.8 MB), places (10,422), ring (10) and the 1,296 built patches of each layer equal
+  `dev`'s; the same at 1,024 MB and Whole map; on 2 workers (`--cpus 0,2`) the same kept set (a
+  digest of its keys) and built sets. Loaded at the centre the wanted square holds the whole map,
+  so nothing is kept on either side. The 60 km map at 1,024 MB (report only): 6,564 kept meshes
+  (35.9 MB) at the hand-over off the centre and 6,598 at the centre, against none on `dev`.
+- *Equal to before.* The shipped Kuopio's stream row without the preload (the tools' load: no line
+  of W2 runs) at 512 and 1,024 MB with settle digests: at all 14 settle points the built sets,
+  land cover, graded tiles, buildings, roads, parked cars, vegetation and water meshes equal
+  `dev`'s, the residency too except at point 9 (`far_to_ground`) at 512 MB, the steps difference
+  `TERRAIN-45` describes (W1 found it between two runs of `dev`); places at a sample's end differ
+  by up to 30 (the extras of that moment), rings equal. A player's preload at the centre: the
+  shipped Kuopio at Automatic equal at its 3 settle points, also on 2 workers; the 60 km map at
+  1,024 MB equal at its 3 points, the branch's water mesh check reading 6,545-6,598 hidden kept
+  meshes, 0 mismatches, 0 stale. The streaming core's goldens replay with no mismatch (30k 3,144
+  frames, Kuopio 10,036).
+- *The first zoom-out* (frames a patch stays a backdrop cell after it became resident, p50 / p90 /
+  most; the bed count 0 in every frame of every row). After a settled low pose, W1's bed row: the
+  shipped Kuopio 2 / 3 / 3 at Automatic and 1,024 MB, 2 / 3 / 4 at Whole map, 2 / 3 / 3 on 2
+  workers, as W1's 2 / 3 / 4 (`dev` reads the same there: its background fill ends within the
+  settle); the 60 km map at 1,024 MB 2 / 3 / 4 against `dev`'s 3 / 91 / 1,114 (965 of its 6,564
+  kept meshes in when the zoom began). At once, the zoom-out starting in the first gameplay
+  frame (from the load's 400 m to 16 km in 2.0 s at 60 frames a second): the shipped Kuopio at Automatic 2 / 8 / 11 over 768
+  hand-overs against `dev`'s 2 / 16 / 153 over 440 (it began with 8 kept meshes asked and 283
+  wanting), at 1,024 MB 2 / 10 / 13 against 2 / 14 / 160. Counted by kind in a second pair of
+  runs: no frame had a resident patch whose water was shown without a mesh (`dev`: 170 frames, up to
+  94 patches at once), while 26 frames had up to 41 patches whose water was not shown yet (`dev`: 28
+  frames, up to 38). What is left at once is the water's own show a few frames after its ground in
+  the post-load window, `TERRAIN-58`'s "shown late", not a mesh. The 60 km map at 1,024 MB at once:
+  2 / 3 / 4 over 12,252 hand-overs against `dev`'s 3 / 86 / 1,281.
+- *Load to gameplay* (report only; from the load call's start to the hand-over; one run a row
+  unless named):
+
+  | Load | `dev` | W2 |
+  |---|---:|---:|
+  | Shipped Kuopio at the centre, Automatic | 7.23 s | 6.64 s (2 workers: 10.66 s) |
+  | Shipped Kuopio off the centre, Automatic (three runs) | 6.13-6.46 s | 5.83-5.93 s |
+  | The same, capped at 60 frames a second | 7.74 s | 5.89 s |
+  | Shipped Kuopio off the centre, 1,024 MB / Whole map | - | 6.49 / 5.78 s |
+  | 60 km map, 1,024 MB, centre / off the centre | 18.25 / 17.98 s | 17.83 / 18.06 s |
+  | 60 km map, 1,024 MB, off the centre, capped at 60 frames a second | 20.44 s | 18.33 s |
+
+  So the load waits for 291 (shipped Kuopio) or about 6,600 (60 km) more meshes and is not longer:
+  the time slice applies the view's own meshes (956 on the shipped Kuopio at the centre) faster
+  than 4 to 6 a frame did. The longest
+  frame of the hold stays the graded renderer's, 1.0-1.5 s as before (2.1 s on 2 workers).
+- *The core's lock.* During the 60 km map's preload at 1,024 MB the mesh request call ran 994
+  times and found the lock taken 26 times (25 of them kept submits, asked again a frame later); the
+  shipped Kuopio's 132 calls, 2. In the same frames the reflection's source query found it taken
+  in 297 of 494 frames and the terrain payload jobs in 170 (`TERRAIN-61`).
+- *The reflection's books* (risk 1 with the kept meshes in before gameplay): the bed-check row at
+  Automatic loaded off the centre, with the zoom-out at the first gameplay frame and both poses'
+  legs, `METRUM_WATER_RECT_CHECK=1` and `METRUM_STREAM_PROXY_CHECK=1`: 1,532 rectangles, 0 unequal,
+  0 walks; the proxy book in step in all 1,766 frames of the legs.
+- *After the hand-over* no kept request went out in any row (the asked total unchanged through
+  every later pose): no kept submit can meet the request call's slow calls (`TERRAIN-64`) there.
+
+**The no-draw experiment** (plan round W2; report only, not adopted). The root viewport's 3D draw
+was switched off from the fill phase's start until the preload had nothing pending, then on again,
+and the hand-over held until two frames had drawn (a scratch copy of the load flow on the branch's
+library; two runs a side of the stream benchmark's player's preload). The 60 km map at Whole map:
+17.61 / 17.90 s from the load call to the hand-over against 18.06 / 18.31 s drawn, the fill 3,120 to
+3,130 patches a second against 2,815 to 3,070, the hold's longest frame 1.24-1.46 s against
+1.05-1.14 s. The shipped Kuopio off the centre: 5.80 / 6.13 s against 5.74 / 5.94 s (longest frame
+0.98-1.52 s against 1.01-1.03 s); at the centre, where the fill has nothing to build and the draw is
+never off: 6.35 / 6.65 s against 6.68 / 6.68 s. The first frame shown after the hand-over: 3.8 /
+3.7 ms against 5.1 / 5.0 ms (60 km) and 5.1 / 5.6 ms against 5.6 / 6.1 ms (Kuopio off the centre),
+the two held frames taking the first frame's cost. The plan adopts it only if the 60 km load is
+shorter by more than two runs' spread (it is: 0.43 s against 0.29 s) and the shipped Kuopio's is not
+longer and its first shown frame no longer: off the centre the load reads 0.13 s longer at the mean
+(within its spread), so the condition is not shown met; with about 2 % on the 60 km map and longer
+longest frames the switch is left out.
+
+**Timing** (round W2; the shipped Kuopio stream row: turns, pan, zoom, jump, trip at 512 MB, the
+tools' load, P-cores; two C B B C sessions, `dev` `75ee58e08`'s library and scripts against the
+branch's): pooled over four runs a side every phase is level at the median and at the maximum, the
+frame means within -0.11 to +0.12 ms a phase with overlapping ranges, load to settled level. Session
+1 alone read `pan_repeat 3s` and `trip_in 1.5s` medians and `turn_repeat 0.5s` and `zoom_in 1.5s`
+maxima worse, session 2 only `far_zoom_out 2.3s`'s median; none in both. Outside a preload the
+branch runs there only the scripts' cap functions' `O(1)` check of one flag and the book's
+unchanged `O(1)` frame.
+
+**Proof** (fresh): Rust `the_preload_asks_more_a_frame_and_waits_only_for_what_the_target_admits` (256
+asked in a frame and out at once, the rest in the next; a request out is waited for whatever the
+room, a wanting patch only while the target admits one more; at a target with room for `k`
+meshes the nearest `k` are kept and nothing more is waited for). `water_kept_mesh_test` part three
+(headless, in the gate's main chain): a player's load of a saved 20 km world with four lakes beyond
+the view, through the loading screen, waits for the kept meshes and hands over with every hidden wet
+patch holding its kept mesh and none asked; in every frame of the hold the fraction never goes back
+and is 1 exactly from the hand-over, the units reach `units_total - 1` exactly when the preload is
+`done`, and it is never `done` while a kept mesh is waited for; 120 still frames after it ask, apply
+and drop nothing; a target set at the load's start hands over with nothing left that the target
+admits; a player's load cancelled while its preload waits for kept meshes returns to the main menu
+with the screen gone. `terrain_preload_test` and `loading_screen_test` pass unchanged.
 
 
 ## Implemented Runtime Contract

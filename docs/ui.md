@@ -111,7 +111,8 @@ that hands the game over, and nothing of the screen after it.
   it, so the first shown frame has been drawn before.
 - **Progress.** The bar shows the preload's units counted in Rust (`get_terrain_preload`'s
   `units_done` of `units_total`: each patch of the keep rectangle in both layers, built and, if
-  in view, shown, a water patch with its water drawing; one unit for the preload's end and one for
+  in view, shown, a water patch with its water drawing (a hidden one with its kept water mesh
+  where the target has room, `TERRAIN-63`); one unit for the preload's end and one for
   the hand-over's own checks). The load flow shows the largest fraction so far, so the bar never
   goes back, and it reaches 100 % only at the hand-over. It stands at 0 % while the scene, the save
   and the renderers load (the synchronous call draws no frame).
