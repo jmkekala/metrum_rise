@@ -21900,6 +21900,81 @@ release library of the branch's Rust against `15d18cee7`'s with its scripts):
   `held` 0, `cells_listed` 0); the round's frame paths drain empty lists there. Cause not found; the
   sessions ran beside another session's test suites (load 2-11).
 
+### The backdrop's land against the patches' (`TERRAIN-60`, 2026-11-26)
+
+The user's aim: the hand-over from a backdrop cell to its patch as close to invisible as it can be
+made. Measured before anything changed, then one change.
+
+**Measurement** (diagnostic, not committed: a stream benchmark phase and a shader switch on the
+branch's release library). The shipped Kuopio, Automatic (every patch kept), three settled views at
+the hand-over's distances: 3 km orbit at pitch -0.6 over the map's centre, 6 km at pitch -0.6 and 10
+km at pitch -0.45 off it, at noon and at 7:30 (a low sun). Each view drawn twice in consecutive
+frames: every resident patch as a patch (A), then every resident patch held so its backdrop cell
+draws (B, the hold of `TERRAIN-58` switched on for all patches); trees and water draw in both. A
+class view of the same frame sorts the land pixels by the patch's own inputs: open (crown cover
+below 0.1), sparse (to 0.35), forest (above), shore (the patch's shore blend above 0.3), rock.
+Differences are B - A in sRGB 0-255, channel means; "per pixel" is the mean |B - A| over land.
+
+| View | land mean | per pixel | open | sparse | forest | shore band |
+|---|---:|---:|---:|---:|---:|---:|
+| 3 km, noon | -0.05 | 2.75 | -0.7 | +3.5 | +10.3 | -17.3 |
+| 6 km, noon | -1.0 | 4.65 | -2.2 | +3.4 | +12.3 | -23.8 |
+| 10 km, noon | -2.3 | 5.62 | -3.3 | +2.2 | +10.7 | -21.7 |
+| 3 km, 7:30 | -0.06 | 2.81 | -0.6 | +3.2 | +8.6 | -19.5 |
+| 6 km, 7:30 | -0.9 | 4.47 | -2.1 | +3.4 | +12.2 | -19.7 |
+| 10 km, 7:30 | -2.0 | 4.85 | -2.9 | +1.9 | +9.0 | -18.0 |
+
+The land's mean is close (CIE76 of the means 0.2-1.6); the cells are a blurred copy of it, and the
+water line is the largest difference. Round D3's "7 sRGB lighter" was the 60 km map at 512 MB, where
+the backdrop's land cover of a patch never built stays open ground (it lands from the patch's
+payload): read in code, not re-measured.
+
+**Causes, one at a time** (the patch side switched to what the cell has; per-pixel difference over
+land, noon, 3 / 6 / 10 km): none 2.75 / 4.65 / 5.62; without the relief mask 2.64 / 4.61 / 5.62; its
+light normal from the lattice's 64 m differences 2.67 / 4.59 / 5.58; and its fragment normal too 2.64
+/ 4.52 / 5.57; **its land cover as the backdrop's 32 m means 1.57 / 2.23 / 3.30** (the per-class
+differences then within 0.6 sRGB); all four 1.08 / 1.55 / 2.84. Cloud shadow, haze, wetness, the
+detail textures and the far crowns' stand-in run the same code on both from the same world position
+(the cloud switch moves 0.1-0.4, the clouds' own drift between the two frames). Trees: drawn alike on
+a held patch and on its patch (the vegetation follows the terrain's residency), and beyond the square
+the cells lie past the trees' 4.5 km anyway, so their absence is not a hand-over term. The land cover
+works through non-linear terms (the floor's smoothstep, the far crowns' power, the sky gap's square):
+at 32 m the cell draws a forest's mean, so a closed stand reads lighter and the meadow beside it
+darker (the per-class signs), and the far crowns' power over a mean reads the whole view 1-2 darker at
+6-10 km (the land's mean).
+
+**Changed: the water line by the water's own rule.** A cell drew its flat water where the wet
+fraction interpolated between lattice points exceeded one half, a 64 m staircase about every lake.
+It now draws water where the level of its wet points about the fragment (their water surface,
+interpolated with the wet fraction, divided by it) lies above its interpolated ground: the backdrop's
+own definition of wet (surface above ground) at the fragment, no new data, no constant. Water and land
+pixels that disagree between the frames, all six views: 10,188 / 14,963 / 13,612 / 4,945 / 6,837 /
+5,632 before, 5,752 / 9,182 / 8,902 / 2,704 / 3,915 / 3,453 after (-35 to -45 %); the staircase is
+gone (stills). Cost: one varying and one division a cell fragment. Real patches are not touched
+(the backdrop variant only). `terrain_backdrop_shader_test` pins a sloped shore: the line falls where
+the cell's ground meets the level (2.75 lattice steps), not half way (2.5).
+
+**Tried and not kept** (measured, not worth their cost):
+- The patches' own vertex gradient as a fourth backdrop channel (exact step-8 light normals, RG32F,
+  1.2 MB on the shipped map): no measurable change (at most 0.05 sRGB a class).
+- Land cover at 16 m (`COVER_STEP_CELLS` 2: +1.77 MB on the shipped map, 12.6 MB at 60 km, four
+  times the cover's uploads): per-pixel difference 2.75 / 4.65 / 5.62 to 2.52 / 4.13 / 5.13, forest
+  +10.3 / +12.3 / +10.7 to +8.8 / +9.5 / +7.7: most of the blur is in the 8 m detail.
+
+**Left, options for the user** (all new backdrop data):
+- (a) Land cover at 8 m, the patches' own texels (the cause that remains): exact for that term;
+  measured as the patch-side switch, per-pixel difference to 1.6 / 2.2 / 3.3. Memory: the cover
+  channel 1,025 x 1,025 a block, +8.9 MB on the shipped map (9.5 MB in all), +63 MB at 60 km, and
+  the same again in system memory; build cost: the existing note of each landed payload, no new
+  pass. Over the 2 MB the user allowed without asking.
+- (b) The relief mask's value at each lattice point (R8, 150 KB on the shipped map, 1.1 MB at 60 km):
+  at most the relief term's 0.1 per pixel measured above, not exact (the mask's non-linear ramps
+  over 8 m texels).
+- (c) An 8 m wet mask (one bit a texel, 1.2 MB on the shipped map, 8.4 MB at 60 km) for the water
+  line the lattice cannot place; not measured.
+- (d) The 60 km map's land cover for patches never built: computed at the load from the
+  vegetation's source instead of landing from payloads; cost not measured.
+
 ### Trees after a far trip: the vegetation's installs in the hole order (`VEG-35`, 2026-11-25)
 
 The user's report: on the 60 km test map, after a zoom-out, a long move and a zoom-in, trees and
