@@ -14205,6 +14205,23 @@ second suite), and the test could read the tiles without the bridge's walls: the
 graded trace that draws a bridge mouth's walls (2 faces, 140 frames). The control `e7d9a148`'s
 renderer replays the branch's bridge trace bit for bit too.
 
+**The far eviction's wait** (2026-11-26). The rendered `graded_tile_renderer_test` failed inside
+`./run.sh --test` ("no tile may stay installed without resident patches", "level n must free its
+slots") and passed alone. Its far check waited a fixed 4 frames, but eviction is budgeted: the
+frame that takes the patches' leaving queues one count per listed tile after its results, and each
+later frame applies counts only while the graded share of the frame's install ledger lasts, always
+at least one (`Run::run` in `book/results.rs`); a tile's last count evicts it. The gate's Godot
+stages run the strict-safeguard test library under `RUST_BACKTRACE=1`, where every `bind` and
+`bind_mut` captures a stack trace (`DebugBorrowTracker`): a far frame's evictions took 0.77 ms
+there against 0.16 ms without it, and in the rendered chain under load the share bought two
+evictions a frame, so the 10 tiles needed 5-6 frames. The check now waits until no tile is
+installed and no count is queued, bounded by one frame per listed tile after the news frame, the
+slowest the rule allows. Reproduction: the frame's ledger charged in full before each far frame
+(`StreamNode.charge_install`, one count a frame): the old wait failed 10 of 10, the new passes 10
+of 10, and one frame fewer than the bound leaves a tile installed. With the eviction broken (no
+eviction once no patch is resident) the new wait fails on the same three checks. The
+`RUST_BACKTRACE` cost itself is `TOOLS-45`.
+
 **Open risks of part 1, looked at.** The sets' instances stand at the patch rectangle's centre from
 its `f32` rectangle while `terrain.gd` places the node from the `f64` patch data: equal while the
 rectangle's corners are exact in `f32`, which holds on the patch grid of every integer-metre world
