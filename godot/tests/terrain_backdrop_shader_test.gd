@@ -4,8 +4,9 @@
 ## 512 m patch on the 64 m lattice, `TerrainBackdrop`'s mesh) drawn by a MultiMesh with its custom
 ## lane, as the StreamNode draws the cells, seen from above under a low sun. Pinned: the variant
 ## compiles and draws; it draws flat water where the block's water surface lies above its ground
-## and ground elsewhere; it lights with the terrain's own light(): the relief term darkens a slope
-## facing away from the sun and leaves flat ground as strength 0 draws it.
+## and ground elsewhere, its water line where the cell's ground meets the lake's level (`TERRAIN-60`),
+## not half way between a wet and a dry lattice point; it lights with the terrain's own light(): the
+## relief term darkens a slope facing away from the sun and leaves flat ground as strength 0 draws it.
 extends SceneTree
 
 const BACKDROP_SHADER := "res://assets/materials/terrain_backdrop.gdshader"
@@ -101,6 +102,20 @@ func _run() -> void:
 	print("terrain_backdrop water=%s ground=%s" % [wet, dry])
 	_expect(wet.b > wet.g and wet.b > wet.r, "a wet lattice point must draw the flat water colour: %s" % wet)
 	_expect(dry.g > dry.b, "a dry lattice point must draw ground: %s" % dry)
+	# A sloped shore (`TERRAIN-60`): ground rising 4 m a lattice step from 10 m, a lake at 21 m, so
+	# lattice points 0-2 are wet and the cell's ground meets the level at 2.75 steps. Pixel 17 covers
+	# steps 2.59-2.69 (6 m a pixel, the cell's corner at pixel 32 - 256 / 6): water by the level, ground
+	# by the old half-way rule; pixel 20 (steps 2.88-2.97) lies above the level: ground.
+	var shore := func(x: int, _z: int) -> float: return 10.0 + x * 4.0
+	var shore_lake := func(x: int, _z: int) -> float: return 21.0 if 10.0 + x * 4.0 < 21.0 else 10.0 + x * 4.0
+	cell.material_override = _material(shore, shore_lake)
+	var shore_shot := await _capture(viewport)
+	var below: Color = shore_shot.get_pixel(17, 32)
+	var above: Color = shore_shot.get_pixel(20, 32)
+	print("terrain_backdrop shore below=%s above=%s" % [below, above])
+	_expect(below.b > below.g and below.b > below.r,
+		"the cell's ground below the lake's level must draw water up to where it meets it: %s" % below)
+	_expect(above.g > above.b, "the cell's ground above the lake's level must draw ground: %s" % above)
 	# The relief term of the terrain's light(): a slope facing away darkens, flat ground does not.
 	var shots := {}
 	for ground in ["slope", "flat"]:

@@ -757,7 +757,54 @@ impl BackdropLayer {
         self.cells.set_blank(key, blank);
     }
 
-    /// Whether patch `key` is drawn as a patch: resident and drawing something. `O(1)`.
+    /// Whether patches can be held while their water does not draw (`TERRAIN-58`: a water layer
+    /// and a graded book). `O(patches)` on a change.
+    pub(crate) fn set_holds_on(&mut self, on: bool) {
+        self.cells.set_holds_on(on);
+    }
+
+    /// The water layer showed (with its answer) or hid patch `key`'s water (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn set_water_shown(&mut self, key: PatchKey, shown: bool, state: Option<WaterState>) {
+        self.cells.set_water_shown(key, shown, state);
+    }
+
+    /// The water's report of patch `key`'s water (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn set_water_state(&mut self, key: PatchKey, state: WaterState) {
+        self.cells.set_water_state(key, state);
+    }
+
+    /// The water forgot patch `key`'s node (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn forget_water(&mut self, key: PatchKey) {
+        self.cells.forget_water(key);
+    }
+
+    /// The water started over (`TERRAIN-58`). `O(patches)`.
+    pub(crate) fn forget_all_water(&mut self) {
+        self.cells.forget_all_water();
+    }
+
+    /// The holds changed since the last call (`TERRAIN-58`), for the graded book. `O(news)`.
+    pub(crate) fn take_hold_news(&mut self) -> std::vec::Drain<'_, (PatchKey, bool)> {
+        self.cells.take_hold_news()
+    }
+
+    /// Patches held now, their own draw waiting for their water (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn held_count(&self) -> usize {
+        self.cells.held_count()
+    }
+
+    /// Whether patch `key`'s own draw is held for its water (`TERRAIN-58`). `O(1)`.
+    pub(crate) fn is_held(&self, key: PatchKey) -> bool {
+        self.cells.is_held(key)
+    }
+
+    /// Whether patch `key`'s water would hold its ground back while it is resident (`UI-15`:
+    /// the loading screen's water unit). `O(1)`.
+    pub(crate) fn water_waits(&self, key: PatchKey) -> bool {
+        self.cells.water_waits(key)
+    }
+
+    /// Whether patch `key` is drawn as a patch: resident, drawing something and not held for its water. `O(1)`.
     pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
         self.cells.patch_draws(key)
     }
@@ -874,6 +921,8 @@ impl BackdropLayer {
 }
 
 mod cells;
+
+pub(crate) use cells::WaterState;
 
 #[cfg(test)]
 mod tests;

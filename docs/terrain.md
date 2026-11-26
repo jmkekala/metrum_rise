@@ -21794,6 +21794,231 @@ landed cover with the 64 m normal. No patchwork beyond that shows at this pose; 
 from the lattice normal's one-sided difference shows in the stills (an edge every 8,192 m), not
 measured. Row `TERRAIN-60`.
 
+### The ground waits for its water (`TERRAIN-58` option (a), 2026-11-26)
+
+The user's pale green squares in open water while zooming out: a terrain patch drawn while its water
+patch drew nothing, so the lake bed showed. Two forms, both reproduced on `dev` the same day: the water
+patch shown a frame or more after its ground (its holes run before the terrain's and it becomes
+wanted only after the frame's units, `follow_terrain`), and a water node built by the fill or the
+preload with no mesh until it is first shown (the mesh pipeline takes resident patches only and
+applies 4-6 meshes a frame).
+
+**The rule** (round D3's with one more term, `backdrop/cells.rs`): a patch is drawn as a patch when
+it is resident, its node draws something (not blank in the graded book) **and its water draws**: the
+water patch has nothing to draw (dry, or its payload refused), or it is shown holding a mesh of its
+cover and depth at any detail step. Until then the patch is *held*: the graded book collapses its
+PlaneMesh and hides its cell set whatever its draw state (`hold_draw`, no trace line and no draw state
+changed, so recorded graded traces replay unchanged), and its backdrop cell draws in its place in the
+same pass. A block that cannot draw its cells (no material or textures yet), a world without a water
+layer or without a graded book holds nothing: the patch then draws its bed rather than nothing.
+- The cells keep, beside D3's two bits, the water's: shown (the water layer's residency changes, taken
+  after the patch units), and its last report, dry or holding a mesh; and the hold as sent. Fed by
+  events, `O(changes)` a frame, nothing allocated on the frame path (the news vectors are reused);
+  a block whose readiness changes re-reads its 256 patches once.
+- `water.gd` only reports: its answer to an activation or a build is the water's state (0 dry, 1 a
+  mesh of its cover and depth, 2 wet without one) where the terrain's answers a surface generation
+  (the stream node's `WaterExecutor` keeps it; the layer sees -1 as before, so the units, their order
+  and prices are L1's and the stream goldens replay unchanged); `water_patch_state` when a shown patch
+  takes its first mesh, when a built patch dries, when a patch turns wet (shown or hidden: an
+  edit's flood, or a payload that lands after its patch was shown with the old one) and when a
+  hidden one's mesh no longer matches. Only a shown patch whose mesh no longer matches keeps its
+  ground drawn: its old mesh still draws while the new one comes (no wait under every edit near
+  water). (The round's first version also kept the ground of a shown patch turning wet; see the
+  completion below.)
+- A refused water payload counts as dry; a water node released by the budget or freed by its script
+  is forgotten (the ground waits for it again if it is still resident); the water's reset forgets
+  every patch's water.
+- What stands on a held patch: roads, buildings and vegetation follow the terrain's residency as
+  before and draw over the backdrop cell, as they do over a blank patch (D3). The water reflection's
+  terrain proxies follow the patch node's visibility, which a hold does not change (as for a blank
+  patch).
+- The load and the settle flag: the stream node's `has_water_pending_work` and the preload's
+  `in_step` also wait while a patch is held. Before, the view phase already waited for the water's
+  mesh queues of the resident patches, which a held patch implies, so the load reads the same; the
+  fill phase's `done` now also waits for every held patch's water.
+
+**Proof.**
+- Rust (`backdrop/cells/tests.rs`): a scripted sequence (resident before the water is known, shown
+  without a mesh, first mesh, hidden and shown again, dry and refused, water forgotten while the ground
+  stays, holds off and on) and 300 shuffled frames of every kind of news in any order: in every frame
+  each patch draws exactly one of patch and cell, the holds told to the book are exactly the resident
+  patches whose water does not draw, and with every water drawing nothing stays held; a block without
+  textures holds nothing.
+- Godot (`terrain_backdrop_handover_test`, `./run.sh --test`): D3's blank world, then the whole map
+  under water (an open water fill at 5 m), a jump and the zoom out and in, 600 frames a phase (a whole
+  map flooded at once does not settle within the test's timeout on `dev` either: the water's uploads
+  keep the terrain's water texture syncs queued), one water payload refused at the start. The round:
+  0 neither, 0 both in 2,747 frames, no terrain node drawing over wet water that does not draw, 24
+  held patch-frames, the refused patch drawn as a patch. `dev`'s library and scripts: 39 such lake
+  beds (the first a water patch still hidden) and no hold.
+- The analysis' counter (the stream benchmark's diagnostic `t58` phase: a player's load off the
+  map's centre with the preload, two poses at pitch -0.95 and -0.6, a zoom-out from 300 m to 16 km, a
+  zoom-in and a second zoom-out, each held until settled; drawn terrain patches in view whose wet water
+  patch does not draw), the shipped Kuopio, the round's release library: 0 in every frame at Automatic
+  and 1,024 MB, zoom in 2.0 s capped at 60 frames a second and in 1.0 s uncapped, and at 1,024 MB in
+  1.0 s capped (6 runs, 36 legs). `dev` on the same rows at 1,024 MB (3 runs): 2.0 s, first zoom-out 180-181 frames
+  with up to 22 in view, and shown late in 4-10 frames of the other legs, up to 45 in view; 1.0 s,
+  first zoom-out 51 frames up to 104 in view, shown late up to 35. The benchmark's permanent check
+  (`METRUM_STREAM_BED_CHECK=1`: per row `bed`, per sample `bed_max` and `cell_spans`) reads the same:
+  0 on the round, up to 27 / 105 / 45 on `dev`.
+- How long a resident patch stays a cell before its hand-over (frames from its residency, the stream
+  node's whole-map probe; counted are patches that stayed a cell at least one frame after turning
+  resident), the shipped Kuopio at 1,024 MB, 2.0 s at 60 frames a second, one run a side: the first
+  zoom-out (water meshes not yet made) 342 patches at p50 11, p90 26, at most 202 frames, against 324
+  at 2 / 3 / 3 on `dev` (whose patches drew their bed meanwhile); the zoom-in and the later zoom-outs
+  (meshes held) 46-326 patches at 1 / 2 / 3 at most, against none on `dev` (each drew in its residency
+  frame, its water a frame or more later).
+
+**Completed 2026-11-26** (the round's second session, same branch; untimed rows one run a side, the
+release library of the branch's Rust against `15d18cee7`'s with its scripts):
+- Review: each patch draws exactly one of patch and cell in every frame because the cells' listing
+  and the graded book's hold change in the same pass (the hold news are drained after the cells'
+  flush in both of the stream node's passes, also for holds made by `water.gd`'s reports between
+  passes or by a block's readiness in the flush); a node released by the book (`release_patch_node`)
+  leaves residency in the same pass. No defect found.
+- The reflection's books in step with the branch: the proxy book check (`METRUM_STREAM_PROXY_CHECK`)
+  and the rectangle check (`METRUM_WATER_RECT_CHECK`) on the shipped Kuopio stream row (turns, pan,
+  zoom, jump, trip; 512 MB): every frame in step, 2,795 rectangles, 0 unequal, 0 walks; on the
+  bed-check zoom rows (Automatic, 2.0 s, and 1,024 MB, 1.0 s, two poses, 60 frames a second): every
+  frame of every leg in step, 1,475 and 1,253 rectangles, 0 unequal, 0 walks. What a held patch's
+  mirror shows: its proxy follows the node's visibility, which a hold leaves on, so the reflection
+  draws the patch's own ground (its full mesh with the mirror's clip, as when drawn): no hole and no
+  bed above the mirror's plane. The backdrop is not in the reflection at all (its cells draw in the
+  main scenario only).
+- The analysis' stills (60 km copy, 1,024 MB, the first zoom-out's hold frame 153 and the second's
+  frame 110 against their settled frames; gamescope headless): `dev` reproduces the pale squares in
+  open water (45 and 2 dense 32 px tiles of ground green where the settled frame is water); the
+  branch none (largest tile 22 and 23 pixels: shore pixels only).
+- The 60 km copy, report only (pose (-6144, 1024), pitch -0.95, 300 m to 16 km in 2.0 s at 60
+  frames a second, the player's load): drawn patches in view over water that does not draw, 0 in
+  every frame of the branch at 512 and 1,024 MB; `dev` at 512 MB first zoom-out 1,723 frames up to
+  301, second 42 frames up to 17 (and its water shown late in 227 frames up to 47), at 1,024 MB first
+  zoom-out 1,099 frames up to 291, second shown late in 234 frames up to 48. A resident patch stays a
+  cell (frames from its residency, p50 / p90 / max): 512 MB first zoom-out 12,216 patches at 3 / 28 /
+  410, second 7,034 at 1 / 4 / 247; 1,024 MB 12,200 at 3 / 65 / 685 and 6,643 at 1 / 2 / 3 (`dev`
+  12,130 at 2 / 2 / 3 on its first zoom-outs, its beds drawn meanwhile; none on its second). The
+  branch's 512 MB row ran beside a build (its spans may read long).
+- A defect found by the gates and fixed: `terrain_backdrop_handover_test` failed under load (another
+  session at load 20-98; 3 of 3 runs, 4-31 beds) and passed at load 8. Reproduced on two CPUs
+  (`taskset`): 10,555 bed patch-frames, 7,779 of patches resident since the flood (shown when the
+  edit wet them) and 2,776 of patches shown after it, whose water had answered its show with the
+  old payload's state (dry) and whose new payload then landed while they were shown: both were
+  the first version's exception for a shown patch turning wet. Now only a shown patch whose mesh
+  goes stale keeps its ground; one turning wet waits for its first mesh (`water.gd`, one condition):
+  0 beds on two CPUs (38,640 held patch-frames).
+- Timing, the shipped Kuopio stream row (turns, pan, zoom, jump, trip; 512 MB; P-cores; C B B C
+  against `15d18cee7`'s library and scripts), three sessions because the first read two phases worse
+  (`zoom_out`'s maximum, `trip_hold`'s median) and the second the 0.5 s turn's median; pooled over
+  the six runs a side, 16 of 18 phases are level at the median and the maximum (`zoom_out` maximum
+  -0.3 ms, `trip_hold` median +0.09 within its runs' range). Not level: `turn_out 0.5s` median 5.05
+  against 4.79 ms (+0.26; the branch's runs 4.8-5.7, the control's 4.7-4.8, four of six branch runs
+  above every control run) and `turn_back 0.5s` 4.69 against 4.49 (+0.20, two of six above). In those
+  phases no patch is held, no cell is drawn and the water reports nothing (every patch resident,
+  `held` 0, `cells_listed` 0); the round's frame paths drain empty lists there. Cause not found; the
+  sessions ran beside another session's test suites (load 2-11).
+- Timing of the landing tree (this round with `TERRAIN-60` and the loading screen `UI-15`, on
+  `15d18cee7`), the same row, five C B B C sessions on a quiet machine (ten runs a side): every phase
+  level at the frame mean (within 0.11 ms) and the maxima within the runs' ranges but for single
+  spikes (`zoom_out` one run 24 ms, `pan_out`/`pan_repeat` one run 15-16 ms); the 0.5 s turns' medians
+  level this time (`turn_out 0.5s` +0.01, `turn_back 0.5s` +0.04 ms). `jump` reads worse at the
+  median: the runs' medians 4.0-4.7 against 4.1-5.9 ms (median of runs 4.17 against 4.52, +0.35;
+  above the control in each session, by 0.1-1.2). Attributed to the statistic and a uniform shift,
+  not to this round's code:
+  - The phase's frames are about 40-46 frames of streaming at 6-7 ms, about 25 at 4 ms and the 30
+    settled frames at 3 ms; its median falls on the first edge, so three busy frames more move it by
+    0.5-1.5 ms (the two runs with 53 and 55 busy frames read 5.7 and 5.9). The frame mean moves 4.97
+    to 5.08 ms (+0.11, +2 %), the main thread's on-CPU time a frame +0.11 ms, the settle 383 to 391 ms
+    (+8, two frames); the work is the same (436-438 detail steps of each layer, 144 hides of each, the
+    same counters at the phase's start and end).
+  - No path of the round runs there beyond the hides: the jump shows no patch (0 terrain and water
+    shows; with `METRUM_STREAM_BED_CHECK=1` no patch stays a cell after its residency), so nothing is
+    held and the 144 water hides reach the cells as `O(1)` events. The instrumented split
+    (`summary --scripts`, one quartet) reads the scripts' 1.50 / 1.58 ms a frame on the control
+    against 1.51 / 1.55 on the branch, the stream node's pass 0.13 on both. The shift is uniform:
+    the terrain's detail step, whose script and executor the landing tree leaves unchanged, costs
+    19.9 against 20.7 µs a unit (+4 %), the main thread's clock reads 4.73 against 4.68 GHz, cycles a
+    frame +1.4 %, and the detail queues end 2.5 frames later (frame 30.4 against 32.9). Two
+    jump-only quartets read the other way (frame mean 5.07 against 4.86 ms, settle 397 against 380).
+  - `jump_back` shows the 144 patches again and does hold: 101 patches a cell for p50 5, at most 7
+    frames, the frames by which the water's shows follow the terrain's (its units run after the
+    terrain's; kept meshes, so nothing is rebuilt). Level over the five sessions: median +0.04,
+    frame mean -0.01 ms, settle 398 against 394 ms.
+
+### The backdrop's land against the patches' (`TERRAIN-60`, 2026-11-26)
+
+The user's aim: the hand-over from a backdrop cell to its patch as close to invisible as it can be
+made. Measured before anything changed, then one change.
+
+**Measurement** (diagnostic, not committed: a stream benchmark phase and a shader switch on the
+branch's release library). The shipped Kuopio, Automatic (every patch kept), three settled views at
+the hand-over's distances: 3 km orbit at pitch -0.6 over the map's centre, 6 km at pitch -0.6 and 10
+km at pitch -0.45 off it, at noon and at 7:30 (a low sun). Each view drawn twice in consecutive
+frames: every resident patch as a patch (A), then every resident patch held so its backdrop cell
+draws (B, the hold of `TERRAIN-58` switched on for all patches); trees and water draw in both. A
+class view of the same frame sorts the land pixels by the patch's own inputs: open (crown cover
+below 0.1), sparse (to 0.35), forest (above), shore (the patch's shore blend above 0.3), rock.
+Differences are B - A in sRGB 0-255, channel means; "per pixel" is the mean |B - A| over land.
+
+| View | land mean | per pixel | open | sparse | forest | shore band |
+|---|---:|---:|---:|---:|---:|---:|
+| 3 km, noon | -0.05 | 2.75 | -0.7 | +3.5 | +10.3 | -17.3 |
+| 6 km, noon | -1.0 | 4.65 | -2.2 | +3.4 | +12.3 | -23.8 |
+| 10 km, noon | -2.3 | 5.62 | -3.3 | +2.2 | +10.7 | -21.7 |
+| 3 km, 7:30 | -0.06 | 2.81 | -0.6 | +3.2 | +8.6 | -19.5 |
+| 6 km, 7:30 | -0.9 | 4.47 | -2.1 | +3.4 | +12.2 | -19.7 |
+| 10 km, 7:30 | -2.0 | 4.85 | -2.9 | +1.9 | +9.0 | -18.0 |
+
+The land's mean is close (CIE76 of the means 0.2-1.6); the cells are a blurred copy of it, and the
+water line is the largest difference. Round D3's "7 sRGB lighter" was the 60 km map at 512 MB, where
+the backdrop's land cover of a patch never built stays open ground (it lands from the patch's
+payload): read in code, not re-measured.
+
+**Causes, one at a time** (the patch side switched to what the cell has; per-pixel difference over
+land, noon, 3 / 6 / 10 km): none 2.75 / 4.65 / 5.62; without the relief mask 2.64 / 4.61 / 5.62; its
+light normal from the lattice's 64 m differences 2.67 / 4.59 / 5.58; and its fragment normal too 2.64
+/ 4.52 / 5.57; **its land cover as the backdrop's 32 m means 1.57 / 2.23 / 3.30** (the per-class
+differences then within 0.6 sRGB); all four 1.08 / 1.55 / 2.84. Cloud shadow, haze, wetness, the
+detail textures and the far crowns' stand-in run the same code on both from the same world position
+(the cloud switch moves 0.1-0.4, the clouds' own drift between the two frames). Trees: drawn alike on
+a held patch and on its patch (the vegetation follows the terrain's residency), and beyond the square
+the cells lie past the trees' 4.5 km anyway, so their absence is not a hand-over term. The land cover
+works through non-linear terms (the floor's smoothstep, the far crowns' power, the sky gap's square):
+at 32 m the cell draws a forest's mean, so a closed stand reads lighter and the meadow beside it
+darker (the per-class signs), and the far crowns' power over a mean reads the whole view 1-2 darker at
+6-10 km (the land's mean).
+
+**Changed: the water line by the water's own rule.** A cell drew its flat water where the wet
+fraction interpolated between lattice points exceeded one half, a 64 m staircase about every lake.
+It now draws water where the level of its wet points about the fragment (their water surface,
+interpolated with the wet fraction, divided by it) lies above its interpolated ground: the backdrop's
+own definition of wet (surface above ground) at the fragment, no new data, no constant. Water and land
+pixels that disagree between the frames, all six views: 10,188 / 14,963 / 13,612 / 4,945 / 6,837 /
+5,632 before, 5,752 / 9,182 / 8,902 / 2,704 / 3,915 / 3,453 after (-35 to -45 %); the staircase is
+gone (stills). Cost: one varying and one division a cell fragment. Real patches are not touched
+(the backdrop variant only). `terrain_backdrop_shader_test` pins a sloped shore: the line falls where
+the cell's ground meets the level (2.75 lattice steps), not half way (2.5).
+
+**Tried and not kept** (measured, not worth their cost):
+- The patches' own vertex gradient as a fourth backdrop channel (exact step-8 light normals, RG32F,
+  1.2 MB on the shipped map): no measurable change (at most 0.05 sRGB a class).
+- Land cover at 16 m (`COVER_STEP_CELLS` 2: +1.77 MB on the shipped map, 12.6 MB at 60 km, four
+  times the cover's uploads): per-pixel difference 2.75 / 4.65 / 5.62 to 2.52 / 4.13 / 5.13, forest
+  +10.3 / +12.3 / +10.7 to +8.8 / +9.5 / +7.7: most of the blur is in the 8 m detail.
+
+**Left, options for the user** (all new backdrop data):
+- (a) Land cover at 8 m, the patches' own texels (the cause that remains): exact for that term;
+  measured as the patch-side switch, per-pixel difference to 1.6 / 2.2 / 3.3. Memory: the cover
+  channel 1,025 x 1,025 a block, +8.9 MB on the shipped map (9.5 MB in all), +63 MB at 60 km, and
+  the same again in system memory; build cost: the existing note of each landed payload, no new
+  pass. Over the 2 MB the user allowed without asking.
+- (b) The relief mask's value at each lattice point (R8, 150 KB on the shipped map, 1.1 MB at 60 km):
+  at most the relief term's 0.1 per pixel measured above, not exact (the mask's non-linear ramps
+  over 8 m texels).
+- (c) An 8 m wet mask (one bit a texel, 1.2 MB on the shipped map, 8.4 MB at 60 km) for the water
+  line the lattice cannot place; not measured.
+- (d) The 60 km map's land cover for patches never built: computed at the load from the
+  vegetation's source instead of landing from payloads; cost not measured.
+
 ### Trees after a far trip: the vegetation's installs in the hole order (`VEG-35`, 2026-11-25)
 
 The user's report: on the 60 km test map, after a zoom-out, a long move and a zoom-in, trees and
@@ -22243,10 +22468,10 @@ unlimited, payloads back 1 to 300 a frame, the view phase 0 to 90 frames; equal 
 set). Frames of the load's hold were already up to 1.0-1.6 s long before the preload (the graded
 renderer's unbudgeted work and first-use pipelines, on the control too); the preload adds none longer.
 
-**What the player sees.** The world draws behind the hold as before; one line at the screen's centre
-reads "Loading terrain: N of M patches" (`load_progress.gd`), terrain and water patches built of those
-the preload builds (`built + left`), freed at the hand-over ([ui](ui.md#0-main-menu)). A real loading
-screen is a later item (the user's).
+**What the player sees.** The loading screen (`UI-15`, below): one opaque screen from the click
+until the hand-over, with a bar of the preload's units. The world draws behind it as before and is
+first shown in the hand-over's frame. (Until `UI-15` a centred line read "Loading terrain: N of M
+patches" over the world as it drew.)
 
 **The tools keep today's hand-over.** Every test, benchmark and tool loads through the input
 manager's API (`menu_load_game_from_path`, `menu_load_world_definition`, `menu_start_new_game`,
@@ -22303,6 +22528,82 @@ goldens replay with no mismatch (30k 3,144 frames, Kuopio 10,036). The shipped K
 hand-over (`turns,pan,zoom,jump`, two C B B C sessions after a quiet machine): all 16 phases level
 at the median and the maximum pooled over four runs a side; per session `turn_repeat` (first) and
 `pan_out` (second) read worse at the median, none in both.
+
+### The loading screen (`UI-15`, 2026-11-26)
+
+A player's load shows one opaque screen from the click until the hand-over
+([ui](ui.md#loading-screen): the look, the words, cancel and refusals). What it rests on here:
+
+- **What covers what.** The screen is a canvas layer above every other (129), opaque, under the
+  scene tree's root; the main menu opens it before its scene change and the input manager's load
+  flow (`player_load`) takes it over and closes it in the hand-over's call, before that frame's
+  draw. Nothing about rendering changes: the world draws behind the screen as during the preload's
+  hold before, so its surfaces and pipelines are made before it is shown, and the hand-over check
+  still runs before the renderers' frames (the frame that hands over follows one drawn with
+  everything ready).
+- **The fraction**, counted in Rust (`StreamNode.get_terrain_preload`, `O(keep rectangle)`, read
+  once a frame during the hold only): `units_total` is one unit per patch of the keep rectangle in
+  each layer, refused payloads excluded, plus one unit for the preload's end (`done`) and one for
+  the hand-over's own checks (the 2 km ring's graded tiles and road chunks, the water texture
+  syncs), which only the load flow sees. A terrain unit is done when its patch is built and, if
+  wanted, shown; a water unit also needs its water to draw where the ground's hold waits for it
+  (`TERRAIN-58`: dry, or shown with a mesh; the cells' `water_waits`). So `units_done <=
+  units_total - 1`, equal exactly when `done`, and the bar cannot stand at 100 % while anything is
+  waited for. The load flow shows the largest fraction so far (the keep rectangle can shrink in the
+  view phase while the drawn patches' water meshes arrive) and 1 from the hand-over. Before a frame
+  has set the wanted square both counts are 0. The kept water meshes of plan rounds W1/W2 extend
+  the water unit to kept hidden patches.
+- **Unchanged.** The preload's phases, built sets and hand-over rule; the API's loads (tests,
+  benchmarks, tools) open no screen and read no units. The stream benchmark's
+  `METRUM_STREAM_PRELOAD=1` loads through `player_load` (its `load_call_ms` then includes the
+  screen's first frame).
+
+**Measured** (untimed, one run a side, report only; release libraries, the stream benchmark's
+`post_load` phase on P-cores with `METRUM_STREAM_PRELOAD=1`, the shipped Kuopio at Automatic =
+512 MB, the 60 km test map at 1,024 MB; "before" = the branch's base with the progress line):
+
+| Load, row | Before: load call | After: load call (incl. the screen's first frame) | Before / after: load to gameplay | Longest frame of the hold, before / after | First frame after the hand-over, before / after (most of 60) |
+|---|---:|---:|---:|---:|---:|
+| Shipped Kuopio, the benchmark's direct start | 1.22 s | 2.04 s | 6.76 / 7.21 s | 1.63 / 1.02 s | 2.7 / 2.9 ms (5.5 / 3.9) |
+| Shipped Kuopio, through the benchmark's menu (5 s) | 1.23 s | 1.61 s (screen drawn after 0.24 s) | 5.59 / 5.74 s | 1.23 / 1.09 s | 3.2 / 5.3 ms (3.7 / 5.8) |
+| 60 km map, 1,024 MB | 4.62 s | 5.41 s | 17.68 / 18.28 s | 1.54 / 1.42 s | 4.3 / 5.5 ms (4.3 / 6.6) |
+| 30k city save, Automatic | 5.32 s | 5.93 s (screen drawn after 0.64 s) | 11.01 / 10.58 s | 0.95 / 1.22 s | 5.3 / 5.4 ms (7.9 / 8.0) |
+
+The first frame shown after the hand-over has no hitch the old hand-over did not have (2.7-5.5 ms
+against 2.7-4.3 ms; the 60 frames after it at most 8 ms on both sides). In the benchmark the
+screen's first frame is the world scene's first frames before the load (0.24-0.8 s, the
+benchmark's own start); a player's click in the main menu draws the screen in the next frame. A
+New Game on the shipped Kuopio from the real main menu (after only, a scripted click after 6 s,
+rendered): the screen drawn 16 ms after the click; then `Main.tscn` loads (one 1.2 s frame) and the
+world scene's start with the `start_new_game` call takes one 3.8 s frame; the first world-scene
+frame 5.0 s after the click, so the bar stands at 0 % for 5.0 s (`D8` of the plan: the 30k save's
+load call alone is 5.3 s); the hand-over at 9.2 s. Those stretches without a frame are the
+synchronous load call's, unchanged by the screen (the menu stood frozen for them before): the load
+off the main thread is `UI-08`. The preload's results equal before at the post-load settle points
+(the shipped Kuopio with the preload, before against after: graded, buildings, roads, parked cars,
+vegetation, land cover, water meshes and the terrain and water `built_digest`, residency and
+digests equal at all 3 points). Stills of the screen at 0 %, about half way and just before the
+hand-over, and of the first gameplay frame, were taken on the shipped Kuopio and the 60 km map (the
+stream benchmark rendered in gamescope's headless backend).
+
+**Proof** (fresh): `loading_screen_test` (headless, in the gate's main chain) loads a 20 km blank
+world's save through the real main menu and world scene and checks every frame as state: until the
+hand-over the screen is up, visible, opaque over the whole viewport and above every other canvas
+layer with no dialog window over it, from the hand-over's frame it is gone; the fraction starts at
+0, never decreases, stays below 1 until the hand-over and is 1 from it, and the screen shows it;
+`units_done == units_total - 1` exactly when `done`. While the screen is up a key and a mouse click
+reach no scene node and no HUD control (probes that receive both after the hand-over). Esc in the
+view phase (an in-game load) and a click on `CANCEL` in the fill phase return to the main menu with
+the screen gone and as many nodes outside the menu as before the load; a load after them hands
+over. A refused save in game closes the screen, the browser shows Rust's message and the city
+stays; refused from the main menu, the menu shows it and no screen is left, no frame of the world
+scene drawn without the screen. No frame of the world scene is drawn between the menu's scene change
+and the load call (the deferred launch request runs in the change's frame). `terrain_preload_test`
+reads the fraction and the units instead of the progress line, and checks that the API's loads open
+no screen. Rust: `the_preload_units_count_what_the_preload_still_waits_for` (every frame of a
+preload, the units equal the keep rectangle less what `preload_left` reads, all done at the end, a
+wanted patch's own condition holds its unit back) and the cells' hold test reads `water_waits`
+against its model.
 
 
 ## Implemented Runtime Contract

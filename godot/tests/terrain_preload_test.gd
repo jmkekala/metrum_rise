@@ -2,7 +2,10 @@
 
 ## The load's terrain preload (`TERRAIN-59`): a player's load (`_refresh_after_world_load(true)`)
 ## hands the game over only once the base terrain the terrain memory target keeps is built, both
-## layers, and the backdrop is ready; a progress line shows meanwhile. On a 20 km blank world
+## layers, and the backdrop is ready. The load's progress (`load_fraction`, what the loading screen
+## shows, `UI-15`) is 0 at the load call, never decreases, stays below 1 until the hand-over and is 1
+## from it; the stream node's units read `units_done == units_total - 1` exactly when its preload
+## is `done`; these API loads open no loading screen. On a 20 km blank world
 ## (smaller than every preset: the whole map fits) and at a 45 MB target (the keep rectangle), the
 ## hand-over finds the fill with nothing left and the console's `terrain` report reads "fill left
 ## 0"; then, the camera still, no terrain or water patch builds, shows or is released. A load
@@ -62,8 +65,10 @@ func _test_preload(side: float, budget_mb: float, what: String) -> void:
 	_expect(stream.is_terrain_preloading(), "%s: a player's load preloads" % what)
 	# The view's phase first: before the load's first frame nothing is pending, yet the fill waits.
 	_expect(int(stream.get_terrain_preload().get("phase", -1)) == 1, "%s: the preload starts with the view" % what)
+	_expect(input.load_fraction() == 0.0, "%s: the progress is 0 at the load call" % what)
 	var start := Time.get_ticks_msec()
-	var progress := ""
+	var fraction := 0.0
+	var units_seen := 0
 	var frames := 0
 	# The first frame the view was in step, and the first a kept (hidden) patch was built.
 	var in_step_frame := -1
@@ -75,19 +80,28 @@ func _test_preload(side: float, budget_mb: float, what: String) -> void:
 		frames += 1
 		if kept_frame < 0 and int(stream.get_terrain_budget().get("terrain_kept", 0)) > 0:
 			kept_frame = frames
-		# The line with the most patches to build (the first frame's has no count yet).
-		var line: String = input.load_progress_text()
-		if line.length() > progress.length() or line.contains(" of ") and not progress.contains(" of "):
-			progress = line
+		# The progress never goes back and stays below 1 until the hand-over.
+		var shown: float = input.load_fraction()
+		_expect(shown >= fraction, "%s: the progress went back from %f to %f" % [what, fraction, shown])
+		_expect(input.is_world_ready() == (shown == 1.0), "%s: progress %f, world ready %s" % [what, shown, input.is_world_ready()])
+		fraction = shown
+		var state: Dictionary = stream.get_terrain_preload()
+		var total := int(state.get("units_total", 0))
+		if stream.is_terrain_preloading() and total > 0:
+			units_seen = maxi(units_seen, total)
+			var done := int(state.get("units_done", -1))
+			_expect(done <= total - 1 and (done == total - 1) == bool(state.get("done", false)),
+				"%s: units %d of %d, done %s" % [what, done, total, state.get("done")])
+		_expect(root.get_node_or_null("LoadingScreen") == null, "%s: an API load opens no loading screen" % what)
 	_expect(input.is_world_ready(), "%s: the preload must hand over" % what)
 	var status: Dictionary = stream.get_terrain_budget()
 	var state: Dictionary = stream.get_terrain_preload()
-	print("[terrain_preload] %s: hand-over after %d frames, %.2f s; progress \"%s\"; %s"
-		% [what, frames, float(Time.get_ticks_msec() - start) / 1000.0, progress, status])
+	print("[terrain_preload] %s: hand-over after %d frames, %.2f s; units %d; %s"
+		% [what, frames, float(Time.get_ticks_msec() - start) / 1000.0, units_seen, status])
 	_expect(kept_frame < 0 or in_step_frame >= 0 and kept_frame > in_step_frame,
 		"%s: the fill builds only after the view is in step (frames %d, %d)" % [what, in_step_frame, kept_frame])
-	_expect(not stream.is_terrain_preloading() and input.load_progress_text().is_empty(),
-		"%s: the hand-over ends the preload and its line" % what)
+	_expect(not stream.is_terrain_preloading() and input.load_fraction() == 1.0,
+		"%s: the hand-over ends the preload, its progress at 1" % what)
 	_expect(int(status.get("fill_left", -1)) == 0, "%s: nothing left to fill at the hand-over: %s" % [what, status])
 	_expect(int(state.get("left", -1)) == 0, "%s: nothing left of the preload: %s" % [what, state])
 	_expect(bool(stream.get_backdrop().get("ready", false)), "%s: the backdrop is ready" % what)
@@ -100,9 +114,8 @@ func _test_preload(side: float, budget_mb: float, what: String) -> void:
 		var grid := ceili(side / 512.0) * ceili(side / 512.0)
 		_expect(built == grid and int(status.get("water_built", 0)) == grid,
 			"%s: the whole map is built, both layers: %s" % [what, status])
-	if frames > 2 and side > 512.0:
-		_expect(progress.begins_with("Loading terrain: ") and progress.ends_with(" patches")
-			and not progress.contains(" 0 of 0 "), "%s: the progress line shows: \"%s\"" % [what, progress])
+	if frames > 2:
+		_expect(units_seen > 2, "%s: the preload counted its units" % what)
 	var console: Node = root.get_node_or_null("DebugConsole")
 	if console != null:
 		console._run_command("terrain")
@@ -134,7 +147,8 @@ func _test_without_preload() -> void:
 	var preloaded: bool = stream.is_terrain_preloading()
 	while not input.is_world_ready() and Time.get_ticks_msec() - start < TIMEOUT_MS:
 		await process_frame
-		preloaded = preloaded or stream.is_terrain_preloading() or not input.load_progress_text().is_empty()
+		preloaded = preloaded or stream.is_terrain_preloading() \
+			or input.load_fraction() > 0.0 and not input.is_world_ready()
 	_expect(input.is_world_ready() and not preloaded, "a load without the preload hands over as before")
 	main.queue_free()
 	await process_frame

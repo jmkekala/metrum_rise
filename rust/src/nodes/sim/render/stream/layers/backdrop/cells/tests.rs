@@ -225,6 +225,177 @@ fn a_resident_patch_drawing_nothing_keeps_its_cell() {
     }
 }
 
+// A patch's facts as the cells' model (`TERRAIN-58`): terrain resident, blank, water shown, the
+// water's last report.
+#[derive(Clone, Copy, Default)]
+struct Facts {
+    resident: bool,
+    blank: bool,
+    shown: bool,
+    water: Option<WaterState>,
+}
+
+impl Facts {
+    // The water draws: nothing to draw, or shown holding a mesh.
+    fn water_draws(&self) -> bool {
+        self.water == Some(WaterState::Dry) || self.shown && self.water == Some(WaterState::Mesh)
+    }
+    fn held(&self, holds_on: bool) -> bool {
+        holds_on && self.resident && !self.water_draws()
+    }
+}
+
+#[test]
+fn the_ground_waits_for_its_water_and_exactly_one_of_patch_and_cell_draws() {
+    let mut recorder = Recorder::new();
+    let mut layer = drawn_layer(&mut recorder);
+    layer.set_holds_on(true);
+    layer.flush(&mut recorder, HEIGHTS);
+    let mut facts: BTreeMap<PatchKey, Facts> = BTreeMap::new();
+    // The holds the book was told (applied in order).
+    let mut book: BTreeSet<PatchKey> = BTreeSet::new();
+    let check = |layer: &mut BackdropLayer,
+                 recorder: &mut Recorder,
+                 facts: &BTreeMap<PatchKey, Facts>,
+                 book: &mut BTreeSet<PatchKey>,
+                 holds_on: bool,
+                 label: &str| {
+        layer.flush(recorder, HEIGHTS);
+        for (key, held) in layer.take_hold_news() {
+            assert_eq!(book.insert(key), held, "{label}: hold news of {key:?} repeats its state");
+            if !held {
+                book.remove(&key);
+            }
+        }
+        let drawn: BTreeSet<PatchKey> = facts
+            .iter()
+            .filter(|(_, facts)| facts.resident && !facts.blank && !facts.held(holds_on))
+            .map(|(key, _)| *key)
+            .collect();
+        assert_exactly_one(recorder, &drawn, label);
+        let held: BTreeSet<PatchKey> = facts
+            .iter()
+            .filter(|(_, facts)| facts.held(holds_on))
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(*book, held, "{label}: the book holds exactly the patches whose water does not draw");
+        assert_eq!(layer.held_count(), held.len(), "{label}");
+        for key in all_keys() {
+            assert_eq!(layer.is_held(key), held.contains(&key), "{label} {key:?}");
+            assert_eq!(layer.patch_draws(key), drawn.contains(&key), "{label} {key:?}");
+            // The loading screen's water unit (`UI-15`): waits exactly where a resident patch
+            // would be held.
+            let facts = facts.get(&key).copied().unwrap_or_default();
+            assert_eq!(layer.water_waits(key), holds_on && !facts.water_draws(), "{label} {key:?}");
+        }
+    };
+    // Scripted. A patch resident before its water is known waits (its cell draws).
+    let key = [3, 2];
+    layer.set_resident(key, true);
+    facts.entry(key).or_default().resident = true;
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "resident, water unknown");
+    assert!(layer.is_held(key) && layer.cell_shown(key));
+    // Its water shown without a mesh: still waiting; its first mesh: drawn as a patch.
+    layer.set_water_shown(key, true, Some(WaterState::Empty));
+    let entry = facts.get_mut(&key).unwrap();
+    (entry.shown, entry.water) = (true, Some(WaterState::Empty));
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "shown without a mesh");
+    assert!(layer.is_held(key));
+    layer.set_water_state(key, WaterState::Mesh);
+    facts.get_mut(&key).unwrap().water = Some(WaterState::Mesh);
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "first mesh");
+    assert!(layer.patch_draws(key) && !layer.cell_shown(key));
+    // Hidden and shown again: the ground waits for the water's show, which holds its mesh.
+    for (resident, shown) in [(false, false), (true, false), (true, true)] {
+        layer.set_resident(key, resident);
+        layer.set_water_shown(key, shown, shown.then_some(WaterState::Mesh));
+        let entry = facts.get_mut(&key).unwrap();
+        (entry.resident, entry.shown) = (resident, shown);
+        check(&mut layer, &mut recorder, &facts, &mut book, true, "hidden and shown again");
+    }
+    assert!(layer.patch_draws(key));
+    // A dry patch known from its build never waits; a refused payload counts as dry.
+    for (dry, state) in [([5, 5], WaterState::Dry), ([6, 5], WaterState::Dry)] {
+        layer.set_water_state(dry, state);
+        layer.set_resident(dry, true);
+        facts.insert(dry, Facts { resident: true, water: Some(state), ..Facts::default() });
+    }
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "dry and refused");
+    assert!(layer.patch_draws([5, 5]) && layer.patch_draws([6, 5]));
+    // The water's node released or freed while its ground stays: the ground waits for it again.
+    layer.forget_water(key);
+    let entry = facts.get_mut(&key).unwrap();
+    (entry.shown, entry.water) = (false, None);
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "water forgotten");
+    assert!(layer.is_held(key));
+    // Holds off (no water layer or graded book): nothing is held, every resident patch draws.
+    layer.set_holds_on(false);
+    check(&mut layer, &mut recorder, &facts, &mut book, false, "holds off");
+    assert!(layer.patch_draws(key));
+    layer.set_holds_on(true);
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "holds on");
+    // Shuffled: every kind of news in any order inside a frame.
+    let mut walk = Walk(0x2545_f491_4f6c_dd1d);
+    let keys = all_keys();
+    let states = [WaterState::Dry, WaterState::Mesh, WaterState::Empty];
+    for frame in 0..300 {
+        for _ in 0..walk.next() % 60 {
+            let key = keys[(walk.next() % keys.len() as u64) as usize];
+            let on = walk.next().is_multiple_of(2);
+            let state = states[(walk.next() % 3) as usize];
+            let entry = facts.entry(key).or_default();
+            match walk.next() % 6 {
+                0 => {
+                    layer.set_resident(key, on);
+                    entry.resident = on;
+                }
+                1 => {
+                    layer.set_blank(key, on);
+                    entry.blank = on;
+                }
+                2 => {
+                    layer.set_water_shown(key, on, on.then_some(state));
+                    entry.shown = on;
+                    if on {
+                        entry.water = Some(state);
+                    }
+                }
+                3 | 4 => {
+                    layer.set_water_state(key, state);
+                    entry.water = Some(state);
+                }
+                _ => {
+                    layer.forget_water(key);
+                    (entry.shown, entry.water) = (false, None);
+                }
+            }
+        }
+        check(&mut layer, &mut recorder, &facts, &mut book, true, &format!("shuffled frame {frame}"));
+    }
+    // Every water drawing: nothing stays held.
+    for key in all_keys() {
+        layer.set_water_state(key, WaterState::Dry);
+        facts.entry(key).or_default().water = Some(WaterState::Dry);
+    }
+    check(&mut layer, &mut recorder, &facts, &mut book, true, "all dry");
+    assert_eq!(layer.held_count(), 0);
+}
+
+#[test]
+fn a_block_that_cannot_draw_its_cells_holds_no_patch() {
+    let mut recorder = Recorder::new();
+    let mut layer = BackdropLayer::default();
+    layer.reset_cells(Some(GRID), Some(&mut recorder));
+    let materials: Vec<_> = (0..6).map(|_| recorder.material_create(99)).collect();
+    layer.set_drawing(MESH, PARAMETER, materials, &mut recorder);
+    layer.set_holds_on(true);
+    layer.set_resident([3, 2], true);
+    layer.flush(&mut recorder, HEIGHTS);
+    // No textures: the patch draws its bed rather than nothing.
+    assert!(!layer.is_held([3, 2]) && layer.patch_draws([3, 2]));
+    assert_eq!(layer.take_hold_news().count(), 0);
+}
+
 #[test]
 fn a_block_draws_only_with_its_textures_and_material_and_never_in_the_reflection() {
     let mut recorder = Recorder::new();

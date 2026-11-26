@@ -783,6 +783,28 @@ impl PatchStream {
             .count()
     }
 
+    /// The preload's units in this layer (the loading screen's fraction, `UI-15`): `(done,
+    /// total)` over the prewarm square's patches, refused ones excluded; a patch is done when it
+    /// is built and, if wanted, shown and `draws` (the water's own condition; `|_| true` for the
+    /// terrain). With `draws` always true, `total - done == preload_left()`. `O(prewarm square)`:
+    /// a status read, as [`Self::preload_left`].
+    pub(crate) fn preload_units(&self, draws: impl Fn(PatchKey) -> bool) -> (usize, usize) {
+        let (Some(grid), Some(halo)) = (self.grid, self.halo) else {
+            return (0, 0);
+        };
+        let (mut done, mut total) = (0, 0);
+        for key in (halo[1]..=halo[3]).flat_map(|z| (halo[0]..=halo[2]).map(move |x| [x, z])) {
+            let flags = self.flags[grid.index(key)];
+            if flags & REFUSED != 0 {
+                continue;
+            }
+            total += 1;
+            let shown = flags & WANTED == 0 || flags & RESIDENT != 0 && draws(key);
+            done += usize::from(flags & BUILT != 0 && shown);
+        }
+        (done, total)
+    }
+
     /// The built patches released since the last call; taken by the caller (their surface
     /// generation goes, as when a script frees a node itself).
     pub(crate) fn take_released(&mut self) -> std::vec::Drain<'_, PatchKey> {

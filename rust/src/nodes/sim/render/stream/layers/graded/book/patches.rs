@@ -44,6 +44,10 @@ pub(super) struct PatchNodes {
     // Each entry or exit of `unready` in order (true: the patch draws nothing from now on): the
     // backdrop's cells follow them (`TERRAIN-41` D3, `take_blank_news`).
     blank_news: Vec<(PatchKey, bool)>,
+    // The patches whose own draw is held while their water does not draw (`TERRAIN-58`, the
+    // stream node's `hold_draw`), with whether their PlaneMesh draws once let go (the draw state
+    // applied meanwhile).
+    held: OrderedMap<PatchKey, bool>,
     planes: Vec<Plane>,
 }
 
@@ -156,6 +160,55 @@ impl GradedTileBook {
         collapsed.insert(key, node);
     }
 
+    // Patch `key`'s PlaneMesh as its draw state has it (`drawn`), unless its own draw is held
+    // (`TERRAIN-58`): then it stays collapsed and draws as `drawn` once let go.
+    fn draw_plane(&mut self, key: PatchKey, node: i64, drawn: bool) {
+        let drawn = match self.patch_nodes.held.get_mut(&key) {
+            Some(later) => {
+                *later = drawn;
+                false
+            }
+            None => drawn,
+        };
+        self.set_plane(key, node, drawn);
+    }
+
+    /// Holds resident patch `key`'s own draw (`held`: its PlaneMesh collapsed and its cell set
+    /// hidden, whatever its draw state) or lets it draw what its draw state says again
+    /// (`TERRAIN-58`: the stream node holds a patch while its water does not draw, and its
+    /// backdrop cell draws in its place in the same frame). Nothing is traced and no draw state
+    /// changes, so recorded traces replay unchanged. `O(1)`.
+    pub(crate) fn hold_draw(&mut self, key: [i32; 2], held: bool) {
+        let at = (key[0], key[1]);
+        let node = self.patch_nodes.nodes.get(&at).map_or(0, |patch| patch.node);
+        if held {
+            if self.patch_nodes.held.contains_key(&at) {
+                return;
+            }
+            let drawn = !self.patch_nodes.collapsed.contains_key(&at);
+            self.patch_nodes.held.insert(at, drawn);
+            self.set_plane(at, node, false);
+        } else {
+            let Some(drawn) = self.patch_nodes.held.remove(&at) else {
+                return;
+            };
+            self.set_plane(at, node, drawn);
+        }
+        let set = self.state.cells.by_patch.get(&at).copied();
+        if let (Some(objects), Some(backend)) = (self.objects.as_mut(), self.backend.as_mut()) {
+            objects.hold(backend, at, set, held);
+        }
+    }
+
+    // Forgets every hold (the patches left or the renderer cleared): the cell sets draw as they
+    // are shown again.
+    fn forget_holds(&mut self) {
+        self.patch_nodes.held.clear();
+        if let (Some(objects), Some(backend)) = (self.objects.as_mut(), self.backend.as_mut()) {
+            objects.forget_holds(backend);
+        }
+    }
+
     /// Patch `key`, just made resident by the streaming core, draws nothing from now on when its
     /// draw state is nothing (its list not known yet), rather than its PlaneMesh until the
     /// renderer's next frame applies that state (`TERRAIN-41` D3: the backdrop's cell stays
@@ -169,7 +222,7 @@ impl GradedTileBook {
         }
         self.set_ready(at, false);
         let node = self.patch_nodes.nodes.get(&at).map_or(0, |patch| patch.node);
-        self.set_plane(at, node, false);
+        self.draw_plane(at, node, false);
     }
 
     /// The patches that started (true) or stopped drawing nothing since the last call, in order
@@ -249,6 +302,10 @@ impl GradedTileBook {
         }
         self.patch_nodes.nodes.insert(at, patch);
         self.set_patch_draw(key, node, material, aabb);
+        // A held patch's new node is held too (`TERRAIN-58`).
+        if self.patch_nodes.held.contains_key(&at) {
+            self.set_plane(at, node, false);
+        }
         true
     }
 
@@ -263,6 +320,7 @@ impl GradedTileBook {
     /// starts over with the world).
     #[func]
     pub fn forget_patches(&mut self) {
+        self.forget_holds();
         self.patch_nodes.nodes.clear();
         self.clear_resident();
     }
@@ -281,15 +339,22 @@ impl GradedTileBook {
             .nodes
             .get(&at)
             .map_or(0, |patch| patch.node);
-        self.set_plane(at, node, state == i64::from(DRAW_PLANE));
+        self.draw_plane(at, node, state == i64::from(DRAW_PLANE));
     }
 
     /// Returns patch `key` to its PlaneMesh (on `node`, its node now; 0: none) and its cell set
     /// to the pool, as the patch recycles.
     #[func]
     pub fn release_patch_node(&mut self, key: Vector2i, node: i64) {
-        self.release_set(key);
         let at = (key.x, key.y);
+        // A pooled node is never left held (`TERRAIN-58`); the stream node lets the patch go as
+        // it leaves.
+        if self.patch_nodes.held.remove(&at).is_some()
+            && let (Some(objects), Some(backend)) = (self.objects.as_mut(), self.backend.as_mut())
+        {
+            objects.hold(backend, at, None, false);
+        }
+        self.release_set(key);
         if self.patch_nodes.unready.remove(&at).is_some() {
             self.patch_nodes.blank_news.push((at, false));
         }
@@ -299,6 +364,7 @@ impl GradedTileBook {
     /// Every collapsed PlaneMesh draws again and no patch is unready (the renderer's `clear`).
     #[func]
     pub fn restore_planes(&mut self) {
+        self.forget_holds();
         let keys: Vec<PatchKey> = self.patch_nodes.collapsed.keys().copied().collect();
         for key in keys {
             self.set_plane(key, 0, true);
@@ -397,6 +463,10 @@ impl GradedTileBook {
                 continue;
             };
             if !equal_approx(f64::from(node.get_visibility_range_end()), HIDDEN_RANGE_M) {
+                continue;
+            }
+            // A held patch's backdrop cell draws in its place (`TERRAIN-58`).
+            if self.patch_nodes.held.contains_key(&(key.x, key.y)) {
                 continue;
             }
             holes += i64::from(!self.cells_drawn_under(key, id));

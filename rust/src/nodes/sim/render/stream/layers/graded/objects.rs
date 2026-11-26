@@ -29,7 +29,7 @@ use super::ordered::OrderedMap;
 use super::state::{Effect, PatchKey};
 use crate::nodes::sim::render::stream::backend::{Handle, RenderBackend, Scenario, Shadow, Vector};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // Floats per cell instance (transform rows, then custom data) and per wall instance.
 const CELL_STRIDE: usize = 16;
@@ -142,6 +142,8 @@ pub(crate) struct SetObjects {
     aabb: Aabb,
     // A copy of the cells' `hidden`, so a set's visibility needs only the set.
     hidden: bool,
+    // Its patch's own draw is held while its water does not draw (`TERRAIN-58`).
+    held: bool,
     // The patch it was last taken or begun for (`cells["key"]`, the trace's).
     key: PatchKey,
     rect_hm: [i32; 4],
@@ -168,6 +170,8 @@ pub(crate) struct CellObjects {
     pub(crate) variants_created: u64,
     // Whether the cells draw at all (the terrain node's visibility).
     hidden: bool,
+    // The patches whose own draw is held (`TERRAIN-58`): a set shown or parked for one is held.
+    held: HashSet<PatchKey>,
 }
 
 // `_cell_mesh_for`: the lattice code of cell mesh `index` in a set of `step`. GL3 cells take the
@@ -215,6 +219,7 @@ impl CellObjects {
                 origin: None,
                 aabb: Aabb::default(),
                 hidden: self.hidden,
+                held: false,
                 key: (0, 0),
                 rect_hm: [0; 4],
                 step: -1,
@@ -293,6 +298,38 @@ impl CellObjects {
         }
     }
 
+    /// Holds patch `key`'s own draw (`held`) or lets it go (`TERRAIN-58`): its set `set` (if it
+    /// holds one) draws nothing while held, and a set shown or parked for it later is held too.
+    /// `O(the set's meshes)`.
+    pub(crate) fn hold(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        key: PatchKey,
+        set: Option<u32>,
+        held: bool,
+    ) {
+        if held {
+            self.held.insert(key);
+        } else {
+            self.held.remove(&key);
+        }
+        if let Some(objects) = set.and_then(|set| self.sets.get_mut(set as usize)) {
+            objects.held = held;
+            Self::update_drawn(backend, objects);
+        }
+    }
+
+    /// Lets every held patch go (the renderer cleared). `O(sets)`.
+    pub(crate) fn forget_holds(&mut self, backend: &mut impl RenderBackend) {
+        self.held.clear();
+        for objects in &mut self.sets {
+            if objects.held {
+                objects.held = false;
+                Self::update_drawn(backend, objects);
+            }
+        }
+    }
+
     /// Frees every object (the renderer's disposal).
     pub(crate) fn free_all(&mut self, backend: &mut impl RenderBackend) {
         for set in self.sets.drain(..) {
@@ -339,6 +376,7 @@ impl CellObjects {
                 let parent =
                     key.map(|key| (key, self.patches.get(&key).map_or(0, |patch| patch.node)));
                 let objects = &mut self.sets[set as usize];
+                objects.held = key.is_some_and(|key| self.held.contains(&key));
                 match parent {
                     Some((key, node)) => {
                         objects.parent = node;
@@ -420,9 +458,11 @@ impl CellObjects {
                 let material = self.patches.get(&key).map(|patch| patch.material);
                 let node = self.patches.get(&key).map_or(0, |patch| patch.node);
                 let origin = resident.get(&key).map(patch_origin);
+                let held = self.held.contains(&key);
                 let objects = &mut self.sets[set as usize];
                 Self::bind(backend, objects, true);
                 Self::bind_part(backend, &mut objects.parts[CELL_BASE], material);
+                objects.held = held;
                 objects.parent = node;
                 Self::set_origin(backend, objects, origin);
                 objects.shown = true;
@@ -592,7 +632,8 @@ impl CellObjects {
             part.count = Some(count);
         }
         part.has = count > 0;
-        let drawn = objects.shown && objects.parent != 0 && part.has && !objects.hidden;
+        let drawn = count > 0 && Self::root_drawn(objects);
+        let part = &mut objects.parts[at];
         Self::draw_part(backend, part, drawn);
     }
 
@@ -603,10 +644,16 @@ impl CellObjects {
         }
     }
 
+    // A set draws while its root is shown under a patch node, the cells draw and its patch's own
+    // draw is not held (`TERRAIN-58`).
+    fn root_drawn(objects: &SetObjects) -> bool {
+        objects.shown && objects.parent != 0 && !objects.hidden && !objects.held
+    }
+
     // Each instance draws while its set draws (its root shown under a patch node) and its mesh
     // has instances.
     fn update_drawn(backend: &mut impl RenderBackend, objects: &mut SetObjects) {
-        let root = objects.shown && objects.parent != 0 && !objects.hidden;
+        let root = Self::root_drawn(objects);
         for part in objects.parts.iter_mut().chain([&mut objects.walls]) {
             let drawn = root && part.has;
             Self::draw_part(backend, part, drawn);
@@ -656,7 +703,7 @@ impl CellObjects {
             walls.count = Some(count);
         }
         walls.has = count > 0;
-        let drawn = objects.shown && objects.parent != 0 && walls.has && !objects.hidden;
+        let drawn = walls.has && objects.shown && objects.parent != 0 && !objects.hidden && !objects.held;
         Self::draw_part(backend, walls, drawn);
     }
 
@@ -691,6 +738,7 @@ impl CellObjects {
         let objects = &mut self.sets[set as usize];
         objects.shown = false;
         objects.parent = 0;
+        objects.held = false;
         Self::update_drawn(backend, objects);
         Self::bind(backend, objects, false);
         for part in objects.parts.iter_mut().chain([&mut objects.walls]) {

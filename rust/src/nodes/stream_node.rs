@@ -34,7 +34,7 @@ use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::agent_frame::SharedCasterFeed;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow, slot_census};
 use crate::nodes::sim::render::stream::layers::backdrop::{
-    BLOCK_PATCHES, BackdropLayer, COVER_STEP_CELLS, HEIGHT_STEP_CELLS,
+    BLOCK_PATCHES, BackdropLayer, COVER_STEP_CELLS, HEIGHT_STEP_CELLS, WaterState,
 };
 use crate::nodes::sim::render::stream::layers::agent_casters::{
     AgentCasterLayer, AgentKind, CasterView, SLOT_LIMIT as AGENT_SLOT_LIMIT,
@@ -123,6 +123,9 @@ pub struct StreamNode {
     water: PatchStream,
     terrain_scripts: Option<Gd<Node>>,
     water_scripts: Option<Gd<Node>>,
+    // The water's answers to the frame's activations and builds (`TERRAIN-58`), taken after
+    // the patch units; reused.
+    water_answers: Vec<(TerrainKey, WaterState)>,
     full_world: bool,
     load_settling: bool,
     // A world load's preload (`TERRAIN-59`, `set_terrain_preload`), and its time slice a frame.
@@ -247,6 +250,7 @@ impl INode for StreamNode {
             water: PatchStream::new(WATER_LIMITS, WATER_COSTS),
             terrain_scripts: None,
             water_scripts: None,
+            water_answers: Vec::new(),
             full_world: false,
             load_settling: false,
             preload: Preload::Off,
@@ -480,6 +484,7 @@ impl StreamNode {
         }
         self.terrain.set_followed(book.is_some());
         self.graded = book;
+        self.update_holds_on();
     }
 
     /// Whether the vegetation has work waiting: a first evaluation, a queued or requested patch.
@@ -910,10 +915,11 @@ impl StreamNode {
     // The backdrop's cells (`TERRAIN-41` D2) for `get_backdrop`: the product's constants a script
     // lays the cells' materials out with (`block_patches`, `height_step_cells`,
     // `cover_step_cells`), the cells `cells_listed` (patches not drawn as patches), `cells_drawn`
-    // and `cell_blocks` (blocks drawing), and the map's patches in the camera's view by what draws
-    // them: `in_view_patches` (drawn as a patch: resident and drawing something, `TERRAIN-41`
-    // D3), `in_view_cells` (a backdrop cell) and
-    // `in_view_bare` (nothing: sky). `O(patches)`: a status read, not a frame's.
+    // and `cell_blocks` (blocks drawing), `held` (patches whose own draw waits for their water,
+    // `TERRAIN-58`), and the map's patches in the camera's view by what draws them:
+    // `in_view_patches` (drawn as a patch: resident, drawing something, `TERRAIN-41` D3, and not
+    // held), `in_view_cells` (a backdrop cell), `in_view_bare` (nothing: sky), and of them
+    // `in_view_held`. `O(patches)`: a status read, not a frame's.
     fn backdrop_cells_status(&self, out: &mut VarDictionary) {
         out.set("block_patches", BLOCK_PATCHES as i64);
         out.set("height_step_cells", HEIGHT_STEP_CELLS as i64);
@@ -922,10 +928,13 @@ impl StreamNode {
         out.set("cells_listed", listed as i64);
         out.set("cells_drawn", drawn as i64);
         out.set("cell_blocks", blocks as i64);
+        // Patches whose own draw waits for their water (`TERRAIN-58`), their cells drawn instead.
+        out.set("held", self.backdrop_layer.held_count() as i64);
         let (Some(grid), Some(planes)) = (self.terrain.grid(), self.camera_frustum()) else {
             return;
         };
         let mut counts = [0i64; 3];
+        let mut held = 0i64;
         for z in 0..grid.rows {
             for x in 0..grid.cols {
                 let [left, top, width, depth] = grid.rect([x, z]);
@@ -934,6 +943,7 @@ impl StreamNode {
                 if !box_in_view(&planes, low, high) {
                     continue;
                 }
+                held += i64::from(self.backdrop_layer.is_held([x, z]));
                 let at = if self.backdrop_layer.patch_draws([x, z]) {
                     0
                 } else if self.backdrop_layer.cell_shown([x, z]) {
@@ -947,6 +957,7 @@ impl StreamNode {
         out.set("in_view_patches", counts[0]);
         out.set("in_view_cells", counts[1]);
         out.set("in_view_bare", counts[2]);
+        out.set("in_view_held", held);
     }
 
     /// Builds the backdrop's product now and uploads it (`TERRAIN-41` D2; `terrain.gd` at a world's
@@ -1029,6 +1040,7 @@ impl StreamNode {
         self.post_load_s = 0.0;
         self.terrain_scripts = Some(terrain);
         self.water_scripts = water;
+        self.update_holds_on();
     }
 
     /// The base terrain's memory budget (`TERRAIN-41` B1), megabytes of 10^6 bytes; 0 or less:
@@ -1159,8 +1171,14 @@ impl StreamNode {
     /// (both layers' patches of the keep rectangle not built, and wanted ones built but not yet
     /// shown: `built + left` is the preload's whole), `in_step` (a frame has set the wanted square
     /// and no patch unit of either layer waits), and `done`: the fill phase has nothing left, the
-    /// view is in step and the backdrop is ready (or there is none). `O(keep rectangle)`
-    /// for `left`: read once a frame while the load holds the game.
+    /// view is in step and the backdrop is ready (or there is none). And the loading screen's
+    /// counts (`UI-15`): `units_total`, one unit per patch of the keep rectangle in each layer
+    /// (refused ones excluded), one for the preload's end (`done`) and one for the hand-over's
+    /// own checks, which only the load flow sees; `units_done`, the patches built and, if wanted,
+    /// shown (a water patch also with its water drawing: dry or holding a mesh, as the ground's
+    /// hold waits for it), plus one when `done`. So `units_done <= units_total - 1`, equal exactly
+    /// when `done`; both 0 before a frame has set the wanted square. `O(keep rectangle)` for
+    /// `left` and the units: read once a frame while the load holds the game.
     #[func]
     pub fn get_terrain_preload(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -1171,15 +1189,26 @@ impl StreamNode {
         // when nothing is pending yet) and no patch unit of either layer waits.
         let in_step = self.terrain.square().is_some()
             && !self.terrain.has_pending_work()
-            && !self.water.has_pending_work();
+            && !self.water.has_pending_work()
+            && self.backdrop_layer.held_count() == 0;
         out.set("phase", self.preload as i64);
         out.set("built", built as i64);
         out.set("left", left as i64);
         out.set("in_step", in_step);
-        out.set(
-            "done",
-            self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready(),
-        );
+        let done = self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready();
+        out.set("done", done);
+        let (terrain_done, terrain_total) = self.terrain.preload_units(|_| true);
+        let (water_done, water_total) = self
+            .water
+            .preload_units(|key| !self.backdrop_layer.water_waits(key));
+        let patches = terrain_total + water_total;
+        let (units_done, units_total) = if patches == 0 {
+            (0, 0)
+        } else {
+            (terrain_done + water_done + usize::from(done), patches + 2)
+        };
+        out.set("units_done", units_done as i64);
+        out.set("units_total", units_total as i64);
         out
     }
 
@@ -1200,7 +1229,24 @@ impl StreamNode {
     /// A water patch's payload news from `water.gd`'s poll (as [`Self::terrain_payload`]).
     #[func]
     pub fn water_payload(&mut self, key: Vector2i, news: i64) {
-        self.water.payload([key.x, key.y], Payload::from_code(news));
+        let news = Payload::from_code(news);
+        self.water.payload([key.x, key.y], news);
+        // A refused water payload never draws: its ground does not wait for it (`TERRAIN-58`).
+        if news == Payload::Refused {
+            self.backdrop_layer
+                .set_water_state([key.x, key.y], WaterState::Dry);
+        }
+    }
+
+    /// `water.gd`'s report of a built water patch (`TERRAIN-58`): `state` 0 it has nothing to draw
+    /// (it dried), 1 its node holds a mesh (a waiting patch's first), 2 wet without a mesh (a
+    /// hidden patch that turned wet). A terrain patch held for its water draws from the next pass
+    /// once its water draws. `O(1)`.
+    #[func]
+    pub fn water_patch_state(&mut self, key: Vector2i, state: i64) {
+        if let Some(state) = WaterState::from_code(state) {
+            self.backdrop_layer.set_water_state([key.x, key.y], state);
+        }
     }
 
     /// `terrain.gd` freed a patch's node itself (a failed upload): it is wanted again as a hole.
@@ -1222,6 +1268,9 @@ impl StreamNode {
             self.water.set_halo(Some(grid.widen(square, WATER_LIMITS.halo)));
         }
         self.water_scripts = Some(water);
+        // Nothing of the water is known: each resident patch waits for its water's show.
+        self.backdrop_layer.forget_all_water();
+        self.update_holds_on();
     }
 
     /// `water.gd` freed a patch's node itself.
@@ -1230,6 +1279,7 @@ impl StreamNode {
         self.water.patch_removed([key.x, key.y]);
         self.water.take_changes().for_each(drop);
         self.water.take_generations().for_each(drop);
+        self.backdrop_layer.forget_water([key.x, key.y]);
     }
 
     /// Whether the terrain patches have work a settled view waits for: wanted patches not
@@ -1242,7 +1292,7 @@ impl StreamNode {
     /// Whether the water patches have such work.
     #[func]
     pub fn has_water_pending_work(&self) -> bool {
-        self.water.has_pending_work()
+        self.water.has_pending_work() || self.backdrop_layer.held_count() > 0
     }
 
     /// The terrain's prewarm square, `(min_x, min_z, max_x, max_z)` in patches (the wanted
@@ -1945,7 +1995,11 @@ impl StreamNode {
                 backend,
                 reach_sq,
             });
-        let mut water_exec = self.water_scripts.as_mut().map(ScriptExecutor);
+        let mut water_answers = std::mem::take(&mut self.water_answers);
+        let mut water_exec = self.water_scripts.as_mut().map(|scripts| WaterExecutor {
+            scripts: ScriptExecutor(scripts),
+            answers: &mut water_answers,
+        });
         let mut terrain_exec = self.terrain_scripts.as_mut().map(ScriptExecutor);
         let ran = [water_exec.is_some(), terrain_exec.is_some()];
         self.patch_holes_deferred = frame_layers(
@@ -1972,10 +2026,21 @@ impl StreamNode {
         if ran[0] {
             self.water_work = self.water.work();
             self.releases_total[1] += self.water_work.releases as u64;
-            self.water.take_changes().for_each(drop);
+            // What the backdrop's holds read of the water (`TERRAIN-58`): its answers first, then
+            // its shows and hides, then its releases. `O(changes)`.
+            for (key, state) in water_answers.drain(..) {
+                self.backdrop_layer.set_water_state(key, state);
+            }
+            for (key, shown) in self.water.take_changes() {
+                self.backdrop_layer.set_water_shown(key, shown, None);
+            }
             self.water.take_generations().for_each(drop);
-            self.water.take_released().for_each(drop);
+            for key in self.water.take_released() {
+                self.backdrop_layer.forget_water(key);
+            }
         }
+        water_answers.clear();
+        self.water_answers = water_answers;
         if ran[1] {
             self.terrain_work = self.terrain.work();
             self.releases_total[0] += self.terrain_work.releases as u64;
@@ -2040,6 +2105,13 @@ impl StreamNode {
         if let Some(mut scripts) = self.road_scripts.take() {
             scripts.call("stream_road_hydration_done", &[]);
         }
+    }
+
+    // Patches are held while their water does not draw (`TERRAIN-58`) only with a water layer
+    // that follows the terrain and a graded book that holds a patch's own draw.
+    fn update_holds_on(&mut self) {
+        let on = self.water_scripts.is_some() && self.graded.is_some();
+        self.backdrop_layer.set_holds_on(on);
     }
 
     // The terrain's residency changes: the water's wanted set and the vegetation's tiers.
@@ -2130,6 +2202,16 @@ impl StreamNode {
         }
         self.backdrop_layer
             .flush(backend, [PATCH_LOW_M, PATCH_HIGH_M]);
+        // The holds that changed (`TERRAIN-58`): a patch held for its water draws nothing of its
+        // own and its cell draws in this frame; let go, it draws its draw state again with its
+        // cell gone in this frame. `O(news)`.
+        let mut book = self.graded.as_mut().map(|book| book.bind_mut());
+        for (key, held) in self.backdrop_layer.take_hold_news() {
+            if let Some(book) = book.as_mut() {
+                book.hold_draw(key, held);
+            }
+        }
+        drop(book);
         // A world change frees the old textures: their frees narrow the installs' room.
         let free_us = backend.take_free_us();
         self.budget.add_spent(free_us);
@@ -2755,6 +2837,50 @@ impl RoadExecutor for RoadScriptExecutor<'_> {
 }
 
 struct ScriptExecutor<'a>(&'a mut Gd<Node>);
+
+// The water's executor (`TERRAIN-58`): `water.gd`'s units, whose activations and builds answer
+// the patch's water state where the terrain's answer a surface generation (the water's is not
+// used); the answers are kept for the backdrop's holds and the layer sees -1, as before.
+struct WaterExecutor<'a, 'b> {
+    scripts: ScriptExecutor<'a>,
+    answers: &'b mut Vec<(TerrainKey, WaterState)>,
+}
+
+impl PatchExecutor for WaterExecutor<'_, '_> {
+    fn request(&mut self, keys: &[i32], prewarm: bool, news: &mut Vec<i32>) {
+        self.scripts.request(keys, prewarm, news);
+    }
+
+    fn activate(&mut self, key: TerrainKey, step: u8) -> (Activation, i64) {
+        let (done, state) = self.scripts.activate(key, step);
+        if done == Activation::Done
+            && let Some(state) = WaterState::from_code(state)
+        {
+            self.answers.push((key, state));
+        }
+        (done, -1)
+    }
+
+    fn deactivate(&mut self, key: TerrainKey) {
+        self.scripts.deactivate(key);
+    }
+
+    fn build(&mut self, key: TerrainKey, step: u8) -> Option<i64> {
+        let state = self.scripts.build(key, step)?;
+        if let Some(state) = WaterState::from_code(state) {
+            self.answers.push((key, state));
+        }
+        Some(-1)
+    }
+
+    fn set_lod(&mut self, key: TerrainKey, step: u8) {
+        self.scripts.set_lod(key, step);
+    }
+
+    fn release(&mut self, key: TerrainKey) -> Release {
+        self.scripts.release(key)
+    }
+}
 
 impl PatchExecutor for ScriptExecutor<'_> {
     fn request(&mut self, keys: &[i32], prewarm: bool, news: &mut Vec<i32>) {
