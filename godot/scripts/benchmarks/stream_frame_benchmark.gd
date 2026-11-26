@@ -1082,7 +1082,29 @@ func _water_mesh_check() -> Dictionary:
 		if not drawn:
 			keys.append("%d,%d" % [key.x, key.y])
 	keys.sort()
-	return {"wet": wet, "mismatches": keys.size(), "keys": keys.slice(0, 8)}
+	# Hidden patches too (`TERRAIN-63`): a hidden node holds no mesh of an old cover or depth (its
+	# mesh is dropped in the frame it went stale), counted `hidden_stale` with its first keys;
+	# `hidden_wet` the hidden wet patches, `hidden_meshes` those holding a mesh, `kept` those whose
+	# mesh came by the kept cause.
+	var hidden_wet := 0
+	var hidden_meshes := 0
+	var kept := 0
+	var stale := PackedStringArray()
+	for key: Vector2i in _water.patches:
+		if _water.resident_patch_lookup.has(key):
+			continue
+		var patch: Dictionary = _water.patches[key]
+		var held: PackedInt64Array = patch.get("held_mesh", PackedInt64Array())
+		if held.size() == 3:
+			hidden_meshes += 1
+			if held[1] != int(patch.get("cover_generation", 0)) or held[2] != int(patch.get("depth_signature", 0)):
+				stale.append("%d,%d" % [key.x, key.y])
+		hidden_wet += int(int(patch.get("depth_nonzero_count", 0)) > 0)
+		kept += int(bool(patch.get("kept_mesh", false)))
+	stale.sort()
+	return {"wet": wet, "mismatches": keys.size(), "keys": keys.slice(0, 8), "hidden_wet": hidden_wet,
+		"hidden_meshes": hidden_meshes, "kept": kept, "hidden_stale": stale.size(),
+		"hidden_stale_keys": stale.slice(0, 8)}
 
 # The built terrain patches' land covers at a settle point (`RENDER-40`): per patch its key, the
 # bytes' digest and its revisions, from the script's own book, so a control's main-thread query

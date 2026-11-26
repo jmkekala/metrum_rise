@@ -94,6 +94,7 @@ func _run() -> void:
 	_test_fixed_target()
 	_test_proxy_events()
 	_test_rect_kept()
+	_test_kept_hidden_meshes()
 	# The mirror clip lives in the surface include the terrain shader pulls in.
 	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader") \
 		+ FileAccess.get_file_as_string("res://scripts/shaders/terrain_surface.gdshaderinc")
@@ -363,6 +364,79 @@ func _test_rect_kept() -> void:
 		"the rectangle must follow residency and bounds events")
 	renderer._on_water_patches_cleared()
 	_expect(renderer._water_screen_rect(camera, 0.0, 0) == Rect2(), "no patch held, no rectangle")
+	renderer.free()
+	water.free()
+	viewport.free()
+
+# Kept water meshes (`TERRAIN-63`): hidden patches holding a wet mesh (applied by the kept cause,
+# which emits their bounds' change) never enter the rectangle's book; one shown enters with its mesh
+# box at once, and hidden again it leaves. The hull holds exactly the shown patches, and the kept
+# rectangle equals the walk's.
+func _test_kept_hidden_meshes() -> void:
+	const SIDE := 40
+	const SPAN := 256.0
+	var renderer := Reflection.new()
+	var water := WaterSource.new()
+	water.terrain_world_size = Vector2(SIDE * SPAN, SIDE * SPAN)
+	root.add_child(water)
+	var dry := ArrayMesh.new()
+	var wet := PlaneMesh.new()
+	wet.size = Vector2(SPAN, SPAN)
+	var hidden_wet: Array[Vector2i] = []
+	for z in SIDE:
+		for x in SIDE:
+			var key := Vector2i(x, z)
+			var shown := Vector2(key - Vector2i(20, 20)).length() <= 12.0
+			var node := MeshInstance3D.new()
+			# A ring of lakes beyond the shown disc: hidden, wet, holding their kept meshes.
+			node.mesh = wet if not shown or x == 20 else dry
+			node.visible = shown
+			node.position = Vector3((x + 0.5) * SPAN - water.terrain_world_size.x * 0.5, 0.0,
+				(z + 0.5) * SPAN - water.terrain_world_size.y * 0.5)
+			water.add_child(node)
+			water.patches.book[key] = {"node": node}
+			if shown:
+				water.resident_patch_lookup.book[key] = true
+			else:
+				hidden_wet.append(key)
+	renderer._water = water
+	renderer._rect_hull = WaterScreenHull.new()
+	for key: Vector2i in water.patches.book:
+		renderer._on_water_patch_bounds_changed(key)
+	renderer._sync_rect_hull()
+	var shown_count := water.resident_patch_lookup.book.size()
+	_expect(renderer._rect_hull.patch_count() == shown_count,
+		"the hull holds the shown patches only (%d, shown %d, hidden wet %d)"
+			% [renderer._rect_hull.patch_count(), shown_count, hidden_wet.size()])
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1920, 1080)
+	root.add_child(viewport)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.near = 0.5
+	camera.far = 20000.0
+	camera.position = Vector3(0.0, 1200.0, 2500.0)
+	camera.rotation = Vector3(-0.6, 0.0, 0.0)
+	_expect(renderer._water_screen_rect(camera, 0.0, 0) == renderer._water_screen_rect_walk(camera, 0.0),
+		"kept hidden meshes: the kept rectangle equals the walk's")
+	# A kept mesh applied again to a hidden patch (its bounds' event): still not in the book.
+	renderer._on_water_patch_bounds_changed(hidden_wet[0])
+	renderer._sync_rect_hull()
+	_expect(renderer._rect_hull.patch_count() == shown_count, "a hidden patch's mesh event adds nothing")
+	# Shown with its kept mesh: in the book at once with its mesh box; hidden again: out.
+	var key: Vector2i = hidden_wet[hidden_wet.size() / 2]
+	(water.patches.book[key]["node"] as MeshInstance3D).visible = true
+	water.resident_patch_lookup.book[key] = true
+	renderer._on_water_patch_bounds_changed(key)
+	renderer._sync_rect_hull()
+	_expect(renderer._rect_hull.patch_count() == shown_count + 1, "a shown kept patch enters the book")
+	_expect(renderer._water_screen_rect(camera, 0.0, 0) == renderer._water_screen_rect_walk(camera, 0.0),
+		"a shown kept patch: the kept rectangle equals the walk's")
+	(water.patches.book[key]["node"] as MeshInstance3D).visible = false
+	water.resident_patch_lookup.book.erase(key)
+	renderer._on_water_patch_bounds_changed(key)
+	renderer._sync_rect_hull()
+	_expect(renderer._rect_hull.patch_count() == shown_count, "hidden again, it leaves the book")
 	renderer.free()
 	water.free()
 	viewport.free()

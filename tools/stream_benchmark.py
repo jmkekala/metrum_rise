@@ -1117,10 +1117,14 @@ def simple_point(a, b, fields):
 
 
 def water_meshes_point(a, b):
-    """`different` when either side has a wet resident water patch without a mesh of its step."""
+    """`different` when either side has a wet resident water patch without a mesh of its step, or a
+    hidden patch holding a mesh of an old cover or depth (`TERRAIN-63`)."""
     notes = [f"{side}: {check['mismatches']} of {check['wet']} wet ({', '.join(check['keys'])})"
              for side, check in (("a", a.get("water_meshes")), ("b", b.get("water_meshes")))
              if check and check.get("mismatches")]
+    notes += [f"{side}: {check['hidden_stale']} hidden stale ({', '.join(check['hidden_stale_keys'])})"
+              for side, check in (("a", a.get("water_meshes")), ("b", b.get("water_meshes")))
+              if check and check.get("hidden_stale")]
     return ("different", "; ".join(notes)) if notes else ("equal", "")
 
 

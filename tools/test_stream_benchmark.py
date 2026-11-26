@@ -391,6 +391,12 @@ class DigestTests(unittest.TestCase):
         families = sb.compare_digests(a, b)
         self.assertEqual(self.counts(families)["water_meshes"], ["different"])
         self.assertIn("b: 1 of 3 wet (4,5)", families["water_meshes"][0][3])
+        # A hidden node holding a mesh of an old cover or depth (`TERRAIN-63`).
+        b["patch_digests"][0]["water_meshes"] = {"wet": 3, "mismatches": 0, "keys": [], "hidden_stale": 1,
+                                                 "hidden_stale_keys": ["7,8"]}
+        families = sb.compare_digests(a, b)
+        self.assertEqual(self.counts(families)["water_meshes"], ["different"])
+        self.assertIn("b: 1 hidden stale (7,8)", families["water_meshes"][0][3])
         # A report without the check (a control before it) has nothing to say.
         del a["patch_digests"][0]["water_meshes"]
         del b["patch_digests"][0]["water_meshes"]
