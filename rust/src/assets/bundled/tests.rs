@@ -806,33 +806,153 @@ fn the_legacy_table_names_valid_entries_and_never_a_bundled_digest() {
     }
 }
 
+// The bundled packs' versions as committed with the manifest, beside it in `godot/bootstrap/`:
+// `<version>  mods/<name>` a line, sorted by path. Only these tests read it; the game never
+// compares pack versions (`TOOLS-47`).
+const PACK_VERSIONS: &str = "pack_versions.txt";
+
+// `<version>  mods/<name>` for each pack of `manifest`, from the pack's `pack.toml` in
+// `bootstrap`.
+fn pack_versions_of(bootstrap: &Path, manifest: &str) -> Result<String, String> {
+    let mut lines = String::new();
+    for path in parse_manifest(manifest)?
+        .keys()
+        .filter(|path| path.starts_with("mods/"))
+    {
+        let text = fs::read_to_string(bootstrap.join(path).join("pack.toml"))
+            .map_err(|e| format!("{path}/pack.toml: {e}"))?;
+        let pack: crate::assets::PackManifest =
+            text.parse().map_err(|e| format!("{path}/pack.toml: {e}"))?;
+        let _ = writeln!(lines, "{}  {path}", pack.version);
+    }
+    Ok(lines)
+}
+
+// Path to version, from `pack_versions.txt` text.
+fn parse_pack_versions(text: &str) -> BTreeMap<&str, &str> {
+    text.lines()
+        .filter_map(|line| line.split_once("  "))
+        .map(|(version, path)| (path, version))
+        .collect()
+}
+
+// A bundled pack's `version` is raised whenever its content changes (`TOOLS-47`): refuses a pack
+// whose digest differs from the committed manifest's while its version is not above the
+// committed one. `pack.toml` is content too, so raising the version alone also changes the
+// digest; a pack new to the bundle has nothing to compare with.
+fn check_pack_versions(
+    manifest: &str,
+    versions: &str,
+    committed_manifest: &str,
+    committed_versions: &str,
+) -> Result<(), String> {
+    let committed = parse_manifest(committed_manifest)?;
+    let (versions, committed_versions) = (
+        parse_pack_versions(versions),
+        parse_pack_versions(committed_versions),
+    );
+    for (path, digest) in parse_manifest(manifest)? {
+        let (Some(old_digest), Some(old), Some(new)) = (
+            committed.get(path),
+            committed_versions.get(path),
+            versions.get(path),
+        ) else {
+            continue;
+        };
+        if *old_digest != digest
+            && crate::assets::pack::compare_versions(new, old) != Some(std::cmp::Ordering::Greater)
+        {
+            let name = &path["mods/".len()..];
+            return Err(format!(
+                "`{name}` changed: raise `version` in its `pack.toml` (committed {old}, found \
+                 {new}) and regenerate"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_changed_pack_needs_a_raised_version() {
+    let committed_manifest = format!("{}  mods/a\n{}  mods/b\n", sha("a1"), sha("b1"));
+    let committed_versions = "0.1.0  mods/a\n1.0.0  mods/b\n";
+    let check = |a: &str, b: &str, a_version: &str| {
+        check_pack_versions(
+            &format!("{}  mods/a\n{}  mods/b\n", sha(a), sha(b)),
+            &format!("{a_version}  mods/a\n1.0.0  mods/b\n"),
+            &committed_manifest,
+            committed_versions,
+        )
+    };
+    assert_eq!(check("a1", "b1", "0.1.0"), Ok(()));
+    assert_eq!(check("a2", "b1", "0.1.1"), Ok(()));
+    let refused = Err(
+        "`b` changed: raise `version` in its `pack.toml` (committed 1.0.0, found 1.0.0) and \
+         regenerate"
+            .to_owned(),
+    );
+    assert_eq!(check("a1", "b2", "0.1.0"), refused);
+    // A lowered version is not a raise; a pack new to the bundle is not compared.
+    assert!(check("a2", "b1", "0.0.9").is_err());
+    let added = format!("{}  mods/a\n{}  mods/c\n", sha("a1"), sha("c1"));
+    assert_eq!(
+        check_pack_versions(
+            &added,
+            "0.1.0  mods/a\n0.1.0  mods/c\n",
+            &committed_manifest,
+            committed_versions
+        ),
+        Ok(())
+    );
+}
+
+// The manifest and pack versions of `bootstrap` as the folder holds them, refused when it holds
+// Git LFS pointer stubs or a pack changed without a raised version.
+fn bootstrap_products(
+    bootstrap: &Path,
+    committed_versions: &str,
+) -> Result<(String, String), String> {
+    let stubs = lfs_stubs(bootstrap);
+    if let Some(first) = stubs.first() {
+        return Err(format!(
+            "godot/bootstrap holds Git LFS pointer stubs, not the files ({first} first); \
+             run `git lfs pull` or `git lfs checkout godot` and test again"
+        ));
+    }
+    let manifest = manifest_of(bootstrap)?;
+    let versions = pack_versions_of(bootstrap, &manifest)?;
+    check_pack_versions(&manifest, &versions, MANIFEST, committed_versions)?;
+    Ok((manifest, versions))
+}
+
+const REGENERATE: &str = "cargo test --lib assets::bundled::tests::write_bundled_manifest -- \
+                          --ignored --exact";
+
 #[test]
 fn the_committed_manifest_matches_the_bootstrap_folder() {
     let bootstrap = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap");
-    let stubs = lfs_stubs(&bootstrap);
+    let committed_versions = fs::read_to_string(bootstrap.join(PACK_VERSIONS)).unwrap();
+    let (current, versions) = match bootstrap_products(&bootstrap, &committed_versions) {
+        Ok(products) => products,
+        Err(e) => panic!("{e}"),
+    };
     assert!(
-        stubs.is_empty(),
-        "godot/bootstrap holds Git LFS pointer stubs, not the files ({} first); \
-         run `git lfs pull` or `git lfs checkout godot` and test again",
-        stubs.first().map_or("", String::as_str)
-    );
-    let current = manifest_of(&bootstrap).unwrap();
-    assert!(
-        current == MANIFEST,
-        "godot/bootstrap/manifest.sha256 is stale: a bundled pack or world changed. Regenerate \
-         it with `cargo test --lib assets::bundled::tests::write_bundled_manifest -- --ignored \
-         --exact` and commit it.\nfrom the folder:\n{current}\ncommitted:\n{MANIFEST}"
+        current == MANIFEST && versions == committed_versions,
+        "godot/bootstrap/manifest.sha256 or {PACK_VERSIONS} is stale: a bundled pack or world \
+         changed. Regenerate them with `{REGENERATE}` and commit them.\nfrom the folder:\n\
+         {current}{versions}committed:\n{MANIFEST}{committed_versions}"
     );
 }
 
 #[test]
-#[ignore = "writes godot/bootstrap/manifest.sha256 from the bootstrap folder"]
+#[ignore = "writes godot/bootstrap/manifest.sha256 and pack_versions.txt from the bootstrap folder"]
 fn write_bundled_manifest() {
     let bootstrap = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap");
-    assert!(
-        lfs_stubs(&bootstrap).is_empty(),
-        "Git LFS pointer stubs in godot/bootstrap"
-    );
-    let text = manifest_of(&bootstrap).unwrap();
-    files::write_atomic(&bootstrap.join("manifest.sha256"), text.as_bytes()).unwrap();
+    let committed_versions = fs::read_to_string(bootstrap.join(PACK_VERSIONS)).unwrap_or_default();
+    let (manifest, versions) = match bootstrap_products(&bootstrap, &committed_versions) {
+        Ok(products) => products,
+        Err(e) => panic!("nothing written: {e}"),
+    };
+    files::write_atomic(&bootstrap.join("manifest.sha256"), manifest.as_bytes()).unwrap();
+    files::write_atomic(&bootstrap.join(PACK_VERSIONS), versions.as_bytes()).unwrap();
 }
