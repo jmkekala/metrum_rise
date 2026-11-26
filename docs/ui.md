@@ -76,11 +76,8 @@ Current deterministic rules:
   not a save), gameplay returns to `MainMenu.tscn`, which reopens the Load Game or New Game
   browser with Rust's message in its status line; the in-game Load and New Game do the same over
   the running city, which stays as it was ([terrain contract](terrain.md#1-worldconfig-is-the-authoritative-world-metadata))
-- while a player's load (Load Game, New Game, the in-game Load and New Game) holds the game for
-  its terrain preload (`TERRAIN-59`), one line at the screen's centre reads "Loading terrain: N of
-  M patches" (`load_progress.gd`, shown and freed by the input manager's load flow); the world
-  draws behind it as it fills. A real loading screen is a later item
-  ([the preload](terrain.md#the-loads-terrain-preload-terrain-59-2026-11-26))
+- a player's load (Load Game, New Game, the in-game Load and New Game) shows the loading screen
+  (`UI-15`) from the click until gameplay; see [Loading screen](#loading-screen)
 
 MainMenu v1 actions:
 
@@ -91,6 +88,49 @@ MainMenu v1 actions:
 | World Editor | Spawn a `--world-editor` instance |
 | Options | Open the shared Options overlay |
 | Quit | Exit the application |
+
+### Loading screen
+
+**Node:** `CanvasLayer` (layer 129, above the FPS counter's 128) named `LoadingScreen`, a child of
+the scene tree's root. **Script:** `scripts/ui/loading_screen.gd` *(implemented, `UI-15`)*.
+
+From the click on Load or Start (the main menu's Load Game and New Game, the in-game Load and New
+Game) until gameplay, one opaque screen in the main menu's background colour covers the world,
+the HUD, the menu bar and the FPS counter. A centred column reads `LOADING`, the save's or world's
+file name without its extension in dim text, a thin bar (6 px at 100 % UI scale, 40 % of the
+screen's width within 320-640 px, the accent colour on a dim track) with the whole percent right
+of it (`37 %`, rounded down), and a `CANCEL` text button. The world is first shown in the frame
+that hands the game over, and nothing of the screen after it.
+
+- **Flow.** The main menu opens the screen, waits for one drawn frame and then changes to
+  `Main.tscn`, so the screen is what shows while the scene and the save load; the world scene's
+  load flow (`input_manager.player_load`) takes it over. In game, `player_load` opens it, waits
+  for one drawn frame, then runs the synchronous load call (`menu_load_game_from_path` /
+  `menu_start_new_game` with the terrain preload, `TERRAIN-59`). The screen goes in the
+  hand-over's call (`_await_world_ready`), before that frame's draw. The world keeps drawing behind
+  it, so the first shown frame has been drawn before.
+- **Progress.** The bar shows the preload's units counted in Rust (`get_terrain_preload`'s
+  `units_done` of `units_total`: each patch of the keep rectangle in both layers, built and, if
+  in view, shown, a water patch with its water drawing; one unit for the preload's end and one for
+  the hand-over's own checks). The load flow shows the largest fraction so far, so the bar never
+  goes back, and it reaches 100 % only at the hand-over. It stands at 0 % while the scene, the save
+  and the renderers load (the synchronous call draws no frame).
+- **Input.** The screen keeps itself the root's last child, so its `_input` runs before every
+  scene node's: it takes every key, mouse button, wheel and gesture while it is up (motion passes,
+  to light `CANCEL`). Nothing under it, menu bar and shortcuts included, takes input.
+- **Cancel.** `CANCEL`, Esc and the mouse's back button return to the main menu, also from an
+  in-game load (the previous city is already replaced by then). The screen stays up across the
+  scene change and the main menu closes it before its first frame. Cancel is taken from the hold's
+  first frame; during the synchronous call no frame runs.
+- **Refusals.** A refused save or world from the main menu: the world scene returns to the menu
+  with the screen still up, and the menu closes it and shows Rust's message in its browser. In
+  game: the screen closes and the browser reopens with the message over the running city.
+- **Tools.** Tests, benchmarks and tools call the synchronous API (`menu_load_game_from_path`,
+  `menu_start_new_game`, `menu_load_world_definition`, with or without the preload) and open no
+  screen; the stream benchmark's `METRUM_STREAM_PRELOAD=1` loads through `player_load`.
+- Tested by `tests/loading_screen_test.gd` (headless, in the gate): frame by frame the screen
+  covers exactly until the hand-over, the fraction, cancel by Esc in the view phase and by a click
+  in the fill phase, a load after them, input under the screen, and both refusals.
 
 ### 1. Top Menu Bar
 

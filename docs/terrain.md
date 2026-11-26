@@ -22301,10 +22301,10 @@ unlimited, payloads back 1 to 300 a frame, the view phase 0 to 90 frames; equal 
 set). Frames of the load's hold were already up to 1.0-1.6 s long before the preload (the graded
 renderer's unbudgeted work and first-use pipelines, on the control too); the preload adds none longer.
 
-**What the player sees.** The world draws behind the hold as before; one line at the screen's centre
-reads "Loading terrain: N of M patches" (`load_progress.gd`), terrain and water patches built of those
-the preload builds (`built + left`), freed at the hand-over ([ui](ui.md#0-main-menu)). A real loading
-screen is a later item (the user's).
+**What the player sees.** The loading screen (`UI-15`, below): one opaque screen from the click
+until the hand-over, with a bar of the preload's units. The world draws behind it as before and is
+first shown in the hand-over's frame. (Until `UI-15` a centred line read "Loading terrain: N of M
+patches" over the world as it drew.)
 
 **The tools keep today's hand-over.** Every test, benchmark and tool loads through the input
 manager's API (`menu_load_game_from_path`, `menu_load_world_definition`, `menu_start_new_game`,
@@ -22361,6 +22361,82 @@ goldens replay with no mismatch (30k 3,144 frames, Kuopio 10,036). The shipped K
 hand-over (`turns,pan,zoom,jump`, two C B B C sessions after a quiet machine): all 16 phases level
 at the median and the maximum pooled over four runs a side; per session `turn_repeat` (first) and
 `pan_out` (second) read worse at the median, none in both.
+
+### The loading screen (`UI-15`, 2026-11-26)
+
+A player's load shows one opaque screen from the click until the hand-over
+([ui](ui.md#loading-screen): the look, the words, cancel and refusals). What it rests on here:
+
+- **What covers what.** The screen is a canvas layer above every other (129), opaque, under the
+  scene tree's root; the main menu opens it before its scene change and the input manager's load
+  flow (`player_load`) takes it over and closes it in the hand-over's call, before that frame's
+  draw. Nothing about rendering changes: the world draws behind the screen as during the preload's
+  hold before, so its surfaces and pipelines are made before it is shown, and the hand-over check
+  still runs before the renderers' frames (the frame that hands over follows one drawn with
+  everything ready).
+- **The fraction**, counted in Rust (`StreamNode.get_terrain_preload`, `O(keep rectangle)`, read
+  once a frame during the hold only): `units_total` is one unit per patch of the keep rectangle in
+  each layer, refused payloads excluded, plus one unit for the preload's end (`done`) and one for
+  the hand-over's own checks (the 2 km ring's graded tiles and road chunks, the water texture
+  syncs), which only the load flow sees. A terrain unit is done when its patch is built and, if
+  wanted, shown; a water unit also needs its water to draw where the ground's hold waits for it
+  (`TERRAIN-58`: dry, or shown with a mesh; the cells' `water_waits`). So `units_done <=
+  units_total - 1`, equal exactly when `done`, and the bar cannot stand at 100 % while anything is
+  waited for. The load flow shows the largest fraction so far (the keep rectangle can shrink in the
+  view phase while the drawn patches' water meshes arrive) and 1 from the hand-over. Before a frame
+  has set the wanted square both counts are 0. The kept water meshes of plan rounds W1/W2 extend
+  the water unit to kept hidden patches.
+- **Unchanged.** The preload's phases, built sets and hand-over rule; the API's loads (tests,
+  benchmarks, tools) open no screen and read no units. The stream benchmark's
+  `METRUM_STREAM_PRELOAD=1` loads through `player_load` (its `load_call_ms` then includes the
+  screen's first frame).
+
+**Measured** (untimed, one run a side, report only; release libraries, the stream benchmark's
+`post_load` phase on P-cores with `METRUM_STREAM_PRELOAD=1`, the shipped Kuopio at Automatic =
+512 MB, the 60 km test map at 1,024 MB; "before" = the branch's base with the progress line):
+
+| Load, row | Before: load call | After: load call (incl. the screen's first frame) | Before / after: load to gameplay | Longest frame of the hold, before / after | First frame after the hand-over, before / after (most of 60) |
+|---|---:|---:|---:|---:|---:|
+| Shipped Kuopio, the benchmark's direct start | 1.22 s | 2.04 s | 6.76 / 7.21 s | 1.63 / 1.02 s | 2.7 / 2.9 ms (5.5 / 3.9) |
+| Shipped Kuopio, through the benchmark's menu (5 s) | 1.23 s | 1.61 s (screen drawn after 0.24 s) | 5.59 / 5.74 s | 1.23 / 1.09 s | 3.2 / 5.3 ms (3.7 / 5.8) |
+| 60 km map, 1,024 MB | 4.62 s | 5.41 s | 17.68 / 18.28 s | 1.54 / 1.42 s | 4.3 / 5.5 ms (4.3 / 6.6) |
+| 30k city save, Automatic | 5.32 s | 5.93 s (screen drawn after 0.64 s) | 11.01 / 10.58 s | 0.95 / 1.22 s | 5.3 / 5.4 ms (7.9 / 8.0) |
+
+The first frame shown after the hand-over has no hitch the old hand-over did not have (2.7-5.5 ms
+against 2.7-4.3 ms; the 60 frames after it at most 8 ms on both sides). In the benchmark the
+screen's first frame is the world scene's first frames before the load (0.24-0.8 s, the
+benchmark's own start); a player's click in the main menu draws the screen in the next frame. A
+New Game on the shipped Kuopio from the real main menu (after only, a scripted click after 6 s,
+rendered): the screen drawn 16 ms after the click; then `Main.tscn` loads (one 1.2 s frame) and the
+world scene's start with the `start_new_game` call takes one 3.8 s frame; the first world-scene
+frame 5.0 s after the click, so the bar stands at 0 % for 5.0 s (`D8` of the plan: the 30k save's
+load call alone is 5.3 s); the hand-over at 9.2 s. Those stretches without a frame are the
+synchronous load call's, unchanged by the screen (the menu stood frozen for them before): the load
+off the main thread is `UI-08`. The preload's results equal before at the post-load settle points
+(the shipped Kuopio with the preload, before against after: graded, buildings, roads, parked cars,
+vegetation, land cover, water meshes and the terrain and water `built_digest`, residency and
+digests equal at all 3 points). Stills of the screen at 0 %, about half way and just before the
+hand-over, and of the first gameplay frame, were taken on the shipped Kuopio and the 60 km map (the
+stream benchmark rendered in gamescope's headless backend).
+
+**Proof** (fresh): `loading_screen_test` (headless, in the gate's main chain) loads a 20 km blank
+world's save through the real main menu and world scene and checks every frame as state: until the
+hand-over the screen is up, visible, opaque over the whole viewport and above every other canvas
+layer with no dialog window over it, from the hand-over's frame it is gone; the fraction starts at
+0, never decreases, stays below 1 until the hand-over and is 1 from it, and the screen shows it;
+`units_done == units_total - 1` exactly when `done`. While the screen is up a key and a mouse click
+reach no scene node and no HUD control (probes that receive both after the hand-over). Esc in the
+view phase (an in-game load) and a click on `CANCEL` in the fill phase return to the main menu with
+the screen gone and as many nodes outside the menu as before the load; a load after them hands
+over. A refused save in game closes the screen, the browser shows Rust's message and the city
+stays; refused from the main menu, the menu shows it and no screen is left, no frame of the world
+scene drawn without the screen. No frame of the world scene is drawn between the menu's scene change
+and the load call (the deferred launch request runs in the change's frame). `terrain_preload_test`
+reads the fraction and the units instead of the progress line, and checks that the API's loads open
+no screen. Rust: `the_preload_units_count_what_the_preload_still_waits_for` (every frame of a
+preload, the units equal the keep rectangle less what `preload_left` reads, all done at the end, a
+wanted patch's own condition holds its unit back) and the cells' hold test reads `water_waits`
+against its model.
 
 
 ## Implemented Runtime Contract
