@@ -13894,9 +13894,15 @@ order, comparisons in double):
 
 - Tiers: a resident terrain block is on the fine grid when its nearest corner is within the fine
   radius, else one coarse patch within the far range; a fine patch is wanted within the far range
-  of its centre. A `RingSet` over the terrain grid with three bands (the fine radius, the coarse
-  far range, and the fine patches' far range, only when a fine block can reach it), evaluated on
-  the frames the script evaluated: a fine-grid cell crossing or a terrain residency change. The
+  of its centre. An eye high above the ground keeps only the patches whose square can lie within
+  the far range in three dimensions (`VEG-36`, [record](#the-vegetations-wanted-set-at-the-eyes-height-veg-36-2026-11-26)):
+  `nearest² + rise² <= (far + side)²`, the rise taken over the map's source ceiling; at a rise up
+  to `sqrt(side x far + 3/4 side²)` of the fine side (767 m at 4.5 km and 128 m) the cut keeps
+  every patch the ground rule wants and is skipped. A `RingSet` over the terrain grid with three
+  bands (the fine radius, the coarse far range, and the fine patches' far range, only when a fine
+  block can reach it), two more for the cut's thresholds above the floor, evaluated on the frames
+  the script evaluated: a fine-grid cell crossing or a terrain residency change, and a rise change
+  above the floor (every block within the ring's reach again). The
   wanted set's changes then run the script's pass in its order: leaving patches become stand-ins,
   the cache frees what the camera left behind (checked by annulus too: a cached patch passed at the
   last evaluation), leaving requests are cancelled, entering ones come back from the stand-ins or
@@ -22066,6 +22072,97 @@ the build with the third rule read 114 against 98. The later settle after the tu
 `TERRAIN-50`'s: the terrain's holes finish about 1 s later (the vegetation now installs through the
 flight), then the remaining hides wait behind the graded book's and the water mesh's work (owners
 ahead of the node, about 2.1 ms a frame once no hole waits, so the reserve is off).
+
+The user accepted R1b's misses and the three rounds landed on `dev` on 2026-11-26.
+
+### The vegetation's wanted set at the eye's height (`VEG-36`, 2026-11-26)
+
+Before this, the vegetation's wanted set was the same at every eye height: a disc of 4.5 km
+(`TREE_FAR_M`, the canopy's far range) about the eye's ground point. A 20 km orbit, with the eye
+14 km up, requested, built and kept about 400 patches that the far range can never show.
+
+**The rule.** The tier rule is kept, plus one test for each carried patch (coarse block or fine
+patch, side `s`): `nearest² + rise² <= (far + s)²`. Here `nearest` is the ground distance from the
+eye to the patch's square (0 inside it), and `rise` is the eye's height above the map's source
+ceiling (`TerrainSystem::source_ceiling`: the base elevation, raised by every source write and
+dense replacement and never lowered, `O(1)` a write).
+
+- Conservative: the far range ends every draw a patch makes. An impostor fades out at `far` from
+  its tree's origin (the shader measures the 3D distance to the main camera; the water's
+  reflection camera is mirrored under the water, so it is never nearer). A tree stands inside the
+  square, at most at the highest ground. Casters and hedge boxes end at `far` from their batch box
+  (within the crowns' or a 16 m run's reach of the square). Near trees, bushes and rocks end at
+  200-420 m. So a patch that can draw has a point within `far` and a few tens of metres in 3D,
+  and `far + s` covers that. Trees stand on graded ground off the roads; a lift above the map's
+  highest base sample stays inside that margin. This is stated, not proven by the code.
+- Equal at a low eye: the ground rule wants a patch only when its centre is within `far + s`.
+  The nearest point of a square is at least half a side nearer than its centre, so the test
+  passes up to `rise² = s x far + 3/4 s²`. For the fine side that is 767 m at 128 m and 4.5 km.
+  At or below it the residency skips the cut (`rise_floor`), so it runs today's code path.
+- Above `far + 512 m` (5,012 m over the ceiling) nothing is carried.
+- Ring and costs: above the floor two more ring bands sit on the cut's thresholds. A rise change
+  re-evaluates every block within the ring's reach, `O(old set + about 350 blocks + changes + queue
+  log queue)` a frame of a zoom high over the ground, with no allocation. `keeps` (R1b) and the
+  frame read one ceiling a frame, taken before the patch units, so `keeps` stays one-sided.
+- The prepared set keeps the ground rule: its reach samples carry no height, and a far camera
+  prepares what its zoom down needs.
+- A patch the cut drops is put away into the cache, as any patch that leaves the wanted set is
+  (its centre is within the far range), so a zoom out and back requests and frees nothing (test).
+- New counters (`get_stream_status`, the benchmark's rows): `requests_total`, `prepares_total`,
+  `frees_total`.
+
+Tests: an eye at the floor wants the ground set (the old rule, kept in the test), and an eye
+above `far + s` wants nothing (this fails before the change). On random walks that also move in
+height alone, the wanted set equals the stated rule, checked independently by clamped nearest
+points and unsnapped rises; with the ring's extra bands taken out this test fails. `keeps` stays
+one-sided under rise changes. A zoom out past the range and back makes no request and frees
+nothing. The ceiling bounds every sample written, sculpted, levelled away or replaced. The
+residency goldens (30k and Kuopio paths) replay with a ceiling of 0 m, below every recorded
+ground. They are unchanged because their eyes (at most 424 m) stay under the floor. Nothing is
+re-recorded, because no committed recording or settle point holds a view above the floor that
+carries vegetation. Kuopio's `far_zoom_out` settle carries 0 patches on both sides.
+
+Measured: two timed C B B C sessions (perf off, 512 MB, P-cores). The control is `dev`
+`3766f1ef3` plus this round's counter commit only (three `O(1)` increments), so both sides count.
+
+| 60 km `trip` (4 runs a side) | control | `VEG-36` |
+|---|---|---|
+| requests (jobs) | 1,131-1,241 | 835-897 (-26 %) |
+| prepares (jobs) | 1,118-1,208 | 1,210-1,268 |
+| installs | 854-935 | 824-908 |
+| frees | 665-735 | 625-699 |
+| patches at the high view's first frame (drawn / queued) | 133 / 281 | 0 / 0 |
+| near ring drawn, ms after the zoom | -269 … -276 | -273 … -279 |
+| vegetation complete | +7 … +8 | +7 … +8 |
+| waits past 5 frames / stalled passes | 19-102 / 109-151 | 15-126 / 79-88 |
+| terrain's last patch | +585 … +719 (mean 664) | +667 … +798 (mean 735) |
+| settled | +1,267 … +1,424 | +1,374 … +1,546 |
+| `trip_in` / `trip_hold` p50 (pooled) | | level (+0.09 / 0.52, +0.10 / 0.44); maxima level |
+
+The prepares do not change: the prepared set fills only on still frames, with the ground rule.
+Installs on the 60 km trip barely change (not traced). The requests fall by the 281 the high view
+queued at once and by the ones its slide asked for.
+In one untimed pair a side the terrain's last patch read 676 against 746 and 1,067 against
+1,138 ms. So the timed +71 ms mean (+0.13 s in one session, level in the other) is within
+the row's spread.
+
+The shipped Kuopio with the trip, pooled over both sessions: every phase is level at the median
+and the maximum except `trip_in`'s median, +0.73 ms worse (noise 0.37; 6.5-6.7 against 5.6-6.0
+ms). The trip's installs fall from 2,451-2,529 to 1,419-1,484, requests from 633-654 to 242-256,
+frees from 1,640-1,690 to 918-966. The median's cause, verified: the terrain and water level
+changes during the zoom rise from 1,242-1,260 to 1,800-1,852 each. A level change runs only in a
+frame where no hole was held back (`TERRAIN-41` L1). The control held vegetation holes through
+the zoom, which kept the level changes back. The units themselves cost about 14 ms more over the
+zoom (vegetation installs about 8 ms less). The rest lies outside the install ledger, in
+`terrain.gd`'s frame after the steps: in an instrumented pair, `terrain` read 0.83 against 0.15
+ms a frame in the zoom's last 250 ms (`RENDER-80`).
+
+Settle digests (untimed, one run a side): on the shipped Kuopio (14 points) every family is
+equal. The one exception is the vegetation band flags of one patch at point 10 (`far_to_ground`,
+`000` against `101`, products equal), which is `VEG-34`'s family. On the 60 km trip (4 points)
+vegetation, terrain, water and water meshes are equal. Land cover differs only in the count of
+patches kept hidden by the budget's background fill (1,461 against 1,465), which depends on
+timing.
 
 ### The load's terrain preload (`TERRAIN-59`, 2026-11-26)
 
