@@ -173,6 +173,10 @@ DEBUG_CATEGORY=""
 GODOT_ENGINE_ARGS=()
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
+# Panics keep their backtraces; library captures stay off. With them on, gdext's
+# borrow tracker in the test-profile library captures a stack trace on every
+# bind, several times the cost of the call it guards (TOOLS-45).
+export RUST_LIB_BACKTRACE=0
 
 require_command() {
     local command_name="$1"
