@@ -103,6 +103,13 @@
 ## (`<phase>_tail`): the budget's background releases and fill, which a settle does not wait for.
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
 ## terrain proxies against the patches the frame drew (`proxies`).
+## METRUM_STREAM_BED_CHECK=1 (`TERRAIN-58`, an untimed run: it walks the resident terrain patches and
+## the map's patches after each draw) records per row `bed`: [drawn terrain patches in the camera's
+## view whose wet water patch does not draw (no water node, hidden, or no mesh of its cover and
+## depth), the same over the map, drawn terrain patches in view]; and per sample `cell_spans`:
+## [hand-overs from a backdrop cell to the patch, frames a patch of the wanted square stayed a cell
+## before its hand-over at the median, the 90th percentile and most], read from the stream node's
+## whole-map probe, and `bed_max`, the sample's most lake beds in view in a frame.
 ## METRUM_WATER_RECT_CHECK=1 (`RENDER-76`, an untimed run: the reflection makes every screen
 ## rectangle the old way too) records per row the reflection's running counts `rect_check`:
 ## rectangles checked, of them unequal to the walk's, walks the kept hull fell back to.
@@ -244,6 +251,14 @@ var _wait := {}
 # recorded per row as `proxies` (see _on_proxy_check_post_draw).
 var _proxy_checking := false
 var _proxy_check := []
+# METRUM_STREAM_BED_CHECK=1 (`TERRAIN-58`): the frame's lake-bed count, the patches drawn as a cell
+# since which frame, and the sample's hand-overs' spans in frames.
+var _bed_checking := false
+var _bed_check := []
+var _bed_max := 0
+var _bed_frame := 0
+var _cell_since := {}
+var _cell_spans := PackedInt32Array()
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -399,6 +414,12 @@ func run(bench: Node) -> void:
 	_proxy_checking = OS.get_environment("METRUM_STREAM_PROXY_CHECK") == "1" and _reflection != null
 	if _proxy_checking:
 		RenderingServer.frame_post_draw.connect(_on_proxy_check_post_draw)
+	_bed_checking = OS.get_environment("METRUM_STREAM_BED_CHECK") == "1"
+	if _bed_checking and _stream == null:
+		_stream = main.get_node("StreamNode")
+		_camera = bench.camera
+	if _bed_checking:
+		RenderingServer.frame_post_draw.connect(_on_bed_check_post_draw)
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
 	if phases.has("census") and not await _census(bench, base):
@@ -518,6 +539,8 @@ func run(bench: Node) -> void:
 		_report.drawn_probe = _probe.report()
 	if _proxy_checking:
 		RenderingServer.frame_post_draw.disconnect(_on_proxy_check_post_draw)
+	if _bed_checking:
+		RenderingServer.frame_post_draw.disconnect(_on_bed_check_post_draw)
 	if OS.get_environment("METRUM_STREAM_INVENTORY") == "1":
 		_report["inventory"] = PipelineInventory.collect(main)
 	if _scripts:
@@ -1395,6 +1418,8 @@ func _row(index: int) -> Dictionary:
 				"terrain_map": Array(_probe.backlog("terrain_map"))}
 	if _proxy_checking:
 		row["proxies"] = _proxy_check
+	if _bed_checking:
+		row["bed"] = _bed_check
 	# A reflection from before `RENDER-76` has no such property (null).
 	if _reflection != null and _reflection.get("_rect_checking") == true:
 		row["rect_check"] = [_reflection.get("_rect_checked"), _reflection.get("_rect_differences"),
@@ -1456,6 +1481,66 @@ func _on_proxy_check_post_draw() -> void:
 			matching += 1
 	var active := mirrors.any(func(mirror: Array) -> bool: return mirror[3])
 	_proxy_check = [active, drawn, held, matching, proxies.size(), keys_hash]
+
+# The lake-bed check (`TERRAIN-58`), once the frame has drawn, from the scripts' own state: a
+# terrain patch's node draws when it is visible in the tree and its PlaneMesh is not collapsed (a
+# held or blank patch's is); its water does not draw when it is wet and has no node, is hidden, or
+# holds no mesh of its cover and depth. And the hand-overs from cell to patch, by the whole-map
+# probe's flags. O(resident patches + the map's patches).
+func _on_bed_check_post_draw() -> void:
+	var planes: Array[Plane] = _camera.get_frustum()
+	var water_patches: Dictionary = _water.get("patches")
+	var water_shown: Dictionary = _water.get("resident_patch_lookup")
+	var bed := [0, 0, 0]
+	for key: Vector2i in _terrain.resident_patch_lookup:
+		var land: Dictionary = _terrain.patches.get(key, {})
+		var node := land.get("node") as MeshInstance3D
+		if node == null or not node.is_visible_in_tree() or node.mesh == null:
+			continue
+		if node.visibility_range_end > 0.0 and node.visibility_range_end < 0.01:
+			continue
+		var size := Vector2(float(land.get("world_size_x", 512.0)), float(land.get("world_size_z", 512.0)))
+		var at := node.global_position
+		var seen := _box_in_view(planes, Vector3(at.x - size.x * 0.5, -500.0, at.z - size.y * 0.5),
+			Vector3(at.x + size.x * 0.5, 2500.0, at.z + size.y * 0.5))
+		bed[2] += 1 if seen else 0
+		var water: Dictionary = water_patches.get(key, {})
+		var wet := not water.is_empty() and int(water.get("depth_nonzero_count", 0)) > 0
+		var unknown := water.is_empty()
+		var lacking: bool = wet and (not water_shown.has(key) or _water._mesh_need(water) == 1)
+		if unknown:
+			# No water node yet: wet if the simulation has water over the patch's centre.
+			lacking = not is_nan(_simulation.get_camera_water_surface_at(Vector2(at.x, at.z)))
+		if lacking:
+			bed[1] += 1
+			bed[0] += 1 if seen else 0
+	_bed_check = bed
+	_bed_max = maxi(_bed_max, bed[0])
+	_bed_frame += 1
+	# A patch of the wanted square drawn as a cell since which frame; its span closes when it is
+	# drawn as a patch (a patch that leaves the square first closes none).
+	var square: Vector4i = _stream.get_terrain_halo()
+	var map: PackedFloat32Array = _stream.probe_stream_layer("terrain_map")
+	for index in range(0, map.size(), 8):
+		var key := Vector2i(int(map[index]), int(map[index + 1]))
+		var drawn := (int(map[index + 3]) & 1) != 0
+		var wanted := key.x >= square.x and key.y >= square.y and key.x <= square.z and key.y <= square.w
+		if not wanted:
+			_cell_since.erase(key)
+		elif not drawn:
+			if not _cell_since.has(key):
+				_cell_since[key] = _bed_frame
+		elif _cell_since.has(key):
+			_cell_spans.append(_bed_frame - int(_cell_since[key]))
+			_cell_since.erase(key)
+
+static func _box_in_view(planes: Array[Plane], low: Vector3, high: Vector3) -> bool:
+	for plane in planes:
+		var corner := Vector3(low.x if plane.normal.x > 0.0 else high.x,
+			low.y if plane.normal.y > 0.0 else high.y, low.z if plane.normal.z > 0.0 else high.z)
+		if plane.is_point_over(corner):
+			return false
+	return true
 
 # At a sample's end (`RENDER-75`): per material parameter, the drawn patches whose reflection copy
 # holds another value than the patch's material, and the patches with any such parameter.
@@ -1538,6 +1623,15 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		sample["terrain_budget"] = budget_node.get_terrain_budget()
 	if _proxy_checking:
 		sample["proxy_stale"] = _proxy_stale()
+	if _bed_checking:
+		var spans := _cell_spans.duplicate()
+		spans.sort()
+		var count := spans.size()
+		sample["cell_spans"] = [count, spans[count / 2] if count > 0 else 0,
+			spans[count * 9 / 10] if count > 0 else 0, spans[count - 1] if count > 0 else 0]
+		sample["bed_max"] = _bed_max
+		_cell_spans.clear()
+		_bed_max = 0
 	# The patch units' measured times by layer and kind since the last sample (`TERRAIN-41` L1;
 	# absent on an older library).
 	var stream: Node = _vegetation.stream if _vegetation != null else null
