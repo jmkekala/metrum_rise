@@ -1907,7 +1907,7 @@ impl StreamNode {
         // evaluation runs after the patch units, at this camera, over the terrain patches resident
         // then; a patch of the terrain's wanted square stays resident through the patch units.
         // `O(subdivision²)` a waiting product.
-        let camera = self.view.map(|view| [view.eye[0], view.eye[2]]);
+        let eye = self.view.map(|view| view.eye);
         let square = self.terrain.square();
         let stays = |block: [i32; 2]| {
             square.is_some_and(|[x0, z0, x1, z1]| {
@@ -1915,7 +1915,7 @@ impl StreamNode {
             })
         };
         let residency = &self.residency;
-        let kept = |key: PatchKey| residency.keeps(key, camera, stays);
+        let kept = |key: PatchKey| residency.keeps(key, eye, stays);
         let vegetation_joins = frame_budget
             && self.backend.is_some()
             && self.vegetation.begin_units(&vegetation_in_view, &kept);
@@ -2182,6 +2182,10 @@ impl StreamNode {
     fn run_units(&mut self, residency: bool, start: std::time::Instant) {
         self.update_camera();
         if residency {
+            // One read of the map's source ceiling a frame, before the patch units, so the
+            // vegetation's `keeps` there and its frame below take the same rise (`VEG-36`).
+            self.residency
+                .read_ceiling(&mut Jobs(self.spawner.as_mut()));
             // The vegetation's installs among the patch units go to the residency before its
             // frame, which reads them as drawn (`VEG-35` R1).
             if self.patch_frame() {
@@ -2605,6 +2609,10 @@ impl PatchJobs for Jobs<'_> {
 
     fn generations(&mut self, known: i64, table: &mut Vec<([i32; 2], i64)>) -> Option<i64> {
         self.0.as_mut()?.generations(known, table)
+    }
+
+    fn ground_ceiling(&mut self) -> Option<f64> {
+        self.0.as_mut()?.ground_ceiling()
     }
 }
 

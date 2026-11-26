@@ -70,6 +70,50 @@ impl ResidencySettings {
     }
 }
 
+impl ResidencySettings {
+    /// Whether the patch of side `span` at minimum corner `origin` can draw for an eye `rise`
+    /// metres above the highest ground it can stand on, at ground point `camera` (`VEG-36`):
+    /// its square's nearest point within the canopy's far range and a side of the eye in three
+    /// dimensions, `nearest² + rise² <= (far + span)²`. Every rise at or below 0 passes.
+    ///
+    /// Why it is conservative: the canopy's far range ends every draw of a patch. An impostor
+    /// fades out at `far` from its tree's origin (`vegetation_impostor.gdshader`, the 3D
+    /// distance to the main camera; the water's reflection camera, mirrored under the water, is
+    /// no nearer), and the tree stands inside the square at most at the highest ground. The
+    /// caster and the hedge boxes end at `far` from their batch box's centre, which lies within
+    /// the crowns' or a 16 m run's reach of that square (tens of metres, under a side); the near
+    /// trees, bushes and rocks end at 200-420 m. So a patch that can draw has a point within
+    /// `far` plus that reach, which `far + span` covers.
+    ///
+    /// Why it keeps today's set at a low eye: the tier rule wants a patch only when its centre is
+    /// within `far + span`, and the nearest point of a square from an eye outside it is at least
+    /// half a side nearer than its centre, so `nearest <= far + span / 2`. That passes for every
+    /// rise up to [`Self::rise_floor`]. `O(1)`.
+    pub(crate) fn within_far(&self, origin: [f32; 2], span: f64, camera: [f32; 2], rise: f64) -> bool {
+        if rise <= 0.0 {
+            return true;
+        }
+        // The distance along one axis from the eye to the square's side range (0 inside it).
+        let gap = |eye: f32, low: f32| {
+            let (eye, low) = (f64::from(eye), f64::from(low));
+            (low - eye).max(eye - (low + span)).max(0.0)
+        };
+        let [dx, dz] = [gap(camera[0], origin[0]), gap(camera[1], origin[1])];
+        let reach = self.product.far_m + span;
+        dx * dx + dz * dz + rise * rise <= reach * reach
+    }
+
+    /// The rise up to which [`Self::within_far`] passes every patch the tier rule wants
+    /// (`VEG-36`): `sqrt(span x far + 3/4 span²)` for the fine patches' side, the smaller (767 m
+    /// for 128 m patches and the 4.5 km range, 1,581 m for 512 m blocks), from `(far + span/2)² +
+    /// rise² <= (far + span)²`. At or below it the cut changes nothing, so the residency skips it
+    /// and an eye that moves only in height there re-evaluates nothing. `O(1)`.
+    pub(crate) fn rise_floor(&self, terrain_span: f64) -> f64 {
+        let span = terrain_span / f64::from(self.subdivision);
+        (span * self.product.far_m + 0.75 * span * span).sqrt()
+    }
+}
+
 /// The three bands of a patch: understory, near canopy, shadow caster.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct Bands {

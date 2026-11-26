@@ -434,7 +434,9 @@ impl VegetationResidency {
                 if !self.resident.contains(&block) {
                     continue;
                 }
-                let state = block_state(settings, span, &self.resident, block, eye);
+                // The ground rule (no rise): the samples carry no height, and a far camera's
+                // reach prepares what its zoom down needs (`VEG-36`).
+                let state = block_state(settings, span, &self.resident, block, eye, 0.0);
                 diff_keys(
                     settings.subdivision,
                     block,

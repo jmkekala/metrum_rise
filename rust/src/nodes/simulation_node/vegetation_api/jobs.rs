@@ -450,6 +450,13 @@ pub(crate) fn try_generations(
     Some(epoch)
 }
 
+/// The map's source ceiling (`TerrainSystem::source_ceiling`, `VEG-36`) without waiting for the
+/// core: `None` while the simulation holds it. `O(1)`.
+pub(crate) fn try_ground_ceiling(core: &Mutex<SimCore>) -> Option<f64> {
+    let core = SimulationNode::try_lock_shared_core(core)?;
+    Some(f64::from(core.heightmap.source_ceiling()))
+}
+
 /// The vegetation residency's jobs (`RENDER-32-F`): requests, cancels and the core's
 /// vegetation revisions, all without waiting on the main thread.
 impl PatchJobs for Spawner {
@@ -481,6 +488,10 @@ impl PatchJobs for Spawner {
 
     fn generations(&mut self, known: i64, table: &mut Vec<([i32; 2], i64)>) -> Option<i64> {
         try_generations(&self.core, known, table)
+    }
+
+    fn ground_ceiling(&mut self) -> Option<f64> {
+        try_ground_ceiling(&self.core)
     }
 }
 

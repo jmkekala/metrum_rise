@@ -86,8 +86,11 @@ fn replay(text: &str) -> Replayed {
     let mut residency = VegetationResidency::default();
     let mut layer = VegetationLayer::new(64, 16);
     let mut backend = Recorder::new();
+    // A ceiling at sea level, under every recorded ground (`VEG-36`): the recorded eyes, at most
+    // 424 m up, stay below the rise floor (765 m), so the ground rule's sets hold.
     let mut jobs = Jobs {
         full: true,
+        ceiling: Some(0.0),
         ..Jobs::default()
     };
     residency.set_terrain_span(terrain_span);
@@ -103,6 +106,7 @@ fn replay(text: &str) -> Replayed {
             residency.revise_residency();
         }
         last_revision = Some(frame.revision);
+        residency.read_ceiling(&mut jobs);
         residency.frame(Some(frame.eye), &mut layer, &mut backend, &mut jobs);
         let work = residency.work();
         out.frames += 1;

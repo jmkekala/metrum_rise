@@ -25,6 +25,7 @@ use rand::{Rng, SeedableRng};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod golden;
+mod height;
 
 
 const TERRAIN_SPAN: f64 = 510.0;
@@ -98,6 +99,7 @@ struct Jobs {
     busy_core: bool,
     full: bool,
     promoted: Vec<(PatchKey, u64)>,
+    ceiling: Option<f64>,
 }
 
 impl PatchJobs for Jobs {
@@ -135,6 +137,10 @@ impl PatchJobs for Jobs {
             table.extend(self.revisions.iter().map(|(k, v)| (*k, *v)));
         }
         Some(self.epoch)
+    }
+
+    fn ground_ceiling(&mut self) -> Option<f64> {
+        self.ceiling.filter(|_| !self.busy_core)
     }
 }
 
@@ -206,6 +212,7 @@ impl World {
     // its events, as the stream node runs them.
     fn frame(&mut self, eye: [f32; 3], pick: impl FnMut(usize) -> bool) -> ResidencyWork {
         self.layer.set_camera(Some(eye));
+        self.residency.read_ceiling(&mut self.jobs);
         self.residency
             .frame(Some(eye), &mut self.layer, &mut self.backend, &mut self.jobs);
         let work = self.residency.work();
@@ -226,6 +233,7 @@ impl World {
     // them (a prepare's product is held, any other delivered).
     fn frame_prepared(&mut self, view: CameraSample, complete: bool) {
         self.layer.set_camera(Some(view.eye));
+        self.residency.read_ceiling(&mut self.jobs);
         self.residency
             .frame(Some(view.eye), &mut self.layer, &mut self.backend, &mut self.jobs);
         self.residency.prepare(Some(view), &mut self.jobs);
@@ -300,13 +308,54 @@ fn check_one_tier(layer: &VegetationLayer, backend: &Recorder) {
     assert!(both.is_empty(), "two tiers draw over {both:?}");
 }
 
-// The wanted set the script's residency pass gives at `camera` over `resident` blocks.
+// The tier rule before `VEG-36`, kept as the reference for every eye on the ground: out unless
+// resident; fine when the block's nearest corner is within the fine radius, with the patches
+// whose centre is within the far range and a side; else coarse within the far range and a side.
+fn ground_block_state(
+    settings: &ResidencySettings,
+    terrain_span: f64,
+    resident: &Set<Cell>,
+    block: Cell,
+    camera: [f32; 2],
+) -> BlockState {
+    if !resident.contains(&block) {
+        return BlockState::default();
+    }
+    let world = settings.world;
+    let far = settings.product.far_m;
+    let distance = key_distance([block[0], block[1], 1], terrain_span, world, camera);
+    if distance - terrain_span * HALF_DIAGONAL <= settings.fine_radius() {
+        let divisor = settings.subdivision;
+        let span = terrain_span / f64::from(divisor);
+        let mut fine = 0u64;
+        for at in 0..divisor * divisor {
+            let key = [block[0] * divisor + at / divisor, block[1] * divisor + at % divisor, divisor];
+            if key_distance(key, terrain_span, world, camera) <= far + span {
+                fine |= 1 << at;
+            }
+        }
+        return BlockState {
+            tier: Tier::Fine,
+            fine,
+        };
+    }
+    if distance <= far + terrain_span {
+        return BlockState {
+            tier: Tier::Coarse,
+            fine: 0,
+        };
+    }
+    BlockState::default()
+}
+
+// The wanted set the script's residency pass gives at `camera` over `resident` blocks (the
+// ground rule, before `VEG-36`).
 fn rule_wanted(resident: &BTreeSet<Cell>, camera: [f32; 2]) -> BTreeSet<PatchKey> {
     let settings = settings();
     let set: Set<Cell> = resident.iter().copied().collect();
     let mut out = BTreeSet::new();
     for &block in resident {
-        let state = block_state(&settings, TERRAIN_SPAN, &set, block, camera);
+        let state = ground_block_state(&settings, TERRAIN_SPAN, &set, block, camera);
         let mut entering = Vec::new();
         diff_keys(
             settings.subdivision,
@@ -408,7 +457,7 @@ fn a_product_kept_before_the_patch_units_is_still_wanted_after_the_frames_evalua
             let kept: Vec<PatchKey> = pending
                 .iter()
                 .copied()
-                .filter(|&key| world.residency.keeps(key, Some(camera), |block| Some(block) != removed))
+                .filter(|&key| world.residency.keeps(key, Some(eye(camera[0], camera[1])), |block| Some(block) != removed))
                 .collect();
             if let Some(block) = toggled {
                 let now = !resident.contains(&block);

@@ -9,10 +9,14 @@
 //! - **Tiers.** A resident terrain block (pushed by `terrain.gd`) is carried on the fine grid
 //!   (`subdivision`² patches) when its nearest corner is within the fine radius, else as one
 //!   coarse patch within the canopy's far range; a fine patch is wanted within the far range of
-//!   its centre. The tiers live in a [`RingSet`] over the terrain grid, evaluated where the script
-//!   evaluated them: on a frame whose camera changed its fine-grid cell or whose terrain
-//!   residency changed, at that frame's camera. A crossing re-evaluates the ring boundary blocks
-//!   only, a jump the old and new sets.
+//!   its centre. An eye high above the ground (`VEG-36`) carries only the patches whose square
+//!   can lie within the far range in three dimensions ([`ResidencySettings::within_far`], the eye's
+//!   rise above the map's source ceiling); at a low eye that cut changes nothing and is skipped
+//!   ([`ResidencySettings::rise_floor`]). The tiers live in a [`RingSet`] over the terrain grid,
+//!   evaluated where the script evaluated them: on a frame whose camera changed its fine-grid
+//!   cell or whose terrain residency changed, at that frame's camera, and on a frame whose rise
+//!   changed above the floor. A crossing re-evaluates the ring boundary blocks only, a jump or a
+//!   rise change the old and new sets.
 //! - **Stand-ins.** A patch that leaves the wanted set stays drawn until the wanted patches over
 //!   its area are installed, then is hidden into the cache (within the far range) or freed. While
 //!   a block's coarse patch draws, the install layer keeps the block's fine patches hidden, so an
@@ -26,10 +30,13 @@
 //! - **Requests**: a queue, missing patches before drawn ones and nearest first as of the last
 //!   evaluation, taken up to the upload budget a frame.
 //!
-//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch), stand-ins waiting
+//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch and one of the source
+//! ceiling), stand-ins waiting
 //! or not: they are checked only after an evaluation or an install, the only changes that can
 //! build their area (`O(stand-ins x subdivision²)` then); a crossing
-//! `O(ring boundary blocks + changes + queue log queue)`; a moving frame `O(patches due + buckets
+//! `O(ring boundary blocks + changes + queue log queue)`; a rise change above the floor (a zoom
+//! high over the ground) `O(old set + blocks within the far range + a side, about 350 at 512 m +
+//! changes + queue log queue)`; a moving frame `O(patches due + buckets
 //! passed)`; an edit `O(patches of the edited blocks)`; a request `O(1)`. Nothing allocates once
 //! the storage has grown.
 
@@ -82,6 +89,11 @@ pub(crate) trait PatchJobs {
     /// it differs from `known`, every vegetation revision that is not zero, by terrain patch,
     /// in `table` (cleared first).
     fn generations(&mut self, known: i64, table: &mut Vec<(Cell, i64)>) -> Option<i64>;
+    /// An upper bound on the map's ground heights without waiting for the core (`VEG-36`,
+    /// `TerrainSystem::source_ceiling`); `None` while the core is busy, or without one (no cut).
+    fn ground_ceiling(&mut self) -> Option<f64> {
+        None
+    }
 }
 
 /// What a drawn patch was built with (`vegetation.gd`'s patch record).
@@ -171,6 +183,9 @@ pub(crate) struct VegetationResidency {
     last_cell: Option<Cell>,
     last_eye: Option<[f32; 3]>,
     camera: Option<[f32; 2]>,
+    // The map's source ceiling as last read (`VEG-36`), and the rise the tiers were evaluated at.
+    ceiling: Option<f64>,
+    ring_rise: f64,
     wanted: Set<PatchKey>,
     patches: Map<PatchKey, Record>,
     standins: Map<PatchKey, Record>,
@@ -221,6 +236,8 @@ impl Default for VegetationResidency {
             last_cell: None,
             last_eye: None,
             camera: None,
+            ceiling: None,
+            ring_rise: 0.0,
             wanted: Set::default(),
             patches: Map::default(),
             standins: Map::default(),
@@ -272,6 +289,8 @@ impl VegetationResidency {
         self.revised = false;
         self.last_cell = None;
         self.camera = None;
+        self.ceiling = None;
+        self.ring_rise = 0.0;
         self.wanted.clear();
         self.patches.clear();
         self.standins.clear();
@@ -381,7 +400,8 @@ impl VegetationResidency {
     /// R1b: the vegetation's units among the patch units admit only such a product): `key` is
     /// wanted now, its terrain block is resident and `stays` resident through the frame (the
     /// terrain's wanted square: hides and releases take only patches outside it), and the tier
-    /// rule (`block_state`) wants it at `camera`, this frame's. An evaluation this frame, at a
+    /// rule (`block_state`) wants it at `eye`, this frame's, with the ceiling the frame reads
+    /// (`VEG-36`: [`Self::read_ceiling`] runs before the patch units). An evaluation this frame, at a
     /// crossing or a residency change, takes it at that camera over the blocks then resident,
     /// which keep this one; without an evaluation the wanted set holds. So a kept product is
     /// still wanted after this frame's evaluation; one not kept waits for the install after it.
@@ -389,10 +409,10 @@ impl VegetationResidency {
     pub(crate) fn keeps(
         &self,
         key: PatchKey,
-        camera: Option<[f32; 2]>,
+        eye: Option<[f32; 3]>,
         stays: impl Fn(Cell) -> bool,
     ) -> bool {
-        let (Some(settings), Some(camera)) = (self.settings, camera) else {
+        let (Some(settings), Some(eye)) = (self.settings, eye) else {
             return false;
         };
         let block = owner(key);
@@ -404,7 +424,9 @@ impl VegetationResidency {
         {
             return false;
         }
-        let state = block_state(&settings, self.terrain_span, &self.resident, block, camera);
+        let rise = self.rise(&settings, eye[1]);
+        let camera = [eye[0], eye[2]];
+        let state = block_state(&settings, self.terrain_span, &self.resident, block, camera, rise);
         let divisor = settings.subdivision;
         match (state.tier, key[2] > 1) {
             (Tier::Coarse, false) => true,
@@ -413,6 +435,33 @@ impl VegetationResidency {
                 state.fine & (1 << at) != 0
             }
             _ => false,
+        }
+    }
+
+    /// Reads the map's source ceiling from `jobs` (`VEG-36`), once a frame before the patch
+    /// units, so [`Self::keeps`] and the frame's evaluation take one value; kept while the core is
+    /// busy. A changed ceiling changes the rise, which re-evaluates the tiers. `O(1)`.
+    pub(crate) fn read_ceiling(&mut self, jobs: &mut impl PatchJobs) {
+        if let Some(ceiling) = jobs.ground_ceiling() {
+            self.ceiling = Some(ceiling);
+        }
+    }
+
+    // The eye's height above the highest ground a plant can stand on (`VEG-36`): above the map's
+    // source ceiling, or 0 (no cut) without one and at or below the floor where the cut keeps
+    // every patch the tier rule wants. Trees, hedges and yard plants stand on the graded ground
+    // off the roads, which grading lifts above the base only up to the roads and sites it ties
+    // into; a lift past the map's highest base sample stays within the cut's margin (a side,
+    // 64 m at the finest subdivision). `O(1)`.
+    fn rise(&self, settings: &ResidencySettings, eye_y: f32) -> f64 {
+        let Some(ceiling) = self.ceiling else {
+            return 0.0;
+        };
+        let rise = f64::from(eye_y) - ceiling;
+        if rise > settings.rise_floor(self.terrain_span) {
+            rise
+        } else {
+            0.0
         }
     }
 
@@ -531,9 +580,13 @@ impl VegetationResidency {
         let cell = camera_cell(camera, span);
         let moved = self.last_eye.map_or(0.0, |last| travel(last, eye));
         self.last_eye = Some(eye);
-        let evaluate = !self.evaluated || self.revised || self.last_cell != Some(cell);
+        let rise = self.rise(&settings, eye[1]);
+        let evaluate = !self.evaluated
+            || self.revised
+            || self.last_cell != Some(cell)
+            || rise != self.ring_rise;
         if evaluate {
-            self.evaluate(&settings, camera, layer, backend, jobs);
+            self.evaluate(&settings, camera, rise, layer, backend, jobs);
             self.last_cell = Some(cell);
         }
         if moved > 0.0 {
@@ -738,12 +791,14 @@ impl VegetationResidency {
         self.dirty = dirty;
     }
 
-    // The tiers at `camera`: the ring's boundary blocks and the blocks whose residency changed,
-    // then the script's residency pass over the keys that left and entered the wanted set.
+    // The tiers at `camera` and `rise`: the ring's boundary blocks and the blocks whose residency
+    // changed (every block within the ring's reach after a rise change), then the script's
+    // residency pass over the keys that left and entered the wanted set.
     fn evaluate(
         &mut self,
         settings: &ResidencySettings,
         camera: [f32; 2],
+        rise: f64,
         layer: &mut VegetationLayer,
         backend: &mut impl RenderBackend,
         jobs: &mut impl PatchJobs,
@@ -755,7 +810,9 @@ impl VegetationResidency {
             origin: [-f64::from(world[0]) * 0.5, -f64::from(world[1]) * 0.5],
             cell: terrain_span,
         };
-        let full = !self.evaluated || self.ring.lattice() != lattice;
+        // The cut's thresholds move with the rise, so a rise change takes every block again.
+        let full = !self.evaluated || self.ring.lattice() != lattice || rise != self.ring_rise;
+        self.ring_rise = rise;
         if self.ring.lattice() != lattice {
             // A new terrain grid: every key of the old one leaves.
             for (block, state) in self.ring.members() {
@@ -780,7 +837,14 @@ impl VegetationResidency {
         let fine_radius = settings.fine_radius();
         let far = settings.product.far_m;
         let block_reach = terrain_span * HALF_DIAGONAL;
-        let bands = [
+        // The cut's threshold for a square of side `side` (`VEG-36`): it passes while the nearest
+        // point is within `sqrt((far + side)² - rise²)`, which lies between half a side and a
+        // half-diagonal nearer than the centre.
+        let cut = |side: f64| {
+            let reach = far + side;
+            (reach * reach - rise * rise).max(0.0).sqrt()
+        };
+        let mut bands = [
             RingBand {
                 radius: fine_radius + block_reach,
                 reach: 0.0,
@@ -794,13 +858,26 @@ impl VegetationResidency {
                 radius: far + span,
                 reach: block_reach,
             },
+            RingBand {
+                radius: cut(terrain_span),
+                reach: block_reach,
+            },
+            RingBand {
+                radius: cut(span),
+                reach: block_reach,
+            },
         ];
         let fine_patches_reach = far + span - block_reach - moved - RING_SLACK_M;
-        let band_count = if fine_patches_reach > fine_radius + 2.0 * block_reach {
+        let mut band_count = if fine_patches_reach > fine_radius + 2.0 * block_reach {
             2
         } else {
             3
         };
+        if rise > 0.0 {
+            bands[band_count] = bands[3];
+            bands[band_count + 1] = bands[4];
+            band_count += 2;
+        }
         let Self {
             ring,
             resident,
@@ -810,7 +887,8 @@ impl VegetationResidency {
             ..
         } = self;
         ring.reset_visited();
-        let evaluate = |block: Cell| block_state(settings, terrain_span, resident, block, camera);
+        let evaluate =
+            |block: Cell| block_state(settings, terrain_span, resident, block, camera, rise);
         let mut changed = |block: Cell, old: BlockState, new: BlockState| {
             diff_keys(settings.subdivision, block, old, new, leaving, entering);
         };
@@ -1108,13 +1186,16 @@ fn travel(a: [f32; 3], b: [f32; 3]) -> f64 {
 
 // A block's tier at `camera` (`vegetation.gd`'s residency pass): out unless resident; fine when
 // its nearest corner is within the fine radius, with the patches whose centre is within the far
-// range; else coarse within the far range.
+// range; else coarse within the far range. An eye `rise` metres above the highest ground keeps
+// only the patches that pass the far range in three dimensions (`VEG-36`,
+// [`ResidencySettings::within_far`]; none cut at 0). `O(subdivision²)`.
 fn block_state(
     settings: &ResidencySettings,
     terrain_span: f64,
     resident: &Set<Cell>,
     block: Cell,
     camera: [f32; 2],
+    rise: f64,
 ) -> BlockState {
     if !resident.contains(&block) {
         return BlockState::default();
@@ -1128,7 +1209,9 @@ fn block_state(
         let mut fine = 0u64;
         for at in 0..divisor * divisor {
             let key = [block[0] * divisor + at / divisor, block[1] * divisor + at % divisor, divisor];
-            if key_distance(key, terrain_span, world, camera) <= far + span {
+            if key_distance(key, terrain_span, world, camera) <= far + span
+                && settings.within_far(key_origin(key, terrain_span, world), span, camera, rise)
+            {
                 fine |= 1 << at;
             }
         }
@@ -1137,7 +1220,10 @@ fn block_state(
             fine,
         };
     }
-    if distance <= far + terrain_span {
+    let coarse = [block[0], block[1], 1];
+    if distance <= far + terrain_span
+        && settings.within_far(key_origin(coarse, terrain_span, world), terrain_span, camera, rise)
+    {
         return BlockState {
             tier: Tier::Coarse,
             fine: 0,

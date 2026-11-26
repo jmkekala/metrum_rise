@@ -124,6 +124,10 @@ pub struct TerrainSystem {
     height_revision: u64,
     /// Revision of the latest whole-grid replacement; every region is at least this new.
     height_epoch: u64,
+    /// No source sample this system has held is higher (`VEG-36`): the base elevation, then
+    /// raised by every write and replacement, never lowered, so an undo record of this system
+    /// restores values under it.
+    source_ceiling: f32,
 }
 
 /// Bounded capture of source samples used to validate the site-feasibility cache.
@@ -208,6 +212,7 @@ impl TerrainSystem {
             height_region_revisions: HashMap::new(),
             height_revision: 0,
             height_epoch: 0,
+            source_ceiling: base_elevation,
         }
     }
 
@@ -243,9 +248,21 @@ impl TerrainSystem {
     pub fn set_height(&mut self, x: usize, y: usize, value: f32) {
         if x < self.width && y < self.height {
             self.source_generation = self.source_generation.wrapping_add(1);
-            self.source_data.set(x, y, value);
+            self.write_source(x, y, value);
             self.mark_render_patches_for_grid_rect(x, x, y, y);
         }
+    }
+
+    // Every source write: the sample, and the ceiling over it.
+    fn write_source(&mut self, x: usize, y: usize, value: f32) {
+        self.source_data.set(x, y, value);
+        self.source_ceiling = self.source_ceiling.max(value);
+    }
+
+    /// An upper bound on every source height of the map, metres (`VEG-36`): the highest sample
+    /// this system has held, so a lowered sample leaves it where it was. `O(1)`.
+    pub(crate) fn source_ceiling(&self) -> f32 {
+        self.source_ceiling
     }
 
     /// Gets the source height in metres at a grid coordinate.
@@ -413,7 +430,7 @@ impl TerrainSystem {
                     let current_h = self.source_data.get(x, y);
                     let next_h = current_h + strength * falloff;
 
-                    self.source_data.set(x, y, next_h);
+                    self.write_source(x, y, next_h);
                 }
             }
         }
@@ -454,7 +471,7 @@ impl TerrainSystem {
                         current_h + delta.signum() * max_step
                     };
 
-                    self.source_data.set(x, y, next_h);
+                    self.write_source(x, y, next_h);
                 }
             }
         }
@@ -528,7 +545,7 @@ impl TerrainSystem {
                     current_h + delta.signum() * max_step
                 };
 
-                self.source_data.set(x, y, next_h);
+                self.write_source(x, y, next_h);
             }
         }
     }
@@ -594,7 +611,7 @@ impl TerrainSystem {
                     current_h + delta.signum() * max_step
                 };
 
-                self.source_data.set(x, y, next_h);
+                self.write_source(x, y, next_h);
             }
         }
     }
@@ -607,6 +624,12 @@ impl TerrainSystem {
     /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
     pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.source_data.replace_from_dense(dense)?;
+        // `O(samples)` on the pool, as the replacement itself is `O(samples)`.
+        let highest = {
+            use rayon::prelude::*;
+            dense.par_iter().copied().reduce(|| f32::NEG_INFINITY, f32::max)
+        };
+        self.source_ceiling = self.source_ceiling.max(highest);
         self.source_generation = self.source_generation.wrapping_add(1);
         self.record_height_reset();
         Ok(())
@@ -627,6 +650,7 @@ impl TerrainSystem {
 
     /// Puts back an undo record's [`Self::source_snapshot`], with the same generation bump and
     /// whole-grid height reset as a dense replacement. O(1) beyond dropping the replaced chunks.
+    /// The record's samples were this system's, so the source ceiling already covers them.
     pub(crate) fn replace_source_from_snapshot(
         &mut self,
         snapshot: SparseChunkGrid<f32>,
@@ -1203,6 +1227,27 @@ mod tests {
 
         assert!((terrain.get_height(4, 4) - 3.0).abs() < 0.0001);
         assert!((terrain.get_height(5, 4) - 3.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn the_source_ceiling_bounds_every_sample_held() {
+        // `VEG-36`: the base, then every write and replacement raise it; nothing lowers it.
+        let mut terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 5.0);
+        assert_eq!(terrain.source_ceiling(), 5.0);
+        terrain.set_height(4, 4, 9.0);
+        terrain.sculpt(4.0, 4.0, 2.0, 4.0);
+        let highest = (0..9)
+            .flat_map(|z| (0..9).map(move |x| (x, z)))
+            .map(|(x, z)| terrain.get_height(x, z))
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(highest > 9.0);
+        assert_eq!(terrain.source_ceiling(), highest);
+        terrain.level_to_height(4.0, 4.0, 3.0, -50.0, 100.0);
+        assert_eq!(terrain.source_ceiling(), highest, "a lowered sample keeps the ceiling");
+        let mut dense = vec![1.0; 81];
+        dense[40] = 77.0;
+        terrain.replace_source_from_dense(&dense).unwrap();
+        assert_eq!(terrain.source_ceiling(), 77.0);
     }
 
     #[test]
