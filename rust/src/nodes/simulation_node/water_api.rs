@@ -314,6 +314,30 @@ impl SimulationNode {
         stats
     }
 
+    /// The water mesh jobs' state (`TERRAIN-63`, tests and the debug view): `in_flight` (builds
+    /// running), `requested` (variants asked for and not yet handed back), `ready`, `cache`
+    /// (variants held) and `cache_patches` (flat x, z pairs of the patches holding a cached variant,
+    /// sorted). `O(cache)`: a status read.
+    #[func]
+    pub fn get_water_mesh_job_counts(&self) -> VarDictionary {
+        let jobs = self.lock_water_patch_mesh_jobs();
+        let mut patches: Vec<(usize, usize)> =
+            jobs.cache.keys().map(|key| (key.patch_x, key.patch_z)).collect();
+        patches.sort_unstable();
+        patches.dedup();
+        let flat: PackedInt32Array = patches
+            .iter()
+            .flat_map(|&(x, z)| [x as i32, z as i32])
+            .collect();
+        let mut out = VarDictionary::new();
+        out.set("in_flight", jobs.in_flight.len() as i64);
+        out.set("requested", jobs.requested.len() as i64);
+        out.set("ready", jobs.ready.len() as i64);
+        out.set("cache", jobs.cache.len() as i64);
+        out.set("cache_patches", flat);
+        out
+    }
+
     /// Clears cached water mesh variants for flat `(patch_x, patch_z)` patch keys.
     #[func]
     pub fn clear_water_patch_mesh_cache(&mut self, flat_patch_keys: PackedInt32Array) {
@@ -405,10 +429,7 @@ impl SimulationNode {
                 let mut job_state = jobs
                     .lock()
                     .expect("water mesh job lock poisoned during result publication");
-                for entry in entries {
-                    job_state.in_flight.remove(&entry.key);
-                    job_state.completed.push(entry);
-                }
+                job_state.publish(entries);
             });
         }
         stats.set(

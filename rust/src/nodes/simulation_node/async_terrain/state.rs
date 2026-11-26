@@ -47,6 +47,19 @@ impl WaterPatchMeshAsyncState {
         }
     }
 
+    /// A mesh job's finished meshes, published under the lock: each only while its key is still
+    /// in flight. A key a [`Self::forget_patch`] (a released patch) or a [`Self::clear`] took out
+    /// of flight while its job ran is dropped: it used to enter the cache at the next poll and stay
+    /// there, a mesh of a patch no longer built (`TERRAIN-63`). A key asked again meanwhile is in
+    /// flight again and is answered by whichever job publishes first. `O(entries)`.
+    pub(in crate::nodes::simulation_node) fn publish(&mut self, entries: Vec<CachedWaterPatchMesh>) {
+        for entry in entries {
+            if self.in_flight.remove(&entry.key) {
+                self.completed.push(entry);
+            }
+        }
+    }
+
     pub(in crate::nodes::simulation_node) fn forget_requested_patch(
         &mut self,
         patch_x: usize,
@@ -711,5 +724,56 @@ mod tests {
         jobs.cache_insert(mesh(1, 4));
         jobs.forget_patch(2, 3);
         assert_eq!(jobs.cache.keys().map(|key| key.patch_x).collect::<Vec<_>>(), vec![1]);
+    }
+
+    // `TERRAIN-63` risk 2: a patch released (`forget_patch`) while its mesh job runs leaves no cache
+    // entry behind when the job publishes, and a new request for the same mesh in the meantime is
+    // answered once.
+    #[test]
+    fn a_patch_forgotten_while_its_mesh_job_runs_keeps_no_cache_entry() {
+        let key = WaterPatchMeshCacheKey {
+            patch_x: 4,
+            patch_z: 3,
+            lod_step: 8,
+            cover_generation: 1,
+            depth_signature: 2,
+        };
+        let mesh = || CachedWaterPatchMesh {
+            key,
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            world_size_x: 512.0,
+            world_size_z: 512.0,
+            stats: Default::default(),
+        };
+        // The poll's part: completed meshes into the cache.
+        let poll = |jobs: &mut WaterPatchMeshAsyncState| {
+            for entry in std::mem::take(&mut jobs.completed) {
+                jobs.cache_insert(entry);
+            }
+        };
+        let mut jobs = WaterPatchMeshAsyncState::new();
+        // Requested, its job running; the patch is released; the job publishes.
+        jobs.requested.insert(key);
+        jobs.in_flight.insert(key);
+        jobs.forget_patch(4, 3);
+        jobs.publish(vec![mesh()]);
+        poll(&mut jobs);
+        assert!(jobs.cache.is_empty(), "a released patch's mesh must not enter the cache");
+        // Forgotten, then asked again while the first job runs: the first job's mesh answers it
+        // and the second's is dropped.
+        jobs.requested.insert(key);
+        jobs.in_flight.insert(key);
+        jobs.forget_patch(4, 3);
+        jobs.requested.insert(key);
+        jobs.in_flight.insert(key);
+        jobs.publish(vec![mesh()]);
+        jobs.publish(vec![mesh()]);
+        assert_eq!(jobs.completed.len(), 1);
+        poll(&mut jobs);
+        assert_eq!(jobs.cache.len(), 1);
+        assert!(jobs.in_flight.is_empty());
     }
 }
