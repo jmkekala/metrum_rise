@@ -804,6 +804,13 @@ impl BackdropLayer {
         self.cells.water_waits(key)
     }
 
+    /// Patch `key`'s water as last reported: `(dry, holding a mesh)` (the kept meshes' debug
+    /// cross-check, `TERRAIN-63`). `O(1)`.
+    #[cfg(debug_assertions)]
+    pub(crate) fn water_bits(&self, key: PatchKey) -> (bool, bool) {
+        self.cells.water_bits(key)
+    }
+
     /// Whether patch `key` is drawn as a patch: resident, drawing something and not held for its water. `O(1)`.
     pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
         self.cells.patch_draws(key)

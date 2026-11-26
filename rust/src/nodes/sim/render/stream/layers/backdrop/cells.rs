@@ -256,6 +256,16 @@ impl Cells {
         })
     }
 
+    /// Patch `key`'s water bits: `(dry, holding a mesh)` (the kept meshes' debug cross-check,
+    /// `TERRAIN-63`). `O(1)`.
+    #[cfg(debug_assertions)]
+    pub(crate) fn water_bits(&self, key: PatchKey) -> (bool, bool) {
+        self.index(key).map_or((false, false), |index| {
+            let state = self.states[index];
+            (state & WATER_DRY != 0, state & WATER_MESH != 0)
+        })
+    }
+
     // The water's report of the patch at `index`: dry, or wet with or without a mesh.
     fn put_water(&mut self, index: usize, state: WaterState) {
         self.put(index, WATER_DRY, state == WaterState::Dry);

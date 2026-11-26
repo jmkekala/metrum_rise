@@ -47,9 +47,13 @@ use super::super::rings::{Cell, Lattice, RingBand, RingSet};
 use super::super::schedule::{Class, Clock, FrameBudget, UnitSource, orders_before};
 
 mod budget;
+mod kept_meshes;
 mod units;
 
 pub(crate) use budget::{Keep, RELEASE_RING, keep, place_bytes, place_kinds, places};
+pub(crate) use kept_meshes::{
+    APPLY_PRICE_US as KEPT_APPLY_PRICE_US, KeptExecutor, KeptFrame, KeptMeshes, kept_mesh_bytes_max,
+};
 pub(crate) use units::{UNIT_KIND_NAMES, UNIT_KINDS, UnitKind, UnitTimes};
 
 /// The scripts' patch grid: `terrain.gd`'s layout (`get_terrain_patch_layout`) and world size.

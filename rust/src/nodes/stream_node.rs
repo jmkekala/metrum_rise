@@ -49,10 +49,10 @@ use crate::nodes::sim::render::stream::layers::roads::{
     RoadWork,
 };
 use crate::nodes::sim::render::stream::layers::terrain::{
-    Activation, LayerFrame, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream,
-    PatchWork, Payload, POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS,
-    UNIT_KIND_NAMES, UNIT_KINDS, WATER_COSTS, WATER_LIMITS, frame_layers, place_bytes, place_kinds,
-    places,
+    Activation, KEPT_APPLY_PRICE_US, KeptExecutor, KeptFrame, KeptMeshes, LayerFrame,
+    PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
+    POST_LOAD_PATCH_BUDGET_US, Release, TERRAIN_COSTS, TERRAIN_LIMITS, UNIT_KIND_NAMES, UNIT_KINDS,
+    WATER_COSTS, WATER_LIMITS, frame_layers, kept_mesh_bytes_max, place_bytes, place_kinds, places,
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
@@ -150,6 +150,12 @@ pub struct StreamNode {
     // meshes, and resource sets in their pools (each a place of its layer).
     terrain_budget: Option<u64>,
     patch_extras: [[i64; 2]; 2],
+    // The kept water meshes (`TERRAIN-63`): the book, the bytes of the kept meshes `water.gd` last
+    // reported (less the bytes the book dropped since), and the last frame's drops.
+    kept: KeptMeshes,
+    kept_bytes: u64,
+    kept_dropped: Vec<TerrainKey>,
+    kept_held: u8,
     // The releases since the patch grid was set, a layer (terrain, water; the debug view's).
     releases_total: [u64; 2],
     // A load's road chunk hydration (`RENDER-32-P`) and its executor, budget and frame.
@@ -268,6 +274,10 @@ impl INode for StreamNode {
             terrain_budget: None,
             releases_total: [0; 2],
             patch_extras: [[0; 2]; 2],
+            kept: KeptMeshes::default(),
+            kept_bytes: 0,
+            kept_dropped: Vec::new(),
+            kept_held: 0,
             roads: RoadHydration::default(),
             road_scripts: None,
             road_budget: FrameBudget::new(ROAD_HYDRATION_BUDGET_US),
@@ -1029,6 +1039,8 @@ impl StreamNode {
         });
         self.terrain.reset(grid);
         self.water.reset(grid);
+        self.kept.reset(grid);
+        self.kept_bytes = 0;
         // Nothing is resident: every patch of the map draws its backdrop cell once its block's
         // textures exist (`TERRAIN-41` D2).
         self.backdrop_layer
@@ -1064,6 +1076,14 @@ impl StreamNode {
         }
     }
 
+    /// The bytes of the kept water meshes `water.gd` holds (`TERRAIN-63`: meshes of hidden patches
+    /// asked for by the kept cause, not shown since), reported with the extras and apart from
+    /// them: they take only the room the places leave and never move the places. `O(1)`.
+    #[func]
+    pub fn set_kept_water_mesh_bytes(&mut self, bytes: i64) {
+        self.kept_bytes = bytes.max(0) as u64;
+    }
+
     /// The base terrain's budget now (`TERRAIN-41` B1 and B2, the debug view's and the
     /// benchmark's): the fields of the perf channel's record (`budget_status`), and `fill_left`
     /// (both layers' patches of their prewarm squares not yet built: the background fill a settled
@@ -1090,11 +1110,29 @@ impl StreamNode {
     // `water_mesh_bytes`, `pooled_bytes` (the extras, `extra_bytes`); `places` (`N`), `ring`
     // (`K`), `overrun`; `wanted` (the wanted square's patches: the drawn set) and `wanted_side_m`;
     // per layer `{terrain,water}_drawn`, `_built`, `_kept` (built, not drawn) and
-    // `_releases_total` since the grid was set. `O(1)`.
+    // `_releases_total` since the grid was set. The kept water meshes (`TERRAIN-63`), counted
+    // apart from `counted_bytes` (the places' count): `kept_water_mesh_bytes` (`H`),
+    // `kept_water_meshes`, `kept_wanting`, `kept_asked`, `kept_asked_total`,
+    // `kept_dropped_total`, `kept_refused_total`, `kept_mesh_max_bytes` (`W`), and `kept_held`, what
+    // held the requests back in the last frame (bits: 1 the load's hold or the post-load window,
+    // 2 the vegetation, 4 a unit held back, 8 a layer's pending work, 16 held ground, 32 no room in
+    // the install ledger). `O(1)`.
     fn budget_status(&self, out: &mut VarDictionary) {
         out.set("budget_bytes", self.terrain_budget.map_or(-1, |bytes| bytes as i64));
         out.set("counted_bytes", self.counted_bytes() as i64);
         out.set("extra_bytes", self.patch_extra_bytes() as i64);
+        out.set("kept_water_mesh_bytes", self.kept_bytes as i64);
+        out.set("kept_water_meshes", self.kept.kept_count() as i64);
+        out.set("kept_wanting", self.kept.wanting_count() as i64);
+        out.set("kept_asked", self.kept.asked_count() as i64);
+        let [asked, dropped, refused] = self.kept.totals();
+        out.set("kept_asked_total", asked as i64);
+        out.set("kept_dropped_total", dropped as i64);
+        out.set("kept_refused_total", refused as i64);
+        out.set("kept_held", i64::from(self.kept_held));
+        if let Some(grid) = self.terrain.grid() {
+            out.set("kept_mesh_max_bytes", kept_mesh_bytes_max(&grid) as i64);
+        }
         if let Some(grid) = self.terrain.grid() {
             let [height, cover, depth] = place_kinds(&grid);
             let [terrain_place, water_place] = place_bytes(&grid);
@@ -1246,6 +1284,8 @@ impl StreamNode {
     pub fn water_patch_state(&mut self, key: Vector2i, state: i64) {
         if let Some(state) = WaterState::from_code(state) {
             self.backdrop_layer.set_water_state([key.x, key.y], state);
+            // A hidden patch's report also ends its kept request (`TERRAIN-63`).
+            self.kept.report([key.x, key.y], state);
         }
     }
 
@@ -1270,6 +1310,8 @@ impl StreamNode {
         self.water_scripts = Some(water);
         // Nothing of the water is known: each resident patch waits for its water's show.
         self.backdrop_layer.forget_all_water();
+        self.kept.reset(self.terrain.grid());
+        self.kept_bytes = 0;
         self.update_holds_on();
     }
 
@@ -1280,6 +1322,7 @@ impl StreamNode {
         self.water.take_changes().for_each(drop);
         self.water.take_generations().for_each(drop);
         self.backdrop_layer.forget_water([key.x, key.y]);
+        self.kept.forget([key.x, key.y]);
     }
 
     /// Whether the terrain patches have work a settled view waits for: wanted patches not
@@ -2028,15 +2071,19 @@ impl StreamNode {
             self.releases_total[1] += self.water_work.releases as u64;
             // What the backdrop's holds read of the water (`TERRAIN-58`): its answers first, then
             // its shows and hides, then its releases. `O(changes)`.
+            // The kept meshes' book (`TERRAIN-63`) reads the same events.
             for (key, state) in water_answers.drain(..) {
                 self.backdrop_layer.set_water_state(key, state);
+                self.kept.answer(key, state);
             }
             for (key, shown) in self.water.take_changes() {
                 self.backdrop_layer.set_water_shown(key, shown, None);
+                self.kept.set_shown(key, shown);
             }
             self.water.take_generations().for_each(drop);
             for key in self.water.take_released() {
                 self.backdrop_layer.forget_water(key);
+                self.kept.forget(key);
             }
         }
         water_answers.clear();
@@ -2046,6 +2093,7 @@ impl StreamNode {
             self.releases_total[0] += self.terrain_work.releases as u64;
         }
         self.follow_terrain();
+        self.kept_frame(vegetation_waits, preload || window);
         // The window closes when the patches first settle with residents, or after
         // `POST_LOAD_WINDOW_S` of frames outside the load's hold (a view never let settle).
         if window {
@@ -2069,6 +2117,84 @@ impl StreamNode {
                 0.0
             };
         vegetation_joins
+    }
+
+    // The kept water meshes' frame (`TERRAIN-63`), after the patch units and their followers: kept
+    // meshes dropped while the counted bytes and they pass the target, then requests, only in a
+    // frame of the background: the load's hold and the post-load window over (`own_budget`: the
+    // frame ran on the preload's or the window's budget), nothing either layer's view waits for
+    // (no hole, hide or level change, no held ground, no unit held back), no vegetation patch
+    // waited for, and room in the frame's install ledger for a kept apply. `O(1)` for the
+    // conditions, then `KeptMeshes::frame`'s bound; a drop's backdrop bits `O(1)` each.
+    fn kept_frame(&mut self, vegetation_waits: bool, own_budget: bool) {
+        if self.water_scripts.is_none() {
+            return;
+        }
+        let reserve = with_ledger(self.ledger_frame, |ledger| ledger.reserve_us());
+        // What holds the requests back this frame, a bit a condition (the status's `kept_held`).
+        let held = [
+            own_budget || self.load_settling,
+            vegetation_waits,
+            self.patch_holes_deferred
+                || self.terrain_work.deferred > 0
+                || self.water_work.deferred > 0,
+            self.terrain.has_pending_work() || self.water.has_pending_work(),
+            self.backdrop_layer.held_count() > 0,
+            !self.budget.fits(KEPT_APPLY_PRICE_US + reserve),
+        ]
+        .iter()
+        .enumerate()
+        .fold(0u8, |bits, (at, &held)| bits | (u8::from(held) << at));
+        self.kept_held = held;
+        let frame = KeptFrame {
+            budget: self.terrain_budget,
+            counted: self.counted_bytes(),
+            kept_bytes: self.kept_bytes,
+            may_ask: held == 0,
+        };
+        let eye = self.view.map(|view| view.eye);
+        let mut dropped = std::mem::take(&mut self.kept_dropped);
+        dropped.clear();
+        let Some(scripts) = self.water_scripts.as_mut() else {
+            return;
+        };
+        let mut exec = KeptScriptExecutor {
+            scripts,
+            dropped: &mut dropped,
+        };
+        let work = self
+            .kept
+            .frame(eye, frame, &mut self.budget, &self.clock, &mut exec);
+        self.kept_bytes = self.kept_bytes.saturating_sub(work.dropped_bytes);
+        // A dropped patch is hidden and wet without a mesh, as for its ground's hold.
+        for &key in &dropped {
+            self.backdrop_layer.set_water_state(key, WaterState::Empty);
+        }
+        self.kept_dropped = dropped;
+        #[cfg(debug_assertions)]
+        self.check_kept_against_cells();
+    }
+
+    // Debug builds: the kept meshes' book and the backdrop's water bits are fed by one stream of
+    // events and must agree on every built water patch (wet; holding a mesh). `O(patches)`.
+    #[cfg(debug_assertions)]
+    fn check_kept_against_cells(&self) {
+        let Some(grid) = self.terrain.grid() else {
+            return;
+        };
+        for z in 0..grid.rows {
+            for x in 0..grid.cols {
+                let Some((wet, mesh)) = self.kept.water_bits([x, z]) else {
+                    continue;
+                };
+                let (dry, cell_mesh) = self.backdrop_layer.water_bits([x, z]);
+                debug_assert!(
+                    wet != dry && mesh == cell_mesh,
+                    "TERRAIN-63: the kept meshes' book and the backdrop disagree on patch ({x}, {z}): \
+                     wet {wet} mesh {mesh}, backdrop dry {dry} mesh {cell_mesh}"
+                );
+            }
+        }
     }
 
     // The road hydration's units under its own budget a frame, nearest first; the executor hears
@@ -2879,6 +3005,33 @@ impl PatchExecutor for WaterExecutor<'_, '_> {
 
     fn release(&mut self, key: TerrainKey) -> Release {
         self.scripts.release(key)
+    }
+}
+
+// The kept water meshes' executor (`TERRAIN-63`): `water.gd`'s `stream_request_meshes` and
+// `stream_drop_mesh`, which call nothing back; the patches it dropped are kept for the backdrop.
+struct KeptScriptExecutor<'a, 'b> {
+    scripts: &'a mut Gd<Node>,
+    dropped: &'b mut Vec<TerrainKey>,
+}
+
+impl KeptExecutor for KeptScriptExecutor<'_, '_> {
+    fn request(&mut self, keys: &[i32], refused: &mut Vec<i32>) {
+        let keys = PackedInt32Array::from(keys);
+        let answers = self.scripts.call("stream_request_meshes", &[keys.to_variant()]);
+        if let Ok(answers) = answers.try_to::<PackedInt32Array>() {
+            refused.extend_from_slice(answers.as_slice());
+        }
+    }
+
+    // The script answers the bytes freed, or -1 when the patch held no kept mesh.
+    fn drop_mesh(&mut self, key: TerrainKey) -> Option<u64> {
+        let freed = self
+            .scripts
+            .call("stream_drop_mesh", &[Vector2i::new(key[0], key[1]).to_variant()]);
+        let freed = u64::try_from(freed.try_to::<i64>().unwrap_or(-1)).ok()?;
+        self.dropped.push(key);
+        Some(freed)
     }
 }
 

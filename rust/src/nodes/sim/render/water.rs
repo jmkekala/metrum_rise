@@ -656,6 +656,50 @@ mod tests {
         }
     }
 
+    // `TERRAIN-63`: the kept meshes' `W` is the largest mesh the builder gives at the kept step on
+    // the 8 m layout (65 x 65 samples a patch): every cell drawn on its own (wet inside, dry at its
+    // mesh corners), which a fully wet patch's indexed grid never reaches.
+    #[test]
+    fn the_kept_step_s_largest_mesh_is_the_kept_meshes_bound() {
+        use crate::nodes::sim::render::stream::layers::terrain::{PatchGrid, kept_mesh_bytes_max};
+        let grid = PatchGrid { cols: 36, rows: 36, interval: 64, cell: 8.0, world: [18432.0; 2] };
+        let bytes = |mesh: &CachedWaterPatchMesh| {
+            mesh.vertices.len() * 12 + mesh.normals.len() * 12 + mesh.uvs.len() * 8 + mesh.indices.len() * 4
+        };
+        let build = |depth: Vec<f32>| {
+            let wet = depth.iter().filter(|depth| **depth > 0.0).count();
+            let patch = WaterPatchSnapshot {
+                sample_width: 65,
+                sample_height: 65,
+                texture_width: 67,
+                texture_height: 67,
+                world_size_x: 512.0,
+                world_size_z: 512.0,
+                ..test_patch(depth, wet)
+            };
+            let key = WaterPatchMeshCacheKey { lod_step: 8, ..test_key(water_patch_depth_signature(&patch)) };
+            let [mesh] = SimCore::build_water_patch_mesh_cache_entries(vec![WaterPatchMeshBuildInput {
+                key,
+                patch,
+                dropped: Vec::new(),
+            }])
+            .try_into()
+            .expect("one water patch mesh should be built");
+            mesh
+        };
+        let mut corners_dry = vec![1.0; 67 * 67];
+        for z in (0..65).step_by(8) {
+            for x in (0..65).step_by(8) {
+                corners_dry[(z + 1) * 67 + x + 1] = 0.0;
+            }
+        }
+        let largest = build(corners_dry);
+        assert_eq!(largest.stats.cells_total, 64);
+        assert_eq!(largest.stats.emitted_triangles, 128, "every cell drawn on its own");
+        assert_eq!(bytes(&largest) as u64, kept_mesh_bytes_max(&grid));
+        assert!((bytes(&build(vec![1.0; 67 * 67])) as u64) < kept_mesh_bytes_max(&grid));
+    }
+
     #[test]
     fn wet_patch_mesh_emits_indexed_full_grid() {
         let patch = test_patch(vec![1.0; 25], 25);
