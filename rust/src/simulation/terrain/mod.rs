@@ -625,10 +625,10 @@ impl TerrainSystem {
     pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.source_data.replace_from_dense(dense)?;
         // `O(samples)` on the pool, as the replacement itself is `O(samples)`.
-        let highest = {
+        let highest = crate::thread_pools::install(|| {
             use rayon::prelude::*;
             dense.par_iter().copied().reduce(|| f32::NEG_INFINITY, f32::max)
-        };
+        });
         self.source_ceiling = self.source_ceiling.max(highest);
         self.source_generation = self.source_generation.wrapping_add(1);
         self.record_height_reset();
