@@ -23,10 +23,18 @@ releases by hand.
   and the macOS bundle show it; it is never committed. The library jobs get it as
   `METRUM_VERSION`, and saves record it as `save_meta.game_build`. A local build shows and
   records `dev`. The crate version in `Cargo.toml` is not the game version and stays unchanged.
-- Save compatibility is not in the number. A save loads only on an exact `SAVE_VERSION` match,
-  and the release notes say whether saves from the previous release still load
-  (`tools/ci/release_notes.sh`). World definitions of any older format still load
-  (`WORLD_DEFINITION_FORMAT_VERSION` is a maximum), so the notes do not mention them.
+- Save compatibility is not in the number. A save records the format it was written with
+  (`SAVE_VERSION`); the game loads the current format and each older one that
+  `simulation/save/schema.rs` keeps a `PRE_*_SAVE_VERSION` constant for, and refuses a newer
+  or an older one. The release notes derive their line from those constants at the release's
+  commit and the previous release's (`tools/ci/release_notes.sh`): saves still load (an older
+  format converted at load) or will not load.
+- World definitions of every format from 1 to `WORLD_DEFINITION_FORMAT_VERSION` load, so the
+  notes do not mention worlds.
+- Whatever their format number, saves and worlds from before the aligned grid (a 512 m terrain
+  chunk, 2, 4 or 8 m cells, sides in 128 m steps) are refused with the rule they break
+  (`WorldConfig::validate_stored`). No release made such a file (the grid came before the
+  first release), so the notes do not mention it either.
 
 ## Pipeline
 
@@ -111,7 +119,7 @@ An exported game has neither the repository nor raw `res://` files (`TOOLS-15`):
   [rules](asset_editor.md#bundled-packs-and-worlds-after-an-update-tools-17)). The bundle's
   digests are compiled in from `godot/bootstrap/manifest.sha256`: a change to a bundled pack or
   world regenerates it in the same commit, or the gate's manifest test fails and the update
-  would reach no player. The receipt `user://bundled.toml` lies outside `mods/` and `worlds/`, and
+  would reach no player; a changed pack also raises its `version` (`TOOLS-47`). The receipt `user://bundled.toml` lies outside `mods/` and `worlds/`, and
   no staging sibling survives a start, so the smoke test's byte comparison holds.
 - A release bundles no building pack (`TOOLS-32`). The Kenney building pack is test-only under
   `godot/tests/mods/`, which the presets' `tests/*` exclude filter keeps out of every export.
@@ -128,10 +136,23 @@ when:
   (`UI-11`, upstream godot#87626);
 - the first-run packs and worlds match the export job's `bootstrap.sha256` byte for byte, with no
   Git LFS pointer files;
+- the install receipt `user://bundled.toml` names every bundled pack and world as the game's, at
+  the digest of its installed copy, so the manifest compiled into the library matches the
+  exported bundle;
 - `LICENSE.md`, `CREDITS.md` and `THIRD-PARTY-LICENSES.txt` are beside the executable.
 
+Then the update case (`TOOLS-49`) starts the first world once more on a profile made from the
+first passing fresh one as an older release would have left it: the first bundled pack with a
+file changed, one added and one removed, the started world with other bytes, both recorded in a
+receipt at those older digests; and the second pack edited by the player, recorded at an older
+bundled digest. It passes when the game's entries end byte-equal to `bootstrap.sha256`, the
+edited pack is unchanged, and the receipt records the bundle's digests with the edited pack as
+the player's. The script computes a pack's digest with `find`, `sort` and `sha256sum` (the line
+format of `assets/bundled.rs`), so no old release or extra tool is needed.
+
 The smoke jobs check out only `tools/ci`, so a path baked in at compile time cannot resolve. A run
-takes well under a minute per platform. Locally, hide the checkout the same way (for example with
+took well under a minute per platform with the two fresh starts; the update case adds a third
+start of the small `test` world. Locally, hide the checkout the same way (for example with
 `bwrap --tmpfs <checkout>`) and keep Godot on an isolated profile.
 
 Not covered in CI: macOS (no Mac runner smoke test yet), real Windows, GPU rendering, and play
