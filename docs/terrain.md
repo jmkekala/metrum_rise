@@ -22908,6 +22908,67 @@ and drop nothing; a target set at the load's start hands over with nothing left 
 admits; a player's load cancelled while its preload waits for kept meshes returns to the main menu
 with the screen gone. `terrain_preload_test` and `loading_screen_test` pass unchanged.
 
+**A patch's first show draws on its ground's heights (`TERRAIN-66`, 2026-11-26).** The water's
+vertex shader lifts its mesh to `heightmap + depth`, the heightmap being the terrain patch's own
+height texture. A water patch built hidden takes that texture at its build, or the 2 x 2 zero
+fallback when its terrain patch is not built yet, and every hidden build takes the fallback in
+practice: nothing orders the two layers' builds, the water's units run first in `frame_layers` and
+its fill and prewarm build as soon as its own payload lands (after the 60 km load at Whole map all
+12,245 hidden water patches were on the fallback, each with a built terrain patch by then). The
+show (`water.gd` `stream_activate`) only queued a rebind, served in the water's `_process`, which
+runs before the stream node that shows the patch; so the show's frame drew the lake surface near
+0 m, under its own bed, and where the ground started drawing as a patch in that frame the bed
+showed for one frame. The show now binds the texture itself (`bind_patch_height_texture`, `O(1)`)
+and the queue, its per-frame budget and its perf fields are gone; it had no other producer. A
+patch's terrain texture is replaced later in one place, the terrain's commit
+(`_commit_staged_patch_data`: an edit's or a payload's new heights go into the spare texture, which
+becomes current, and the old one becomes the spare the next stage writes into in place); a detail
+step change swaps only the mesh, and a release and rebuild happens only to a hidden patch, whose
+show binds again. Nothing rebound a shown water at a commit, so after an edit under a shown lake
+its surface kept reading the old heights until the patch was hidden and shown, and at the next
+edit's stage it read the staged heights before the terrain committed them. The commit now binds
+the water in the same call. The bed check (`METRUM_STREAM_BED_CHECK=1`) and
+`terrain_backdrop_handover_test` count a wet shown water whose material reads another height
+texture than its ground's as lacking (the material's binding, not the script's record of it), and
+the benchmark's `bed` row carries a fourth figure, the shown waters on another texture, wet or dry.
+
+Measured (untimed, one release library both sides, `dev` `a6ca227dc`'s `water.gd` and `terrain.gd`
+under the round's bed check as the "before";
+a player's load, 120 frames, then the wheel at 12 notches a second, 30 notches, out to the camera's
+maximum of 40,000 m, in, and out again, 60 frames a second, every drawn frame through the bed check;
+"unbound" counts patch-frames of shown waters on another height texture than their ground's):
+
+| world, target, load | hidden on the fallback at the start | first zoom-out, before: beds in view / beds over the map / unbound / shown on the fallback | after | second zoom-out (and the zoom in), both |
+|---|---|---|---|---|
+| 60 km, Whole map, its own view | 12,245 of 13,689 built (6,598 wet) | 223 / 275 / 520 / 12,245 patches, each one frame | 0 / 0 / 0 / 0 | 0 |
+| 60 km, 1,024 MB, its own view | 12,245 of 13,689 (6,598 wet) | 228 / 283 / 516 / 12,245 | 0 / 0 / 0 / 0 | 0 |
+| shipped Kuopio, Whole map, centre | 0 (all 1,296 shown at the load) | 0 | 0 | 0 |
+| shipped Kuopio, Whole map, (-5376, -256) | 360 of 1,296 (291 wet) | 25 / 45 / 52 / 360 | 0 / 0 / 0 / 0 | 0 |
+| shipped Kuopio, Automatic (512 MB), centre | 0 | 0 | 0 | 0 |
+| shipped Kuopio, Automatic (512 MB), (-5376, -256) | 360 (291 wet) | 54 / 54 / 75 / 360 | 0 / 0 / 0 / 0 | 0 |
+
+At most 8-10 beds in view in a frame before (17 unbound); every hidden patch shown in the first
+zoom-out was on the fallback for exactly its show's frame. The rows run the benchmark's committed
+bed check through a scratch zoom sequence (the analysis' legs); they are not part of the stream
+row.
+
+Timing (the shipped Kuopio stream row: turns, pan, zoom, jump, trip at 512 MB, P-cores; one release
+library both sides, `dev` `a6ca227dc`'s scripts against the round's; three C B B C sessions, another
+session building beside them): pooled over the three every phase is level at the median and the
+maximum and the load is level; the second session's second branch run was disturbed from its zooms
+on (every later phase 2-4 times slower, frame mean 5.58 ms against 3.56-3.63 elsewhere). The
+quietest session alone read only `turn_repeat 1s`'s median worse, +0.10 ms (4.15 against 4.05),
+level pooled; in the turns the round runs nothing different (no show, no commit), and the frame
+means there were 3.56 / 3.61 ms against 3.58 / 3.63.
+
+Proof (fresh): `water_kept_mesh_test` part two checks, at the start of the frame after the show
+(before any node processes, so the state the show's frame drew; a headless run draws nothing and
+emits no `frame_post_draw`), that each of the 844 patches built hidden before its zoom-out reads its
+ground's texture: `dev`'s scripts failed it for 812 of 844; and a sculpt under the eye's shown
+patch reads the commit's new texture in the commit's frame: `dev`'s scripts failed it, and so did
+the show's fix alone. Both pass on the round's scripts, as does `terrain_backdrop_handover_test`
+with the widened check (0 beds).
+
 
 ## Implemented Runtime Contract
 
