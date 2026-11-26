@@ -428,7 +428,8 @@ func _parking_command() -> void:
 
 ## Prints the base terrain's memory (`TERRAIN-41` B2): the Terrain memory target and the counted
 ## bytes by kind, the places and keep ring, the wanted square and what is drawn of it, built and
-## kept-hidden patches, the fill still to come, the releases since the load, the last frame's
+## kept-hidden patches, the fill still to come, the kept water meshes (`TERRAIN-63`), the releases
+## since the load, the last frame's
 ## install ledger, and beside them what the target does not count (the mask pages, nodes,
 ## materials, the driver's own) with the engine's memory monitors; then the backdrop's product,
 ## cells and the patches in view by what draws them (`TERRAIN-41` D2).
@@ -465,6 +466,11 @@ func _terrain_command() -> void:
 		"Built: terrain %d (kept hidden %d), water %d (kept hidden %d); fill left %d" % [
 			int(budget.get("terrain_built", 0)), int(budget.get("terrain_kept", 0)),
 			int(budget.get("water_built", 0)), int(budget.get("water_kept", 0)), int(budget.get("fill_left", 0))],
+		# The kept water meshes (`TERRAIN-63`): counted apart, in the room the places leave.
+		"Kept water meshes: %d, %s MB (at most %.1f KB each, beside the counted bytes); %d wanting, %d asked; %d dropped since the load" % [
+			int(budget.get("kept_water_meshes", 0)), mb.call("kept_water_mesh_bytes"),
+			float(budget.get("kept_mesh_max_bytes", 0)) / 1000.0, int(budget.get("kept_wanting", 0)),
+			int(budget.get("kept_asked", 0)), int(budget.get("kept_dropped_total", 0))],
 		"Released since the load: terrain %d, water %d" % [
 			int(budget.get("terrain_releases_total", 0)), int(budget.get("water_releases_total", 0))],
 		"Install ledger last frame: %.2f of %.2f ms" % [float(budget.get("ledger_us", 0.0)) / 1000.0,
