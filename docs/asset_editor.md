@@ -233,6 +233,62 @@ Distinction:
 - Godot runtime is required, because the game renders through Godot.
 - Godot Editor is not required for mod users.
 
+### Bundled packs and worlds after an update (`TOOLS-17`)
+
+Today startup only copies missing entries (above), and deletes the player's untouched copies of
+two replaced worlds (`SUPERSEDED_WORLDS`). The fix decided 2026-11-26 is in two rounds; round
+T17-1 (the Rust planner, `rust/src/assets/bundled.rs`) is done and not yet called by the game;
+round T17-2 wires it into `UserDataBootstrap.run`.
+
+Rule: an entry (a world file `worlds/<name>` or a pack folder `mods/<name>`) is wholly the
+game's or wholly the player's, never merged file by file. The game records the digest of every
+bundled entry it installs; when the bundle changes, the game's untouched copy is replaced and a
+copy the player changed stays theirs and stops updating. Deleting it brings the game's version
+back at the next start.
+
+- **Manifest** `godot/bootstrap/manifest.sha256`, committed and compiled into the library: one
+  `sha256sum` line `<hex>  <worlds|mods>/<name>` per entry the bootstrap seeds (not
+  `.`-prefixed, not `*.import`), sorted by path. A world's digest is the file's SHA-256. A pack's
+  is the SHA-256 of its own `sha256sum` lines (`<hex>  <relative path>\n`, paths with `/`,
+  sorted bytewise) over every regular file the bootstrap copies; symbolic links are not
+  followed. It sits beside `mods/` and `worlds/`, so it is never seeded and the release smoke
+  test's comparison of `mods` and `worlds` does not see it. The Rust test
+  `the_committed_manifest_matches_the_bootstrap_folder` fails when it is stale (and says so
+  plainly when the files are Git LFS pointer stubs); regenerate it with
+  `cargo test --lib assets::bundled::tests::write_bundled_manifest -- --ignored --exact`.
+- **Receipt** `user://bundled.toml`, written atomically after each finished step:
+  `[entries."<path>"]` with `revision` (the bundled digest last reconciled) and `owner`
+  (`game` or `player`).
+- **Plan**: Rust decides from the manifest, the receipt and the installed entries; GDScript
+  copies (through a hidden `.bundled-<name>` sibling, then a rename), removes, trashes and
+  reports each finished step back.
+
+| Receipt vs manifest | Installed copy | Step |
+| --- | --- | --- |
+| same revision | present | nothing, no hashing |
+| any | absent | seed, game's |
+| revision differs, player's | present | keep, record the new revision, no hashing |
+| revision differs, game's | equals the bundle | adopt, game's |
+| revision differs, game's | equals the receipt | replace with the bundled one |
+| revision differs, game's | neither | keep, player's (one debug log line) |
+| not in the receipt | equals the bundle | adopt, game's |
+| not in the receipt, no receipt file | a world with a known shipped digest | replace |
+| not in the receipt, no receipt file | a differing pack | to the system Trash, bundled one installed |
+| not in the receipt | otherwise | keep, player's |
+| any | a symbolic link, or a file where a pack belongs | keep, player's |
+| in the receipt, not in the manifest | game's world equal to the receipt | remove |
+| in the receipt, not in the manifest | a pack, a changed or player's world, or absent | keep, drop from the receipt |
+| no receipt file, not in the manifest | a world with a known shipped digest | remove |
+
+The known shipped digests (the legacy table) are those of every world copy seeded before the
+receipt: the old 18,000 m Kuopio, the old 500 m `test` world and the unreleased 18,432 m Kuopio
+with rivers. An unreadable receipt is reported and taken as an empty one, never as a profile
+from before it, so nothing goes to the Trash. A leftover staging sibling is removed first.
+
+Cost: a start with nothing to do reads the receipt and stats two paths per entry, reading no
+installed file. After an update each changed game-owned entry is hashed once; a player's entry
+is hashed once, when it becomes theirs.
+
 ## Toolchain Requirements
 
 The shipped game and shipped asset editor do not require source code, the Rust toolchain, or a separate Godot installation.
