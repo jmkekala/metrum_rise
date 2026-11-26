@@ -52,8 +52,12 @@ map before the player chooses content.
 Current deterministic rules:
 
 - normal launch routes to `MainMenu.tscn`
-- startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then copies missing
-  bundled starter entries from `res://bootstrap/worlds/` and `res://bootstrap/mods/`
+- startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then installs the
+  bundled worlds and packs from `res://bootstrap/worlds/` and `res://bootstrap/mods/`: missing
+  ones are copied, the game's untouched older copies are replaced after an update, and a copy
+  the player changed stays theirs (`TOOLS-17`,
+  [rules](asset_editor.md#bundled-packs-and-worlds-after-an-update-tools-17)); the development
+  `kenney` pack is copied only when missing
 - when `user://settings.cfg` is missing, startup seeds default general UI/runtime settings
 - when `user://active_packs.cfg` is missing, startup seeds it with the bundled `parking` pack
   enabled (the game bundles no building pack, `TOOLS-32`); a saved empty enabled-pack list

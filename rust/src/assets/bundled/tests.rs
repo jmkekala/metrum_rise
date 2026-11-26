@@ -61,32 +61,29 @@ impl Fixture {
         assert!(plan.problems.is_empty(), "{:?}", plan.problems);
         plan
     }
-    // What GDScript does in round T17-2: each step's file work, then `record`.
+    // What `UserDataBootstrap` does: each step's bundle side (the Trash, the copy into
+    // staging), then `commit`; once all were tried, one `record` of those that succeeded.
     fn apply(&self, plan: &Plan) {
         let profile = self.profile();
         for action in &plan.actions {
-            let installed = profile.join(&action.path);
-            let staging = profile.join(action.staging());
-            match action.operation {
-                Operation::RemoveStaging => remove(&staging),
-                Operation::Seed | Operation::Replace | Operation::TrashAndReplace => {
-                    copy(&self.0.join("bundle").join(&action.path), &staging);
-                    if action.operation == Operation::Replace {
-                        remove(&installed);
-                    } else if action.operation == Operation::TrashAndReplace {
-                        fs::create_dir_all(self.0.join("trash")).unwrap();
-                        let name = installed.file_name().unwrap();
-                        fs::rename(&installed, self.0.join("trash").join(name)).unwrap();
-                    }
-                    fs::rename(&staging, &installed).unwrap();
-                }
-                Operation::Remove => {
-                    assert!(!action.is_pack(), "packs are never removed");
-                    remove(&installed);
-                }
-                Operation::Adopt | Operation::KeepPlayers | Operation::Forget => {}
-            }
-            record(&profile, action).unwrap();
+            self.bundle_side(action);
+            commit(&profile, action).unwrap();
+        }
+        record(&profile, &plan.actions).unwrap();
+    }
+    fn bundle_side(&self, action: &Action) {
+        let installed = self.profile().join(&action.path);
+        if action.operation == Operation::TrashAndReplace {
+            fs::create_dir_all(self.0.join("trash")).unwrap();
+            let name = installed.file_name().unwrap();
+            fs::rename(&installed, self.0.join("trash").join(name)).unwrap();
+        }
+        if matches!(
+            action.operation,
+            Operation::Seed | Operation::Replace | Operation::TrashAndReplace
+        ) {
+            let staging = self.profile().join(action.staging());
+            copy(&self.0.join("bundle").join(&action.path), &staging);
         }
     }
     // Install the bundle into the profile as a fresh start would.
@@ -102,14 +99,6 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn remove(path: &Path) {
-    if path.is_dir() && !path.is_symlink() {
-        fs::remove_dir_all(path).unwrap();
-    } else {
-        fs::remove_file(path).unwrap();
     }
 }
 
@@ -500,6 +489,136 @@ fn a_profile_without_receipt_keeps_changed_legacy_worlds_and_adopts_current_copi
 }
 
 #[test]
+fn a_first_start_without_receipt_survives_a_crash_and_leaves_a_receipt_however_it_ends() {
+    let fx = Fixture::new();
+    fx.bundle_v1();
+    fx.write("bundle/mods/other/pack.toml", "other v1");
+    fx.write("profile/mods/other/pack.toml", "other v0");
+    fx.write("profile/mods/pack/pack.toml", "pack v0");
+    let (plan, _) = fx.plan_counted(&[]);
+    assert_eq!(
+        &ops(&plan)[..2],
+        [
+            ("mods/other", Operation::TrashAndReplace),
+            ("mods/pack", Operation::TrashAndReplace),
+        ]
+    );
+    // A crash after the first step's file work, before the start's one record.
+    fx.bundle_side(&plan.actions[0]);
+    commit(&fx.profile(), &plan.actions[0]).unwrap();
+    assert!(!fx.exists("profile/bundled.toml"));
+    // Still a profile from before the receipt: the done pack is adopted, the other still trashed.
+    let (plan, _) = fx.plan_counted(&[]);
+    assert!(ops(&plan).contains(&("mods/pack", Operation::TrashAndReplace)));
+    assert!(ops(&plan).contains(&("mods/other", Operation::Adopt)));
+    // A start where every step failed still writes the receipt, so the legacy rules end: the
+    // stale pack it could not trash is the player's from then on, never trashed later.
+    record(&fx.profile(), &[]).unwrap();
+    assert!(fx.receipt().is_empty());
+    let (plan, _) = fx.plan_counted(&[]);
+    assert!(ops(&plan).contains(&("mods/pack", Operation::KeepPlayers)));
+    assert!(ops(&plan).contains(&("mods/other", Operation::Adopt)));
+}
+
+#[test]
+fn commit_replaces_through_the_retired_sibling_and_refuses_what_it_must_not_touch() {
+    let fx = Fixture::new();
+    fx.bundle_v1();
+    fx.install();
+    fx.write("bundle/mods/pack/pack.toml", "pack v2");
+    let plan = fx.plan();
+    assert_eq!(ops(&plan), [("mods/pack", Operation::Replace)]);
+    let replace = &plan.actions[0];
+    // A crash between moving the old copy aside and renaming the staged one into place.
+    fx.bundle_side(replace);
+    fs::rename(
+        fx.profile().join("mods/pack"),
+        fx.profile().join(replace.retired()),
+    )
+    .unwrap();
+    let plan = fx.plan();
+    assert_eq!(
+        ops(&plan),
+        [
+            ("mods/pack", Operation::RemoveStaging),
+            ("mods/pack", Operation::Seed),
+        ]
+    );
+    fx.apply(&plan);
+    assert_eq!(fx.read("profile/mods/pack/pack.toml"), "pack v2");
+    assert!(!fx.exists("profile/mods/.bundled-pack"));
+    assert!(!fx.exists("profile/mods/.bundled-pack.replaced"));
+    assert!(fx.plan().actions.is_empty());
+
+    let profile = fx.profile();
+    let step = |path: &str, operation| Action {
+        path: path.into(),
+        operation,
+        revision: sha("x"),
+    };
+    // Nothing staged; an installed entry never overwritten by a seed; a pack never removed;
+    // a path outside the bundle folders never touched.
+    assert!(commit(&profile, &step("worlds/city.sqlite", Operation::Seed)).is_err());
+    fx.write("profile/worlds/.bundled-city.sqlite", "staged");
+    assert!(commit(&profile, &step("worlds/city.sqlite", Operation::Seed)).is_err());
+    assert_eq!(fx.read("profile/worlds/city.sqlite"), "city v1");
+    assert!(commit(&profile, &step("mods/pack", Operation::Remove)).is_err());
+    assert!(fx.exists("profile/mods/pack/pack.toml"));
+    fx.write("profile/saves/a.sqlite", "a save");
+    assert!(commit(&profile, &step("saves/a.sqlite", Operation::Remove)).is_err());
+    assert!(
+        commit(
+            &profile,
+            &step("worlds/../saves/a.sqlite", Operation::Remove)
+        )
+        .is_err()
+    );
+    assert!(fx.exists("profile/saves/a.sqlite"));
+    // Receipt-only steps touch nothing, whatever the path.
+    assert!(commit(&profile, &step("saves/a.sqlite", Operation::Forget)).is_ok());
+    // A staging entry that is a symbolic link loses the link, not its target.
+    #[cfg(unix)]
+    {
+        fx.write("elsewhere/kept.txt", "kept");
+        std::os::unix::fs::symlink(fx.0.join("elsewhere"), profile.join("mods/.bundled-pack"))
+            .unwrap();
+        commit(&profile, &step("mods/pack", Operation::RemoveStaging)).unwrap();
+        assert!(!fx.exists("profile/mods/.bundled-pack"));
+        assert_eq!(fx.read("elsewhere/kept.txt"), "kept");
+    }
+}
+
+#[test]
+fn record_writes_only_a_missing_unreadable_or_changed_receipt() {
+    let fx = Fixture::new();
+    let profile = fx.profile();
+    record(&profile, &[]).unwrap();
+    assert!(fx.receipt().is_empty());
+    let revision = sha("x");
+    let adopt = Action {
+        path: "mods/a".into(),
+        operation: Operation::Adopt,
+        revision: revision.clone(),
+    };
+    let written =
+        format!("# by hand\n[entries.\"mods/a\"]\nrevision = \"{revision}\"\nowner = \"game\"\n");
+    fx.write("profile/bundled.toml", &written);
+    // Nothing to do, or the same record again: not rewritten (a normal start writes nothing).
+    record(&profile, &[]).unwrap();
+    record(&profile, std::slice::from_ref(&adopt)).unwrap();
+    assert_eq!(fx.read("profile/bundled.toml"), written);
+    let keep = Action {
+        operation: Operation::KeepPlayers,
+        ..adopt
+    };
+    record(&profile, &[keep]).unwrap();
+    assert_eq!(fx.receipt()["mods/a"].owner, Owner::Player);
+    fx.write("profile/bundled.toml", "[entries\nnot toml");
+    record(&profile, &[]).unwrap();
+    assert!(fx.receipt().is_empty());
+}
+
+#[test]
 fn an_unreadable_receipt_is_reported_and_never_trashes() {
     let fx = Fixture::new();
     fx.bundle_v1();
@@ -592,7 +711,7 @@ fn receipt_keys_outside_the_bundle_folders_are_only_forgotten() {
     let mut action = plan.actions[0].clone();
     action.operation = Operation::Adopt;
     action.revision = digest;
-    assert!(record(&fx.profile(), &action).is_err());
+    assert!(record(&fx.profile(), &[action]).is_err());
 }
 
 #[test]
@@ -605,8 +724,14 @@ fn the_receipt_is_written_atomically_in_a_stable_form() {
         operation,
         revision: revision.clone(),
     };
-    record(&profile, &action("worlds/b.sqlite", Operation::KeepPlayers)).unwrap();
-    record(&profile, &action("mods/a", Operation::Seed)).unwrap();
+    record(
+        &profile,
+        &[
+            action("worlds/b.sqlite", Operation::KeepPlayers),
+            action("mods/a", Operation::Seed),
+        ],
+    )
+    .unwrap();
     let text = fx.read("profile/bundled.toml");
     assert!(text.ends_with(&format!(
         "[entries.\"mods/a\"]\nrevision = \"{revision}\"\nowner = \"game\"\n\n\
@@ -619,14 +744,14 @@ fn the_receipt_is_written_atomically_in_a_stable_form() {
         .collect();
     assert_eq!(names, [RECEIPT]);
     // The staging cleanup leaves the receipt alone; removal drops the record.
-    record(&profile, &action("mods/a", Operation::RemoveStaging)).unwrap();
+    record(&profile, &[action("mods/a", Operation::RemoveStaging)]).unwrap();
     assert_eq!(fx.receipt().len(), 2);
-    record(&profile, &action("mods/a", Operation::Remove)).unwrap();
+    record(&profile, &[action("mods/a", Operation::Remove)]).unwrap();
     assert_eq!(fx.receipt().keys().collect::<Vec<_>>(), ["worlds/b.sqlite"]);
     // A revision that is not a digest is refused.
     let mut bad = action("mods/a", Operation::Adopt);
     bad.revision = "v2".into();
-    assert!(record(&profile, &bad).is_err());
+    assert!(record(&profile, &[bad]).is_err());
     // Operation names round-trip for the bridge.
     for operation in Operation::ALL {
         assert_eq!(Operation::from_name(operation.name()), Some(operation));

@@ -201,8 +201,9 @@ Shipped design:
 
 - Built-in first-party content can remain bundled with the game.
 - V1 canonical mod install location: `user://mods/`
-- Release bootstrap content may be bundled under `res://bootstrap/mods/`; startup copies each
-  missing top-level pack into `user://mods/` and never merges into an existing user pack.
+- Release bootstrap content may be bundled under `res://bootstrap/mods/`; startup installs each
+  pack into `user://mods/` whole and updates only the game's untouched copies, never merging
+  into a pack ([after an update](#bundled-packs-and-worlds-after-an-update-tools-17)).
   Every bundled `.glb` and `.png` imports as `keep` (`TOOLS-15`): export otherwise packs only
   the imported form, and the copy would install `.import` stubs instead of the files. The copy
   skips `.import` sidecars, so an installed pack holds only its files, as in an export.
@@ -235,16 +236,21 @@ Distinction:
 
 ### Bundled packs and worlds after an update (`TOOLS-17`)
 
-Today startup only copies missing entries (above), and deletes the player's untouched copies of
-two replaced worlds (`SUPERSEDED_WORLDS`). The fix decided 2026-11-26 is in two rounds; round
-T17-1 (the Rust planner, `rust/src/assets/bundled.rs`) is done and not yet called by the game;
-round T17-2 wires it into `UserDataBootstrap.run`.
+Done 2026-11-26 (rounds T17-1 and T17-2). At every start `UserDataBootstrap.run`
+(`godot/scripts/core/user_data_bootstrap.gd`) brings the game's bundled packs and worlds from
+`res://bootstrap/` into the profile; the rules live in Rust (`rust/src/assets/bundled.rs`).
+
+The player's rule: a bundled pack or world the player has not changed follows the game's
+updates. Once the player changes it (editing a pack in the asset editor, saving over a world),
+the copy is theirs and stops updating; the game says so only on the debug channel (decision
+D3 (a)). To get the game's version back, delete the pack folder (Options > Mods > Show folder;
+the game refuses to remove a bundled pack itself) or the world file; the next start installs the
+game's current one.
 
 Rule: an entry (a world file `worlds/<name>` or a pack folder `mods/<name>`) is wholly the
 game's or wholly the player's, never merged file by file. The game records the digest of every
 bundled entry it installs; when the bundle changes, the game's untouched copy is replaced and a
-copy the player changed stays theirs and stops updating. Deleting it brings the game's version
-back at the next start.
+copy the player changed stays theirs.
 
 - **Manifest** `godot/bootstrap/manifest.sha256`, committed and compiled into the library: one
   `sha256sum` line `<hex>  <worlds|mods>/<name>` per entry the bootstrap seeds (not
@@ -256,12 +262,34 @@ back at the next start.
   `the_committed_manifest_matches_the_bootstrap_folder` fails when it is stale (and says so
   plainly when the files are Git LFS pointer stubs); regenerate it with
   `cargo test --lib assets::bundled::tests::write_bundled_manifest -- --ignored --exact`.
-- **Receipt** `user://bundled.toml`, written atomically after each finished step:
-  `[entries."<path>"]` with `revision` (the bundled digest last reconciled) and `owner`
-  (`game` or `player`).
-- **Plan**: Rust decides from the manifest, the receipt and the installed entries; GDScript
-  copies (through a hidden `.bundled-<name>` sibling, then a rename), removes, trashes and
-  reports each finished step back.
+- **Receipt** `user://bundled.toml`, outside `mods/` and `worlds/`: `[entries."<path>"]` with
+  `revision` (the bundled digest last reconciled) and `owner` (`game` or `player`). It is
+  written once per start, atomically, after every step was tried, with the steps that
+  succeeded; a start with nothing to do does not write it. A failed step is not recorded and is
+  planned again at the next start.
+- **Steps**: `AssetAuthoringFiles.bundled_plan` returns the plan. For a seed or a replace
+  GDScript copies the bundled entry into the hidden sibling `.bundled-<name>`; for a stale pack
+  from before the receipt it first moves the installed folder to the system Trash
+  (`OS.move_to_trash`). `bundled_commit` then does the profile side in Rust: renames the staged
+  copy into place (a replace first renames the game's old copy to `.bundled-<name>.replaced`
+  and removes it after), removes a dropped world, or removes leftover siblings; it never
+  follows a symbolic link or overwrites an entry. `bundled_record` writes the receipt. Hidden
+  siblings are invisible to the pack scanner, Options > Mods, the asset editor and the world
+  and Load browsers, which all skip `.`-prefixed names, and are removed at the next start when
+  an interrupted step leaves one.
+- **The first finished start writes the receipt**, even when no step succeeded, so the rules for
+  a profile from before the receipt (the legacy table, the Trash) apply once: a pack the player
+  edits afterwards is never taken for a stale one. Recording at the end rather than per step
+  also means a crash during that first start leaves no receipt: every finished step then reads
+  as an adoption or a fresh seed, and the stale packs not yet reached still go to the Trash.
+- **The Trash**: Godot's `OS.move_to_trash` (Linux: `gio trash`, then `kioclient5`,
+  `gvfs-trash`, then the freedesktop Trash folder itself; Windows: the Recycle Bin; macOS: the
+  Finder's Trash). Where it fails, nothing is deleted: the stale pack stays, a warning names it,
+  the step is not recorded, and the next start, now with a receipt, keeps the copy as the
+  player's. Verified on Linux headless with an isolated profile (the folder landed in that
+  profile's own `Trash`); Windows and macOS are not tried.
+- The development `kenney` pack (`res://tests/mods`, not in exports) is still only copied when
+  missing (decision D7 (a)).
 
 | Receipt vs manifest | Installed copy | Step |
 | --- | --- | --- |
@@ -280,14 +308,23 @@ back at the next start.
 | in the receipt, not in the manifest | a pack, a changed or player's world, or absent | keep, drop from the receipt |
 | no receipt file, not in the manifest | a world with a known shipped digest | remove |
 
-The known shipped digests (the legacy table) are those of every world copy seeded before the
-receipt: the old 18,000 m Kuopio, the old 500 m `test` world and the unreleased 18,432 m Kuopio
-with rivers. An unreadable receipt is reported and taken as an empty one, never as a profile
-from before it, so nothing goes to the Trash. A leftover staging sibling is removed first.
+The known shipped digests (the legacy table, which replaced the bootstrap's
+`SUPERSEDED_WORLDS`) are those of every world copy seeded before the receipt: the old 18,000 m
+Kuopio, the old 500 m `test` world and the unreleased 18,432 m Kuopio with rivers. An unreadable
+receipt is reported and taken as an empty one, never as a profile from before it, so nothing
+goes to the Trash. A leftover staging or retired sibling is removed first. The plan's problems
+(an unreadable receipt or installed copy) and each step that changed something are logged on
+the `events` debug channel (`bundled: ...`).
 
-Cost: a start with nothing to do reads the receipt and stats two paths per entry, reading no
-installed file. After an update each changed game-owned entry is hashed once; a player's entry
-is hashed once, when it becomes theirs.
+Cost: a start with nothing to do reads the receipt and stats three paths per entry (the entry,
+its staging and its retired sibling), reading no installed file, copying nothing and writing
+nothing: under 1 ms with the debug library. After an update each changed game-owned entry is
+hashed once and copied once; a player's entry is hashed once, when it becomes theirs. The
+bootstrap runs on the main thread before the menu; measured once (2026-11-26, debug library,
+isolated profile, warm page cache), the start that replaced the 22 MB Kuopio took 153 ms
+(137 ms of it hashing the installed copy), a fresh install 22 ms and a profile from before the
+receipt with a stale `parking` pack 174 ms (every entry hashed once). A release library hashes
+faster.
 
 ## Toolchain Requirements
 

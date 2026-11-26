@@ -6,6 +6,7 @@
 use crate::assets::PackManifest;
 use crate::assets::archive;
 use crate::assets::authoring::{colours, files};
+use crate::assets::bundled::{self, Action, Operation};
 use crate::assets::pack::{PackSettings, bump_version, compare_versions};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use godot::builtin::vdict;
@@ -400,6 +401,51 @@ impl AssetAuthoringFiles {
         archive::sweep(&native_path(mods));
     }
 
+    /// The start-up plan for the game's bundled packs and worlds (`TOOLS-17`) in the profile at
+    /// `profile` (a `user://` path), against the manifest compiled into the library. Returns
+    /// `actions` (dictionaries with `path`, `operation`, `revision`, `staging` and `pack`, in
+    /// execution order) and `problems` (lines to log), or `error` for a malformed manifest.
+    /// Writes nothing; a start with nothing to do hashes nothing. Main thread at start-up.
+    #[func]
+    pub fn bundled_plan(profile: GString) -> VarDictionary {
+        bundled_plan_dictionary(bundled::MANIFEST, profile)
+    }
+
+    /// As `bundled_plan`, against `manifest` text instead of the game's. For the bootstrap
+    /// test's fake bundle only; the game never calls it.
+    #[func]
+    pub fn bundled_plan_for_test(manifest: GString, profile: GString) -> VarDictionary {
+        bundled_plan_dictionary(&manifest.to_string(), profile)
+    }
+
+    /// The profile side of one planned step, after the caller staged the bundled copy (and, for
+    /// `trash_and_replace`, moved the installed entry to the Trash): renames and removals
+    /// inside `profile`. Returns an error message, empty on success.
+    #[func]
+    pub fn bundled_commit(profile: GString, action: VarDictionary) -> GString {
+        bundled_action(&action)
+            .and_then(|action| bundled::commit(&native_path(profile), &action))
+            .err()
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Record the steps of this start that succeeded in the profile's receipt, in one atomic
+    /// write; writes a receipt that is missing even when `done` is empty. Returns an error
+    /// message, empty on success.
+    #[func]
+    pub fn bundled_record(profile: GString, done: Array<VarDictionary>) -> GString {
+        done.iter_shared()
+            .map(|action| bundled_action(&action))
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|done| bundled::record(&native_path(profile), &done))
+            .err()
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
     /// Remove a staged import without installing it.
     #[func]
     pub fn discard_import(mods: GString, staging: GString) -> GString {
@@ -636,6 +682,46 @@ fn pack_dictionary(manifest: &PackManifest) -> VarDictionary {
         "license": manifest.license.as_str(),
         "description": manifest.description.as_deref().unwrap_or_default(),
     }
+}
+
+fn bundled_plan_dictionary(manifest: &str, profile: GString) -> VarDictionary {
+    let plan = match bundled::plan(manifest, &native_path(profile)) {
+        Ok(plan) => plan,
+        Err(error) => return vdict! { "error": error },
+    };
+    let mut actions = Array::<VarDictionary>::new();
+    for action in &plan.actions {
+        actions.push(&vdict! {
+            "path": action.path.as_str(),
+            "operation": action.operation.name(),
+            "revision": action.revision.as_str(),
+            "staging": action.staging(),
+            "pack": action.is_pack(),
+        });
+    }
+    let problems = plan
+        .problems
+        .iter()
+        .map(GString::from)
+        .collect::<PackedStringArray>();
+    vdict! { "actions": actions, "problems": problems }
+}
+
+// A planned step handed back by the bootstrap.
+fn bundled_action(action: &VarDictionary) -> Result<Action, String> {
+    let text = |key: &str| {
+        action
+            .get(key)
+            .and_then(|v| v.try_to::<GString>().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let name = text("operation");
+    Ok(Action {
+        path: text("path"),
+        operation: Operation::from_name(&name).ok_or(format!("unknown step '{name}'"))?,
+        revision: text("revision"),
+    })
 }
 
 fn native_path(path: GString) -> PathBuf {

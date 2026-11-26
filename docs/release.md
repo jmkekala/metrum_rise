@@ -105,7 +105,14 @@ An exported game has neither the repository nor raw `res://` files (`TOOLS-15`):
 - A file that scripts read raw (`GLTFDocument.append_from_file`, `Image.load_from_file`,
   `FileAccess`) imports as `keep`; a non-resource file it needs (the walker `.bin` buffers) goes
   in the presets' include filter.
-- First-run setup copies `res://bootstrap/` without `.import` sidecars.
+- Start-up setup installs `res://bootstrap/` without `.import` sidecars and brings a changed
+  bundled pack or world to a profile holding the game's untouched older copy; a copy the player
+  changed stays theirs (`TOOLS-17`,
+  [rules](asset_editor.md#bundled-packs-and-worlds-after-an-update-tools-17)). The bundle's
+  digests are compiled in from `godot/bootstrap/manifest.sha256`: a change to a bundled pack or
+  world regenerates it in the same commit, or the gate's manifest test fails and the update
+  would reach no player. The receipt `user://bundled.toml` lies outside `mods/` and `worlds/`, and
+  no staging sibling survives a start, so the smoke test's byte comparison holds.
 - A release bundles no building pack (`TOOLS-32`). The Kenney building pack is test-only under
   `godot/tests/mods/`, which the presets' `tests/*` exclude filter keeps out of every export.
 

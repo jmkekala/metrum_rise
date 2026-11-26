@@ -15,18 +15,31 @@
 //! - The installed entries themselves, hashed only when the receipt cannot answer.
 //!
 //! Rust decides and never reads `res://` (an export's bundle is inside the `.pck`); the caller
-//! does the file work. Call sequence (wired in round T17-2, `UserDataBootstrap.run`):
+//! copies out of the bundle and Rust does the rest of the file work in the profile. The call
+//! sequence (`UserDataBootstrap.run`, through the `AssetAuthoringFiles.bundled_*` bridge):
 //! 1. `plan(MANIFEST, profile)` returns the [`Action`]s in order, plus problems to log.
-//! 2. For each action GDScript does its [`Operation`]'s file step, copying from
-//!    `res://bootstrap/<path>` into the staging sibling [`Action::staging`] and renaming it to
-//!    `user://<path>`, so an interrupted copy is never taken for an installed entry.
-//! 3. After each step that succeeded, `record(profile, &action)` writes the receipt atomically. A
-//!    failed step is not recorded, so the next start plans it again.
+//! 2. For each action GDScript does the bundle side: for a seed or a replace it copies
+//!    `res://bootstrap/<path>` into the staging sibling [`Action::staging`]; for a
+//!    trash-and-replace it first moves the installed entry to the system Trash. Then
+//!    [`commit`] does the profile side: renames the staged copy into `user://<path>` and
+//!    removes what the step removes, so an interrupted copy is never taken for an installed
+//!    entry. A step that fails anywhere is skipped.
+//! 3. Once every step was tried, [`record`] writes the receipt once, atomically, with the steps
+//!    that succeeded. A failed step is not recorded and is planned again at the next start.
 //!
-//! Cost: a start with nothing to do reads the receipt and stats two paths per manifest entry,
-//! O(entries), and reads no installed file's content. After an update, each entry whose
-//! revision changed and whose owner is the game is hashed once, O(bytes of changed entries)
-//! plus O(F log F) path ordering per pack. A player's entry is hashed once, when it becomes
+//! Recording at the end, not after each step: every finished file step leaves its entry equal
+//! to the bundle (planned as an adoption) or absent (seeded again), so a crash before the
+//! record loses nothing and repeats only hashing. And a profile from before the receipt stays
+//! one until a start finishes, so a crash part way through its first start still trashes the
+//! stale packs it had not reached, instead of keeping them as the player's. [`record`] writes
+//! the receipt even when no step succeeded, so the legacy rules apply to one finished start
+//! only: a pack the player edits later is never taken for a stale one.
+//!
+//! Cost: a start with nothing to do reads the receipt and stats three paths per manifest entry
+//! (the entry, its staging and its retired sibling), O(entries), reads no installed file's
+//! content and writes nothing. After an update, each entry whose revision changed and whose
+//! owner is the game is hashed once, O(bytes of changed entries) plus O(F log F) path ordering
+//! per pack, and copied once by the caller. A player's entry is hashed once, when it becomes
 //! theirs, and never again.
 
 use super::archive::{self, hex, sha256};
@@ -42,8 +55,11 @@ use std::path::Path;
 pub(crate) const MANIFEST: &str = include_str!("../../../godot/bootstrap/manifest.sha256");
 /// The install receipt's file name in the profile root (`user://bundled.toml`).
 pub(crate) const RECEIPT: &str = "bundled.toml";
-/// Prefix of an entry's staging sibling. The leading dot keeps the pack scanner away from it.
+/// Prefix of an entry's staging sibling. The leading dot keeps the pack scanner and the world
+/// browser away from it.
 pub(crate) const STAGING_PREFIX: &str = ".bundled-";
+// Suffix of the retired sibling a replace renames the game's old copy to before removing it.
+const RETIRED_SUFFIX: &str = ".replaced";
 
 // The receipt a profile from before the receipt is taken to hold: per name, every world the
 // bootstrap seeded under it, by SHA-256 (verified from git). An installed copy with one of these
@@ -97,15 +113,18 @@ struct ReceiptFile {
 /// copy) and to the profile root (the installed copy and its staging sibling).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Operation {
-    /// Remove the staging sibling an interrupted copy left. The receipt does not change.
+    /// Remove the staging or retired sibling an interrupted step left. The receipt does not
+    /// change.
     RemoveStaging,
     /// The entry is absent: copy the bundled one in. Records the game's revision.
     Seed,
     /// The installed copy is the game's untouched older one: copy the bundled one into staging,
-    /// delete the installed copy, rename staging into place. Records the game's revision.
+    /// rename the installed copy to its retired sibling, rename staging into place and remove
+    /// the retired copy. Records the game's revision.
     Replace,
-    /// A pack from before the receipt that differs from the bundle (decision D2 (a)): as
-    /// [`Operation::Replace`], but the installed folder goes to the system Trash.
+    /// A pack from before the receipt that differs from the bundle (decision D2 (a)): the
+    /// installed folder goes to the system Trash, then the bundled one is staged and renamed
+    /// into place. Without a Trash nothing is removed and the step fails.
     TrashAndReplace,
     /// The game's untouched copy of a world it no longer bundles: delete it. Drops the record.
     Remove,
@@ -196,6 +215,11 @@ impl Action {
     pub(crate) fn staging(&self) -> String {
         let (folder, name) = self.path.split_once('/').unwrap_or(("", &self.path));
         format!("{folder}/{STAGING_PREFIX}{name}")
+    }
+
+    // The game's old copy during a replace: `mods/.bundled-<name>.replaced`.
+    fn retired(&self) -> String {
+        format!("{}{RETIRED_SUFFIX}", self.staging())
     }
 }
 
@@ -309,7 +333,9 @@ impl Planner<'_, '_> {
             operation: Operation::RemoveStaging,
             revision: String::new(),
         };
-        if present(&self.user_dir.join(staging.staging())) {
+        if present(&self.user_dir.join(staging.staging()))
+            || present(&self.user_dir.join(staging.retired()))
+        {
             self.plan.actions.push(staging);
         }
         if !present(&self.user_dir.join(path)) {
@@ -484,22 +510,50 @@ pub(crate) fn read_receipt(user_dir: &Path) -> Result<Option<BTreeMap<String, Re
         .map_err(|e| format!("{RECEIPT}: {e}"))
 }
 
-/// Record a finished `action` in the receipt at `user_dir`, written atomically (readers see the
-/// old or the new receipt). An unreadable receipt is replaced by one holding this entry. Refuses
-/// to set a record for a path that is not `worlds/<name>` or `mods/<name>` or a revision that
-/// is not a SHA-256.
-/// O(receipt entries).
-pub(crate) fn record(user_dir: &Path, action: &Action) -> Result<(), String> {
-    let Some(owner) = action.operation.change() else {
-        return Ok(());
+/// Record the finished `actions` of one start in the receipt at `user_dir`, in one atomic
+/// write (readers see the old or the new receipt). Writes when the receipt was missing (so a
+/// profile from before it gets one even when no step succeeded), unreadable (replaced by one
+/// holding these entries) or changed; a start with nothing done writes nothing. An action that
+/// sets a record for a path that is not `worlds/<name>` or `mods/<name>`, or with a revision
+/// that is not a SHA-256, is refused; the others are still recorded and the first refusal is
+/// returned. O(receipt entries + actions).
+pub(crate) fn record(user_dir: &Path, actions: &[Action]) -> Result<(), String> {
+    let (mut entries, mut changed) = match read_receipt(user_dir) {
+        Ok(Some(entries)) => (entries, false),
+        Ok(None) | Err(_) => (BTreeMap::new(), true),
     };
-    let mut entries = read_receipt(user_dir).ok().flatten().unwrap_or_default();
-    match owner {
-        // Any key may be dropped, a malformed one included; only entries are set.
-        Some(_) if !entry_path(&action.path) => {
-            return Err(format!("'{}' is not a bundled entry", action.path));
+    let mut refused = None;
+    for action in actions {
+        match apply_record(&mut entries, action) {
+            Ok(change) => changed |= change,
+            Err(e) => {
+                refused.get_or_insert(e);
+            }
         }
-        Some(owner) => {
+    }
+    if changed {
+        let body = toml::to_string(&ReceiptFile { entries }).map_err(|e| e.to_string())?;
+        let text = format!(
+            "# The bundled packs and worlds this profile holds, as the game last reconciled them.\n\
+             # Written by the game at start-up (TOOLS-17). Delete an entry's pack folder or world\n\
+             # file to get the game's version back at the next start.\n\n{body}"
+        );
+        files::write_atomic(&user_dir.join(RECEIPT), text.as_bytes())
+            .map_err(|e| format!("{RECEIPT} was not written: {e}"))?;
+    }
+    refused.map_or(Ok(()), Err)
+}
+
+// One action's receipt change; true when it changed `entries`.
+fn apply_record(entries: &mut BTreeMap<String, Record>, action: &Action) -> Result<bool, String> {
+    match action.operation.change() {
+        None => Ok(false),
+        // Any key may be dropped, a malformed one included; only entries are set.
+        Some(None) => Ok(entries.remove(&action.path).is_some()),
+        Some(Some(_)) if !entry_path(&action.path) => {
+            Err(format!("'{}' is not a bundled entry", action.path))
+        }
+        Some(Some(owner)) => {
             let digest = action.revision.as_bytes();
             if digest.len() != 64
                 || !digest
@@ -512,20 +566,64 @@ pub(crate) fn record(user_dir: &Path, action: &Action) -> Result<(), String> {
                 revision: action.revision.clone(),
                 owner,
             };
-            entries.insert(action.path.clone(), record);
-        }
-        None => {
-            entries.remove(&action.path);
+            Ok(entries.insert(action.path.clone(), record.clone()) != Some(record))
         }
     }
-    let body = toml::to_string(&ReceiptFile { entries }).map_err(|e| e.to_string())?;
-    let text = format!(
-        "# The bundled packs and worlds this profile holds, as the game last reconciled them.\n\
-         # Written by the game at start-up (TOOLS-17). Delete an entry's pack folder or world\n\
-         # file to get the game's version back at the next start.\n\n{body}"
-    );
-    files::write_atomic(&user_dir.join(RECEIPT), text.as_bytes())
-        .map_err(|e| format!("{RECEIPT} was not written: {e}"))
+}
+
+/// The profile side of `action`'s file step, after the caller did the bundle side (see the
+/// module header): a seed, replace or trash-and-replace renames the staged copy into place, a
+/// replace first renaming the game's old copy to its retired sibling and removing it after;
+/// a removal deletes the world; a staging cleanup deletes the staging and retired siblings.
+/// Receipt-only operations touch nothing. Never follows a symbolic link, never overwrites an
+/// entry and refuses a path that is not a bundled entry. On an error the entry is left as the
+/// next plan handles it: an interrupted rename or removal leaves a sibling the next start
+/// cleans. O(files of the removed entries).
+pub(crate) fn commit(user_dir: &Path, action: &Action) -> Result<(), String> {
+    let installed = user_dir.join(&action.path);
+    let staging = user_dir.join(action.staging());
+    let retired = user_dir.join(action.retired());
+    match action.operation {
+        Operation::Adopt | Operation::KeepPlayers | Operation::Forget => Ok(()),
+        _ if !entry_path(&action.path) => Err(format!("'{}' is not a bundled entry", action.path)),
+        Operation::RemoveStaging => {
+            remove_entry(&staging)?;
+            remove_entry(&retired)
+        }
+        Operation::Seed | Operation::Replace | Operation::TrashAndReplace => {
+            if !present(&staging) {
+                return Err(format!("{}: nothing was staged", action.path));
+            }
+            if action.operation == Operation::Replace && present(&installed) {
+                fs::rename(&installed, &retired)
+                    .map_err(|e| format!("{}: the old copy was not moved: {e}", action.path))?;
+            }
+            if present(&installed) {
+                return Err(format!(
+                    "{} still exists; nothing was replaced",
+                    action.path
+                ));
+            }
+            fs::rename(&staging, &installed)
+                .map_err(|e| format!("{}: the staged copy was not installed: {e}", action.path))?;
+            remove_entry(&retired)
+        }
+        Operation::Remove if action.is_pack() => {
+            Err(format!("{}: a pack is never removed", action.path))
+        }
+        Operation::Remove => remove_entry(&installed),
+    }
+}
+
+// Delete a file, a symbolic link (not its target) or a folder; an absent entry is fine.
+fn remove_entry(path: &Path) -> Result<(), String> {
+    let result = match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => Err(e),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+    };
+    result.map_err(|e| format!("{} was not removed: {e}", path.display()))
 }
 
 #[cfg(test)]
