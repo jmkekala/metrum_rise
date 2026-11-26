@@ -117,6 +117,7 @@ fn run(
             counted,
             kept_bytes: held,
             may_ask: true,
+            preload: false,
         };
         let work = book.frame(Some(EYE), frame, &mut ledger, &FixedClock, water);
         held -= work.dropped_bytes;
@@ -223,6 +224,7 @@ fn at_a_target_with_room_for_k_meshes_exactly_the_nearest_k_are_kept() {
                 counted,
                 kept_bytes: held,
                 may_ask: true,
+                preload: false,
             };
             book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
             let pace = rng.next(5);
@@ -259,6 +261,7 @@ fn without_a_target_every_wanting_patch_is_asked_for_a_few_at_a_time() {
         counted: 0,
         kept_bytes: 0,
         may_ask: true,
+        preload: false,
     };
     let work = book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
     assert_eq!(work.asked, ASK_PER_FRAME);
@@ -290,6 +293,7 @@ fn over_the_target_the_farthest_kept_meshes_go_first_and_a_still_camera_then_doe
         counted: grown,
         kept_bytes: first.held,
         may_ask: true,
+        preload: false,
     };
     let work = book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
     assert!(grown + first.held - work.dropped_bytes <= budget);
@@ -315,6 +319,7 @@ fn over_the_target_the_farthest_kept_meshes_go_first_and_a_still_camera_then_doe
             counted: grown,
             kept_bytes: held,
             may_ask: true,
+            preload: false,
         };
         let work = book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
         assert_eq!(work, KeptWork::default());
@@ -331,6 +336,7 @@ fn a_show_a_report_a_release_and_a_refusal_end_a_request() {
         counted: 0,
         kept_bytes: 0,
         may_ask: true,
+        preload: false,
     };
     let mut ledger = FrameBudget::new(STREAM_BUDGET_US);
     book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
@@ -395,6 +401,7 @@ fn nothing_is_asked_while_the_view_waits() {
         counted: 0,
         kept_bytes: 0,
         may_ask: false,
+        preload: false,
     };
     for _ in 0..10 {
         assert_eq!(
@@ -403,4 +410,72 @@ fn nothing_is_asked_while_the_view_waits() {
         );
     }
     assert_eq!(water.calls, 0);
+}
+
+#[test]
+fn the_preload_asks_more_a_frame_and_waits_only_for_what_the_target_admits() {
+    // Behind the loading screen (round W2): the nearest 256 in the first frame, the rest in the next.
+    let mut book = book(&[]);
+    let mut water = Water::default();
+    let mut ledger = FrameBudget::new(STREAM_BUDGET_US);
+    let preload = KeptFrame {
+        budget: None,
+        counted: 0,
+        kept_bytes: 0,
+        may_ask: true,
+        preload: true,
+    };
+    assert!(book.waits(book.admits_one(None, 0, 0)));
+    let work = book.frame(Some(EYE), preload, &mut ledger, &FixedClock, &mut water);
+    assert_eq!(work.asked, PRELOAD_ASKED_MAX);
+    assert_eq!(
+        water.in_flight,
+        nearest_first()[..PRELOAD_ASKED_MAX].to_vec()
+    );
+    let [near, far] = [nearest_first()[0], nearest_first()[399]];
+    assert!(
+        book.waits_for(near, false),
+        "asked: waited for whatever the room"
+    );
+    assert!(book.waits_for(far, true) && !book.waits_for(far, false));
+    for key in water.in_flight.drain(..) {
+        book.report(key, WaterState::Mesh);
+    }
+    let work = book.frame(Some(EYE), preload, &mut ledger, &FixedClock, &mut water);
+    assert_eq!(work.asked, 400 - PRELOAD_ASKED_MAX);
+    for key in water.in_flight.drain(..) {
+        book.report(key, WaterState::Mesh);
+    }
+    assert!(!book.waits(true) && !book.waits_for(far, true));
+
+    // At a target with room for k meshes the preload waits for those k and no more.
+    let w = kept_mesh_bytes_max(&GRID);
+    let (counted, k) = (3_000_000, 5);
+    let budget = Some(counted + k * w);
+    let mut book = self::book(&[]);
+    let mut water = Water::default();
+    let mut held = 0;
+    for _ in 0..4 {
+        let frame = KeptFrame {
+            budget,
+            counted,
+            kept_bytes: held,
+            preload: true,
+            may_ask: true,
+        };
+        book.frame(Some(EYE), frame, &mut ledger, &FixedClock, &mut water);
+        assert!(book.asked_count() as u64 <= k);
+        for key in water.in_flight.drain(..) {
+            water.held.insert(key, w);
+            held += w;
+            book.report(key, WaterState::Mesh);
+        }
+    }
+    assert_eq!(book.kept_count() as u64, k);
+    assert!(book.wanting_count() > 0);
+    let admits = book.admits_one(budget, counted, held);
+    assert!(
+        !admits && !book.waits(admits),
+        "the target is full: nothing left to wait for"
+    );
 }

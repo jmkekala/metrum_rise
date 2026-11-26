@@ -1114,9 +1114,9 @@ impl StreamNode {
     // apart from `counted_bytes` (the places' count): `kept_water_mesh_bytes` (`H`),
     // `kept_water_meshes`, `kept_wanting`, `kept_asked`, `kept_asked_total`,
     // `kept_dropped_total`, `kept_refused_total`, `kept_mesh_max_bytes` (`W`), and `kept_held`, what
-    // held the requests back in the last frame (bits: 1 the load's hold or the post-load window,
-    // 2 the vegetation, 4 a unit held back, 8 a layer's pending work, 16 held ground, 32 no room in
-    // the install ledger). `O(1)`.
+    // held the requests back in the last frame (bits: 1 the load's hold without a preload or the
+    // post-load window, 2 the vegetation, 4 a unit held back, 8 a layer's pending work, 16 held
+    // ground, 32 no room in the install ledger; during the preload only 4, 8 and 16 apply). `O(1)`.
     fn budget_status(&self, out: &mut VarDictionary) {
         out.set("budget_bytes", self.terrain_budget.map_or(-1, |bytes| bytes as i64));
         out.set("counted_bytes", self.counted_bytes() as i64);
@@ -1209,14 +1209,17 @@ impl StreamNode {
     /// (both layers' patches of the keep rectangle not built, and wanted ones built but not yet
     /// shown: `built + left` is the preload's whole), `in_step` (a frame has set the wanted square
     /// and no patch unit of either layer waits), and `done`: the fill phase has nothing left, the
-    /// view is in step and the backdrop is ready (or there is none). And the loading screen's
-    /// counts (`UI-15`): `units_total`, one unit per patch of the keep rectangle in each layer
-    /// (refused ones excluded), one for the preload's end (`done`) and one for the hand-over's
-    /// own checks, which only the load flow sees; `units_done`, the patches built and, if wanted,
-    /// shown (a water patch also with its water drawing: dry or holding a mesh, as the ground's
-    /// hold waits for it), plus one when `done`. So `units_done <= units_total - 1`, equal exactly
-    /// when `done`; both 0 before a frame has set the wanted square. `O(keep rectangle)` for
-    /// `left` and the units: read once a frame while the load holds the game.
+    /// view is in step, the backdrop is ready (or there is none) and the kept water meshes are in
+    /// (`TERRAIN-63` round W2: no kept request out, and no hidden wet patch without a mesh while
+    /// the target admits one more; `kept_waits`). And the loading screen's counts (`UI-15`):
+    /// `units_total`, one unit per patch of the keep rectangle in each layer (refused ones
+    /// excluded), one for the preload's end (`done`) and one for the hand-over's own checks, which
+    /// only the load flow sees; `units_done`, the patches built and, if wanted, shown (a water
+    /// patch also with its water drawing where it waits: dry or holding a mesh, as the ground's
+    /// hold waits for it when shown and the kept meshes' book when hidden), plus one when `done`.
+    /// So `units_done <= units_total - 1`, equal exactly when `done`; both 0 before a frame has set
+    /// the wanted square. `O(keep rectangle)` for `left` and the units: read once a frame while the
+    /// load holds the game.
     #[func]
     pub fn get_terrain_preload(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -1233,12 +1236,23 @@ impl StreamNode {
         out.set("built", built as i64);
         out.set("left", left as i64);
         out.set("in_step", in_step);
-        let done = self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready();
+        let admits = self.kept.admits_one(
+            self.terrain_budget,
+            self.counted_bytes(),
+            self.kept_bytes,
+        );
+        let kept_waits = self.kept.waits(admits);
+        out.set("kept_waits", kept_waits);
+        let done = self.preload == Preload::Fill
+            && left == 0
+            && in_step
+            && self.backdrop_ready()
+            && !kept_waits;
         out.set("done", done);
         let (terrain_done, terrain_total) = self.terrain.preload_units(|_| true);
-        let (water_done, water_total) = self
-            .water
-            .preload_units(|key| !self.backdrop_layer.water_waits(key));
+        let (water_done, water_total) = self.water.preload_units(|key| {
+            !self.backdrop_layer.water_waits(key) && !self.kept.waits_for(key, admits)
+        });
         let patches = terrain_total + water_total;
         let (units_done, units_total) = if patches == 0 {
             (0, 0)
@@ -2093,7 +2107,7 @@ impl StreamNode {
             self.releases_total[0] += self.terrain_work.releases as u64;
         }
         self.follow_terrain();
-        self.kept_frame(vegetation_waits, preload || window);
+        self.kept_frame(vegetation_waits, window, preload);
         // The window closes when the patches first settle with residents, or after
         // `POST_LOAD_WINDOW_S` of frames outside the load's hold (a view never let settle).
         if window {
@@ -2121,26 +2135,30 @@ impl StreamNode {
 
     // The kept water meshes' frame (`TERRAIN-63`), after the patch units and their followers: kept
     // meshes dropped while the counted bytes and they pass the target, then requests, only in a
-    // frame of the background: the load's hold and the post-load window over (`own_budget`: the
-    // frame ran on the preload's or the window's budget), nothing either layer's view waits for
-    // (no hole, hide or level change, no held ground, no unit held back), no vegetation patch
-    // waited for, and room in the frame's install ledger for a kept apply. `O(1)` for the
-    // conditions, then `KeptMeshes::frame`'s bound; a drop's backdrop bits `O(1)` each.
-    fn kept_frame(&mut self, vegetation_waits: bool, own_budget: bool) {
+    // frame in which nothing either layer's view waits for (no hole, hide or level change, no held
+    // ground, no unit held back), and either the load's preload runs (round W2: the hand-over waits
+    // for them, behind the loading screen, under the preload's slice and with its larger counts)
+    // or it is a frame of the background: the load's hold (without a preload) and the post-load
+    // window (`window`) over, no vegetation patch waited for, and room in the frame's install
+    // ledger for a kept apply. `O(1)` for the conditions, then `KeptMeshes::frame`'s bound; a
+    // drop's backdrop bits `O(1)` each.
+    fn kept_frame(&mut self, vegetation_waits: bool, window: bool, preload: bool) {
         if self.water_scripts.is_none() {
             return;
         }
         let reserve = with_ledger(self.ledger_frame, |ledger| ledger.reserve_us());
         // What holds the requests back this frame, a bit a condition (the status's `kept_held`).
+        // The preload's fill does not wait for the vegetation, nor do its kept meshes, and the
+        // install ledger is the gameplay frame's: behind the loading screen it does not apply.
         let held = [
-            own_budget || self.load_settling,
-            vegetation_waits,
+            window || self.load_settling && !preload,
+            vegetation_waits && !preload,
             self.patch_holes_deferred
                 || self.terrain_work.deferred > 0
                 || self.water_work.deferred > 0,
             self.terrain.has_pending_work() || self.water.has_pending_work(),
             self.backdrop_layer.held_count() > 0,
-            !self.budget.fits(KEPT_APPLY_PRICE_US + reserve),
+            !preload && !self.budget.fits(KEPT_APPLY_PRICE_US + reserve),
         ]
         .iter()
         .enumerate()
@@ -2151,6 +2169,7 @@ impl StreamNode {
             counted: self.counted_bytes(),
             kept_bytes: self.kept_bytes,
             may_ask: held == 0,
+            preload,
         };
         let eye = self.view.map(|view| view.eye);
         let mut dropped = std::mem::take(&mut self.kept_dropped);
@@ -2162,9 +2181,12 @@ impl StreamNode {
             scripts,
             dropped: &mut dropped,
         };
-        let work = self
-            .kept
-            .frame(eye, frame, &mut self.budget, &self.clock, &mut exec);
+        let budget = if preload {
+            &mut self.preload_budget
+        } else {
+            &mut self.budget
+        };
+        let work = self.kept.frame(eye, frame, budget, &self.clock, &mut exec);
         self.kept_bytes = self.kept_bytes.saturating_sub(work.dropped_bytes);
         // A dropped patch is hidden and wet without a mesh, as for its ground's hold.
         for &key in &dropped {

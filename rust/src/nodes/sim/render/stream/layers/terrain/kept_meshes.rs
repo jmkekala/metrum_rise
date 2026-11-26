@@ -38,6 +38,11 @@ pub(crate) const KEPT_WATER_STEP: usize = 8;
 pub(crate) const ASK_PER_FRAME: usize = 8;
 /// Kept requests in flight at once, at most.
 pub(crate) const ASKED_MAX: usize = 16;
+/// Behind the loading screen (the load's preload, `TERRAIN-63` round W2) the counts a frame give
+/// way to the scripts' time slice: requests handed out a frame and out at once, at most (the water
+/// mesh pipeline's in-flight bound in its preload caps). What is asked and in which order is the
+/// same; only how much a frame takes changes.
+pub(crate) const PRELOAD_ASKED_MAX: usize = 256;
 /// The predicted price of one kept mesh's apply in `water.gd`, microseconds: the book asks only
 /// in a frame whose install ledger has this much room (the apply itself is admitted by the
 /// ledger's room in `water.gd`, charged as measured). Measured (`TERRAIN-63`, release library, the
@@ -106,6 +111,9 @@ pub(crate) struct KeptFrame {
     /// Nothing the view waits for is pending and the ledger has room for an apply: requests may
     /// be handed out this frame.
     pub(crate) may_ask: bool,
+    /// The load's preload runs (behind the loading screen): up to [`PRELOAD_ASKED_MAX`] requests
+    /// a frame and out at once instead of [`ASK_PER_FRAME`] and [`ASKED_MAX`].
+    pub(crate) preload: bool,
 }
 
 /// One frame's work.
@@ -224,6 +232,34 @@ impl KeptMeshes {
         self.kept_count
     }
 
+    /// Whether one more request fits the target now: `counted + H + W x (asked + 1) <= B` with
+    /// the book's requests out (always without a target): the rule [`Self::frame`] asks by.
+    /// `O(1)`.
+    pub(crate) fn admits_one(&self, budget: Option<u64>, counted: u64, kept_bytes: u64) -> bool {
+        self.grid.is_some_and(|grid| {
+            let more = kept_mesh_bytes_max(&grid) * (self.asked_count as u64 + 1);
+            budget.is_none_or(|budget| counted + kept_bytes + more <= budget)
+        })
+    }
+
+    /// What the load's preload waits for (`TERRAIN-63` round W2, decision D7 (a)): requests out,
+    /// or wanting patches while the target `admits` one more ([`Self::admits_one`]). Patches the
+    /// admission rule leaves out for lack of room are not waited for: the target is full. `O(1)`.
+    pub(crate) fn waits(&self, admits: bool) -> bool {
+        self.asked_count > 0 || self.wanting_count > 0 && admits
+    }
+
+    /// Whether built `key`'s water waits for the book ([`Self::waits`] for one patch: asked, or
+    /// wanting while the target `admits` one more): the loading screen's water unit. `O(1)`.
+    pub(crate) fn waits_for(&self, key: PatchKey, admits: bool) -> bool {
+        self.grid
+            .filter(|grid| grid.contains(key))
+            .is_some_and(|grid| {
+                let flags = self.flags[grid.index(key)];
+                flags & ASKED != 0 || wanting(flags) && admits
+            })
+    }
+
     /// Requests handed out, kept meshes dropped and requests the script refused since the node
     /// was made.
     pub(crate) fn totals(&self) -> [u64; 3] {
@@ -241,8 +277,9 @@ impl KeptMeshes {
 
     /// One frame (after the patch units): over the target, kept meshes are dropped farthest first
     /// while the frame's budget admits a drop, until `counted + H` fits; then, when `may_ask`, up
-    /// to [`ASK_PER_FRAME`] requests (and [`ASKED_MAX`] out at once) go to the nearest wanting
-    /// patches, each only while `counted + H + W x (asked + 1)` fits the target. Bounds: nothing
+    /// to [`ASK_PER_FRAME`] requests (and [`ASKED_MAX`] out at once; [`PRELOAD_ASKED_MAX`] both
+    /// during the load's preload) go to the nearest wanting patches, each only while
+    /// `counted + H + W x (asked + 1)` fits the target. Bounds: nothing
     /// without a drop or a request to make; `O(requests + drops)` and the stale entries passed,
     /// plus a sort of a list (`O(n log n)`) when it changed or the eye's patch moved since its last
     /// sort, only in a frame that asks or drops.
@@ -287,7 +324,12 @@ impl KeptMeshes {
             }
             self.dropped_total += work.dropped as u64;
         }
-        if !frame.may_ask || self.wanting_count == 0 || self.asked_count >= ASKED_MAX {
+        let (per_frame, asked_max) = if frame.preload {
+            (PRELOAD_ASKED_MAX, PRELOAD_ASKED_MAX)
+        } else {
+            (ASK_PER_FRAME, ASKED_MAX)
+        };
+        if !frame.may_ask || self.wanting_count == 0 || self.asked_count >= asked_max {
             return work;
         }
         let room = kept_mesh_bytes_max(&grid);
@@ -301,7 +343,7 @@ impl KeptMeshes {
         }
         self.sort_lists(grid, eye);
         self.requests.clear();
-        while work.asked < ASK_PER_FRAME && self.asked_count < ASKED_MAX && fits(self.asked_count) {
+        while work.asked < per_frame && self.asked_count < asked_max && fits(self.asked_count) {
             let Some(index) = self.wanting.pop() else {
                 break;
             };
