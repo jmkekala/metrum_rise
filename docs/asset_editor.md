@@ -262,6 +262,17 @@ copy the player changed stays theirs.
   `the_committed_manifest_matches_the_bootstrap_folder` fails when it is stale (and says so
   plainly when the files are Git LFS pointer stubs); regenerate it with
   `cargo test --lib assets::bundled::tests::write_bundled_manifest -- --ignored --exact`.
+- **A bundled pack's version** (`TOOLS-47`): whoever changes a bundled pack's content raises
+  `version` in its `pack.toml` (semantic-version precedence; `pack.toml` is content, so the
+  change of `version` is part of the new digest). `godot/bootstrap/pack_versions.txt` sits beside
+  the manifest and is written with it: `<version>  mods/<name>` per pack. When a pack's digest
+  differs from the committed manifest's while its version is not above the committed one, the
+  freshness test fails and the regenerate command refuses, with "`<name>` changed: raise
+  `version` in its `pack.toml` (committed …, found …) and regenerate". Each regeneration is
+  compared with the last, so change, raise and regenerate once per change set. Only the tests
+  read the file: the update rule above still goes by digest, and a version is only shown
+  (Options > Mods, the share dialog and archive name, the import prompt). The rule started at
+  `0.1.0` for both packs: no release shipped an earlier content.
 - **Receipt** `user://bundled.toml`, outside `mods/` and `worlds/`: `[entries."<path>"]` with
   `revision` (the bundled digest last reconciled) and `owner` (`game` or `player`). It is
   written once per start, atomically, after every step was tried, with the steps that
