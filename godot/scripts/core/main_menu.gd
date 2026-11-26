@@ -12,6 +12,7 @@ const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
 const MenuPipelinePrewarm = preload("res://scripts/core/menu_pipeline_prewarm.gd")
+const LoadingScreen = preload("res://scripts/ui/loading_screen.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
@@ -30,6 +31,11 @@ func _exit_tree() -> void:
 	GameSettings.set_menu_frame_cap(false)
 
 func _ready() -> void:
+	# Back from a cancelled or refused player's load: its loading screen stayed up across the
+	# change (`UI-15`) and goes before the menu's first frame.
+	var screen = LoadingScreen.current(get_tree())
+	if screen != null:
+		screen.close()
 	_build_ui()
 	var refusal: Dictionary = LaunchState.take_refusal()
 	if not refusal.is_empty():
@@ -169,8 +175,15 @@ func _open_new_game_options(path: String) -> void:
 
 func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
 	LaunchState.queue_new_game(path, vegetation)
-	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+	await _enter_world_scene(path)
 
 func _finish_load_game_selection(path: String) -> void:
 	LaunchState.queue_load_game(path)
+	await _enter_world_scene(path)
+
+# The loading screen first (`UI-15`), drawn once, so it is what shows while the world scene and
+# the save load; the world scene's load flow takes it over.
+func _enter_world_scene(path: String) -> void:
+	var screen = LoadingScreen.open(get_tree(), path.get_file().get_basename())
+	await screen.wait_drawn()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")

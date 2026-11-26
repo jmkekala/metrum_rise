@@ -96,9 +96,10 @@
 ## budget (unset: the Terrain memory setting's default, Automatic, `TERRAIN-41` B2; 0: every patch
 ## fits); each sample records the budget's state (`terrain_budget`), and
 ## METRUM_STREAM_WAIT_FILL=1 makes every settle wait for the budget's fill as well.
-## METRUM_STREAM_PRELOAD=1 (`TERRAIN-59`, an untimed run) loads as a player's load does: the hand-over
-## waits for the base terrain's preload within the target; the hand-over frame's budget state is
-## recorded (`ready_budget`). Unset, the load hands over as before the preload (the tools' load).
+## METRUM_STREAM_PRELOAD=1 (`TERRAIN-59`, an untimed run) loads as a player's load does
+## (`input_manager.player_load`, the loading screen up until the hand-over, `UI-15`; `load_call_ms`
+## then includes the screen's first frame): the hand-over waits for the base terrain's preload
+## within the target; the hand-over frame's budget state is recorded (`ready_budget`). Unset, the load hands over as before the preload (the tools' load).
 ## METRUM_STREAM_TAIL_FRAMES=<n> (`TERRAIN-41` B2) records n more frames after a flight's last settle
 ## (`<phase>_tail`): the budget's background releases and fill, which a settle does not wait for.
 ## METRUM_STREAM_PROXY_CHECK=1 (`RENDER-75`, an untimed run) records per row the water reflection's
@@ -332,9 +333,11 @@ func run(bench: Node) -> void:
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
 	var loaded: bool
 	if _preload:
-		loaded = (bench.input_manager.menu_load_game_from_path(str(_report.save_path), true)
-			if not str(_report.save_path).is_empty()
-			else bench.input_manager.menu_load_world_definition(bench.world_path, true))
+		# A player's load (`UI-15`): the loading screen up from here until the hand-over.
+		var player_save := not str(_report.save_path).is_empty()
+		loaded = await bench.input_manager.player_load(
+			bench.input_manager.LoadKind.SAVE if player_save else bench.input_manager.LoadKind.WORLD_DEFINITION,
+			str(_report.save_path) if player_save else bench.world_path)
 	elif not str(_report.save_path).is_empty():
 		loaded = bench.input_manager.menu_load_game_from_path(str(_report.save_path))
 	else:

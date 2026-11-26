@@ -15,9 +15,10 @@
 ## "ready" (docs/terrain.md "Godot tile renderer", T53 (a), TERRAIN-15); until then the screen shows
 ## what the renderer draws and the graded work takes the whole frame. The farther terrain streams on
 ## within the frame budget while the player plays, its unready patches showing the background.
-## A player's load (the menus' Load and New Game) also preloads the base terrain the terrain memory
-## target keeps, nearest the camera first, before the hand-over (`TERRAIN-59`), with a progress
-## line; the API's loads (tests, benchmarks, tools) keep the hand-over above unless they ask.
+## A player's load (the menus' Load and New Game, `player_load`) also preloads the base terrain the
+## terrain memory target keeps, nearest the camera first, before the hand-over (`TERRAIN-59`),
+## behind the loading screen (`UI-15`), which goes in the hand-over's frame; the API's loads
+## (tests, benchmarks, tools) open no screen and keep the hand-over above unless they ask.
 extends Node
 
 ## Emitted when a loaded world is handed over to the player (is_world_ready()).
@@ -63,7 +64,10 @@ const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 const SaveBrowser := preload("res://scripts/ui/save_browser.gd")
-const LoadProgress := preload("res://scripts/ui/load_progress.gd")
+const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
+## What `player_load` loads: a city save, a new game on a world, a world definition (the stream
+## benchmark's world load; the menus start a new game).
+enum LoadKind { SAVE, NEW_GAME, WORLD_DEFINITION }
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
@@ -72,8 +76,11 @@ var _simulation_speed: float = 0.0
 # False from a world load until the terrain renderer settles: no input, no camera control and no
 # clock (set_simulation_speed refuses a running speed) until then.
 var _world_ready := true
-# The load's progress line while a preload runs (`TERRAIN-59`), and when the load began (usec).
-var _load_progress: LoadProgress = null
+# A player's loading screen while it is up (`UI-15`), the load's progress shown (the largest
+# fraction of the preload's units so far: 0 from the load call, 1 at the hand-over), and when the
+# load began (usec).
+var _loading_screen: LoadingScreen = null
+var _load_fraction := 0.0
 var _load_started_us := 0
 var _selected_industry_resource_id := ""
 var _industry_deposits_overlay_forced := false
@@ -224,8 +231,9 @@ func is_world_ready() -> bool:
 func _await_world_ready() -> void:
 	# A player's load also waits for its terrain preload (`TERRAIN-59`): O(keep rectangle) a frame.
 	var preloading: Dictionary = terrain_node.advance_preload() if terrain_node != null else {}
+	if not preloading.is_empty():
+		_note_load_progress(int(preloading["units_done"]), int(preloading["units_total"]))
 	if bool(preloading.get("pending", false)):
-		_show_load_progress(int(preloading["built"]), int(preloading["built"]) + int(preloading["left"]))
 		return
 	if terrain_node != null and terrain_node.unready_patches_near_camera(WORLD_READY_RADIUS_M) > 0:
 		return
@@ -236,23 +244,73 @@ func _await_world_ready() -> void:
 	if not preloading.is_empty():
 		MetrumDebug.log("terrain", "load preload done: %d patches built, %.2f s from the load call"
 			% [int(preloading["built"]), float(Time.get_ticks_usec() - _load_started_us) / 1e6])
-	if _load_progress != null:
-		_load_progress.queue_free()
-		_load_progress = null
+	# The screen goes before this frame's draw, which is the first to show the world (`UI-15`).
+	_load_fraction = 1.0
+	_close_loading_screen()
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
 	_world_ready = true
 	world_ready.emit()
 
-func _show_load_progress(built: int, total: int) -> void:
-	if _load_progress == null:
-		_load_progress = LoadProgress.new()
-		add_child(_load_progress)
-	_load_progress.show_counts(built, total)
+# The preload's units (`UI-15`, the stream node's counts): the shown fraction never goes back (the
+# keep rectangle can shrink while the view's water meshes arrive) and stays below 1 until the
+# hand-over (its last unit is the hand-over's own checks). O(1).
+func _note_load_progress(done: int, total: int) -> void:
+	if total > 0:
+		_load_fraction = maxf(_load_fraction, minf(float(done) / float(total), float(total - 1) / float(total)))
+	if _loading_screen != null:
+		_loading_screen.set_fraction(_load_fraction)
 
-## The load's progress line while a preload runs (`TERRAIN-59`): its text, empty without one.
-func load_progress_text() -> String:
-	return _load_progress.text() if _load_progress != null else ""
+## The load's progress as the loading screen shows it (`UI-15`): 0 from a load call, the largest
+## share of the preload's units done so far while it holds the game, 1 from the hand-over. A load
+## without the preload stays at 0 until its hand-over.
+func load_fraction() -> float:
+	return _load_fraction
+
+## A player's load (`UI-15`): the loading screen over everything (the one the main menu opened,
+## or a new one), one frame drawn with it so it is on the display before the synchronous load call
+## blocks, then the load with its terrain preload (`TERRAIN-59`). False when the save or world was
+## refused: a screen this call opened is closed and the running city stays, as before; the main
+## menu's screen stays up for the menu the caller returns to, which closes it. Otherwise the screen
+## stays up until the hand-over, and Cancel or Esc returns to the main menu (the previous city is
+## replaced by then). `kind` as LoadKind; `vegetation` for a new game.
+func player_load(kind: LoadKind, path: String, vegetation := {}) -> bool:
+	var opened_here: bool = LoadingScreen.current(get_tree()) == null
+	var screen: LoadingScreen = LoadingScreen.open(get_tree(), path.get_file().get_basename())
+	_loading_screen = screen
+	_load_fraction = 0.0
+	screen.set_fraction(0.0)
+	await screen.wait_drawn()
+	var loaded := false
+	match kind:
+		LoadKind.SAVE:
+			loaded = menu_load_game_from_path(path, true)
+		LoadKind.NEW_GAME:
+			loaded = menu_start_new_game(path, vegetation, true)
+		LoadKind.WORLD_DEFINITION:
+			loaded = menu_load_world_definition(path, true)
+	if not loaded:
+		if opened_here:
+			_close_loading_screen()
+		_loading_screen = null
+		return false
+	# Cancel is taken from the hold's first frame (none run during the load call). A world without
+	# a terrain renderer may have handed over within the call: the screen is gone then.
+	if _loading_screen == screen:
+		screen.cancel_requested.connect(_on_load_cancel_requested)
+	return true
+
+func _close_loading_screen() -> void:
+	if _loading_screen != null:
+		_loading_screen.close()
+		_loading_screen = null
+
+# Cancel during a player's load: back to the main menu, whose start closes the screen (it stays up
+# across the change, so the world never shows). The load's jobs keep their own books (`TERRAIN-59`).
+func _on_load_cancel_requested() -> void:
+	if _loading_screen != null:
+		_loading_screen.cancel_requested.disconnect(_on_load_cancel_requested)
+	get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 
 func _input(event):
 	if not _world_ready or not _camera_window_focused:
@@ -587,6 +645,7 @@ func _default_save_name() -> String:
 # memory target before the hand-over (a player's load).
 func _refresh_after_world_load(preload_terrain := false):
 	_load_started_us = Time.get_ticks_usec()
+	_load_fraction = 0.0
 	if road_tool and road_tool.is_drawing():
 		road_tool.cancel_road()
 	_cancel_active_tool()
@@ -643,7 +702,7 @@ func _finish_save_game_selection(path: String) -> void:
 		push_error("Save failed: " + path)
 
 func _finish_load_game_selection(path: String) -> void:
-	if not menu_load_game_from_path(path, true):
+	if not await player_load(LoadKind.SAVE, path):
 		# The running city stays; the browser opens again saying why the save was refused.
 		SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_LOAD, SAVES_DIR,
 			_finish_load_game_selection).show_refusal(world_load_error())
