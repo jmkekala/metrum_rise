@@ -106,8 +106,10 @@
 ## terrain proxies against the patches the frame drew (`proxies`).
 ## METRUM_STREAM_BED_CHECK=1 (`TERRAIN-58`, an untimed run: it walks the resident terrain patches and
 ## the map's patches after each draw) records per row `bed`: [drawn terrain patches in the camera's
-## view whose wet water patch does not draw (no water node, hidden, or no mesh of its cover and
-## depth), the same over the map, drawn terrain patches in view]; and per sample `cell_spans`:
+## view whose wet water patch does not draw (no water node, hidden, no mesh of its cover and depth,
+## or shown on another height texture than its ground's, `TERRAIN-66`), the same over the map,
+## drawn terrain patches in view, drawn terrain patches whose shown water (wet or dry) is on another
+## height texture than theirs]; and per sample `cell_spans`:
 ## [hand-overs from a backdrop cell to the patch, frames a resident patch stayed a cell before
 ## its hand-over at the median, the 90th percentile and most], read from the stream node's
 ## whole-map probe, and `bed_max`, the sample's most lake beds in view in a frame.
@@ -1509,14 +1511,15 @@ func _on_proxy_check_post_draw() -> void:
 
 # The lake-bed check (`TERRAIN-58`), once the frame has drawn, from the scripts' own state: a
 # terrain patch's node draws when it is visible in the tree and its PlaneMesh is not collapsed (a
-# held or blank patch's is); its water does not draw when it is wet and has no node, is hidden, or
-# holds no mesh of its cover and depth. And the hand-overs from cell to patch, by the whole-map
+# held or blank patch's is); its water does not draw when it is wet and has no node, is hidden,
+# holds no mesh of its cover and depth, or its material reads another height texture than its
+# ground's (`TERRAIN-66`, the material's binding, not the script's record of it). And the hand-overs from cell to patch, by the whole-map
 # probe's flags. O(resident patches + the map's patches).
 func _on_bed_check_post_draw() -> void:
 	var planes: Array[Plane] = _camera.get_frustum()
 	var water_patches: Dictionary = _water.get("patches")
 	var water_shown: Dictionary = _water.get("resident_patch_lookup")
-	var bed := [0, 0, 0]
+	var bed := [0, 0, 0, 0]
 	for key: Vector2i in _terrain.resident_patch_lookup:
 		var land: Dictionary = _terrain.patches.get(key, {})
 		var node := land.get("node") as MeshInstance3D
@@ -1532,7 +1535,12 @@ func _on_bed_check_post_draw() -> void:
 		var water: Dictionary = water_patches.get(key, {})
 		var wet := not water.is_empty() and int(water.get("depth_nonzero_count", 0)) > 0
 		var unknown := water.is_empty()
-		var lacking: bool = wet and (not water_shown.has(key) or _water._mesh_need(water) == 1)
+		# Shown on another height texture than its ground's (`TERRAIN-66`: the zero fallback drew
+		# the surface under its own bed).
+		var unbound: bool = water_shown.has(key) and (water.get("material") as ShaderMaterial).get_shader_parameter("heightmap") \
+			!= _terrain.get_patch_height_texture(key)
+		bed[3] += 1 if unbound else 0
+		var lacking: bool = wet and (not water_shown.has(key) or _water._mesh_need(water) == 1 or unbound)
 		if unknown:
 			# No water node yet: wet if the simulation has water over the patch's centre.
 			lacking = not is_nan(_simulation.get_camera_water_surface_at(Vector2(at.x, at.z)))
