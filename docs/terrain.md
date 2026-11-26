@@ -21916,6 +21916,33 @@ release library of the branch's Rust against `15d18cee7`'s with its scripts):
   phases no patch is held, no cell is drawn and the water reports nothing (every patch resident,
   `held` 0, `cells_listed` 0); the round's frame paths drain empty lists there. Cause not found; the
   sessions ran beside another session's test suites (load 2-11).
+- Timing of the landing tree (this round with `TERRAIN-60` and the loading screen `UI-15`, on
+  `15d18cee7`), the same row, five C B B C sessions on a quiet machine (ten runs a side): every phase
+  level at the frame mean (within 0.11 ms) and the maxima within the runs' ranges but for single
+  spikes (`zoom_out` one run 24 ms, `pan_out`/`pan_repeat` one run 15-16 ms); the 0.5 s turns' medians
+  level this time (`turn_out 0.5s` +0.01, `turn_back 0.5s` +0.04 ms). `jump` reads worse at the
+  median: the runs' medians 4.0-4.7 against 4.1-5.9 ms (median of runs 4.17 against 4.52, +0.35;
+  above the control in each session, by 0.1-1.2). Attributed to the statistic and a uniform shift,
+  not to this round's code:
+  - The phase's frames are about 40-46 frames of streaming at 6-7 ms, about 25 at 4 ms and the 30
+    settled frames at 3 ms; its median falls on the first edge, so three busy frames more move it by
+    0.5-1.5 ms (the two runs with 53 and 55 busy frames read 5.7 and 5.9). The frame mean moves 4.97
+    to 5.08 ms (+0.11, +2 %), the main thread's on-CPU time a frame +0.11 ms, the settle 383 to 391 ms
+    (+8, two frames); the work is the same (436-438 detail steps of each layer, 144 hides of each, the
+    same counters at the phase's start and end).
+  - No path of the round runs there beyond the hides: the jump shows no patch (0 terrain and water
+    shows; with `METRUM_STREAM_BED_CHECK=1` no patch stays a cell after its residency), so nothing is
+    held and the 144 water hides reach the cells as `O(1)` events. The instrumented split
+    (`summary --scripts`, one quartet) reads the scripts' 1.50 / 1.58 ms a frame on the control
+    against 1.51 / 1.55 on the branch, the stream node's pass 0.13 on both. The shift is uniform:
+    the terrain's detail step, whose script and executor the landing tree leaves unchanged, costs
+    19.9 against 20.7 µs a unit (+4 %), the main thread's clock reads 4.73 against 4.68 GHz, cycles a
+    frame +1.4 %, and the detail queues end 2.5 frames later (frame 30.4 against 32.9). Two
+    jump-only quartets read the other way (frame mean 5.07 against 4.86 ms, settle 397 against 380).
+  - `jump_back` shows the 144 patches again and does hold: 101 patches a cell for p50 5, at most 7
+    frames, the frames by which the water's shows follow the terrain's (its units run after the
+    terrain's; kept meshes, so nothing is rebuilt). Level over the five sessions: median +0.04,
+    frame mean -0.01 ms, settle 398 against 394 ms.
 
 ### The backdrop's land against the patches' (`TERRAIN-60`, 2026-11-26)
 
