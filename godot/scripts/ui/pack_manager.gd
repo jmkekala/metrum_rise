@@ -8,7 +8,8 @@
 ##
 ## Pack loading happens in buildings.gd via load_asset_packs(). This script manages the
 ## config file and the UI; `Import pack…` hands share archives to pack_import.gd, and the
-## per-pack Verify / Show folder / Remove buttons go through pack_actions.gd.
+## per-pack Verify / Show folder / Restore / Remove buttons go through pack_actions.gd. A bundled
+## pack the player changed says so and offers Restore (`TOOLS-17`).
 extends VBoxContainer
 
 const OptionsRows = preload("res://scripts/ui/options_rows.gd")
@@ -50,6 +51,7 @@ func _build_ui() -> void:
 	actions = PackActions.new(self)
 	actions.pack_in_use = _pack_in_use
 	actions.removed.connect(_on_pack_removed)
+	actions.restored.connect(_on_pack_restored)
 	var import_btn := UIStyle.menu_text_button("Import pack…", 12, false)
 	import_btn.name = "ImportPack"
 	import_btn.size_flags_vertical = Control.SIZE_SHRINK_END
@@ -122,6 +124,7 @@ func _refresh_list(list: VBoxContainer) -> void:
 		return
 
 	var found := false
+	var players := actions.players_copies()
 	dir.list_dir_begin()
 	var entry := dir.get_next()
 	while entry != "":
@@ -130,7 +133,7 @@ func _refresh_list(list: VBoxContainer) -> void:
 			if FileAccess.file_exists(pack_toml_path):
 				found = true
 				var meta := _read_pack_meta(pack_toml_path)
-				_add_pack_row(list, entry, meta, entry in enabled)
+				_add_pack_row(list, entry, meta, entry in enabled, entry in players)
 		entry = dir.get_next()
 	dir.list_dir_end()
 
@@ -148,6 +151,9 @@ func _on_pack_installed(pack_id: String, replaced: bool) -> void:
 	if not replaced and _forget_enabled(pack_id) != OK:
 		message += " Could not update the active pack selection; uncheck it and apply."
 	_reload(message)
+
+func _on_pack_restored(pack_id: String) -> void:
+	_reload("Restored the game's version of %s. Your copy is in the system Trash." % pack_id)
 
 func _on_pack_removed(pack_id: String) -> void:
 	var message := "Moved %s to Trash." % pack_id
@@ -178,7 +184,7 @@ func _forget_enabled(pack_id: String) -> Error:
 func _pack_in_use(pack_id: String) -> bool:
 	return in_game and pack_id in _load_enabled_packs()
 
-func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool) -> void:
+func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool, players: bool) -> void:
 	var hbox := HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 12)
 	var panel := OptionsRows.frame(hbox)
@@ -210,12 +216,27 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 	detail.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	UIStyle.set_font_size(detail, 12)
 	info.add_child(detail)
+	if players:
+		# The receipt holds only whose the copy is, not whether it still differs or how the game's
+		# version changed since; the game's version is shown when it is not the copy's.
+		var note := Label.new()
+		note.name = "PlayersCopy"
+		note.text = "Your changed copy: it no longer follows the game's updates."
+		var bundled_version: String = _read_pack_meta(PackActions.BUNDLED.path_join(pack_id).path_join("pack.toml")).get("version", "")
+		if not bundled_version.is_empty() and bundled_version != version:
+			note.text += " The game's version is v%s." % bundled_version
+		note.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+		UIStyle.set_font_size(note, 12)
+		info.add_child(note)
 
 	var verify := _row_button(hbox, "Verify", "Verify", "Check the files against the checksums saved when the pack was imported.")
 	verify.visible = actions.can_verify(pack_id)
 	verify.pressed.connect(actions.verify_dialog.bind(pack_id))
 	var folder := _row_button(hbox, "ShowFolder", "Show folder", "Open the pack folder in the file manager.")
 	folder.pressed.connect(actions.show_folder.bind(pack_id))
+	var restore := _row_button(hbox, "Restore", "Restore…", "Move your changed copy to the system Trash and install the game's version.")
+	restore.visible = players
+	restore.pressed.connect(func(): actions.restore_dialog(pack_id, _reload))
 	var remove := _row_button(hbox, "Remove", "Remove…", "Move the pack to the system Trash.")
 	if actions.is_bundled(pack_id):
 		remove.disabled = true

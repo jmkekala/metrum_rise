@@ -293,6 +293,119 @@ fn an_edited_copy_becomes_the_players_and_stays_through_two_revisions() {
     assert_eq!(fx.receipt()["mods/pack"].revision, fx.manifest()[..64]);
 }
 
+// Options > Mods > Restore: the player's copy goes to the Trash, the game's version is
+// installed through the start-up's own step and the entry is the game's again.
+#[test]
+fn restore_trashes_the_players_copy_and_installs_the_games_version() {
+    let fx = Fixture::new();
+    fx.bundle_v1();
+    fx.install();
+    fx.write("profile/mods/pack/assets/a/model.glb", "the player's model");
+    fx.write("bundle/mods/pack/pack.toml", "pack v2");
+    let plan = fx.plan();
+    fx.apply(&plan);
+    assert_eq!(fx.receipt()["mods/pack"].owner, Owner::Player);
+    let manifest = fx.manifest();
+    assert_eq!(restorable(&manifest, &fx.profile()), ["pack"]);
+
+    let action = restore(&manifest, &fx.profile(), "pack").unwrap();
+    assert_eq!(action.operation, Operation::TrashAndReplace);
+    fx.bundle_side(&action);
+    commit(&fx.profile(), &action).unwrap();
+    record(&fx.profile(), std::slice::from_ref(&action)).unwrap();
+
+    assert_eq!(
+        fx.read("trash/pack/assets/a/model.glb"),
+        "the player's model"
+    );
+    assert_eq!(
+        folder_digest(&fx.profile().join("mods/pack")).unwrap(),
+        parse_manifest(&manifest).unwrap()["mods/pack"]
+    );
+    assert!(!fx.exists("profile/mods/.bundled-pack"));
+    let receipt = fx.receipt();
+    assert_eq!(receipt["mods/pack"].owner, Owner::Game);
+    assert_eq!(receipt["mods/pack"].revision, action.revision);
+    assert_eq!(receipt["worlds/city.sqlite"].owner, Owner::Game);
+    assert!(restorable(&manifest, &fx.profile()).is_empty());
+    // The next start has nothing to do, and the bundle's next change replaces the copy.
+    assert!(fx.plan().actions.is_empty());
+    fx.write("bundle/mods/pack/pack.toml", "pack v3");
+    assert_eq!(ops(&fx.plan()), [("mods/pack", Operation::Replace)]);
+}
+
+// Without the Trash the caller stops before staging: nothing changes. A commit without the
+// Trash step refuses to touch the player's copy.
+#[test]
+fn a_restore_whose_trash_fails_leaves_everything_as_it_was() {
+    let fx = Fixture::new();
+    fx.bundle_v1();
+    fx.install();
+    fx.write("profile/mods/pack/assets/a/model.glb", "the player's model");
+    fx.write("bundle/mods/pack/pack.toml", "pack v2");
+    let plan = fx.plan();
+    fx.apply(&plan);
+    let receipt = fx.read("profile/bundled.toml");
+    let manifest = fx.manifest();
+    let action = restore(&manifest, &fx.profile(), "pack").unwrap();
+    // The caller's Trash failed: no staging, no commit, no record.
+    assert_eq!(fx.read("profile/bundled.toml"), receipt);
+    assert_eq!(restorable(&manifest, &fx.profile()), ["pack"]);
+    // Staged but not trashed: the commit refuses and the copy stays.
+    copy(
+        &fx.0.join("bundle/mods/pack"),
+        &fx.profile().join(action.staging()),
+    );
+    let error = commit(&fx.profile(), &action).unwrap_err();
+    assert!(error.contains("nothing was replaced"), "{error}");
+    assert_eq!(
+        fx.read("profile/mods/pack/assets/a/model.glb"),
+        "the player's model"
+    );
+    assert_eq!(fx.read("profile/bundled.toml"), receipt);
+    // That leftover staging copy refuses a restore until a start cleans it.
+    let error = restore(&manifest, &fx.profile(), "pack").unwrap_err();
+    assert!(error.contains("unfinished"), "{error}");
+    assert!(restorable(&manifest, &fx.profile()).is_empty());
+}
+
+#[test]
+fn restore_refuses_what_is_not_the_players_bundled_pack() {
+    let fx = Fixture::new();
+    fx.bundle_v1();
+    let manifest = fx.manifest();
+    // No receipt yet.
+    fx.write("profile/mods/pack/pack.toml", "the player's");
+    assert!(restore(&manifest, &fx.profile(), "pack").is_err());
+    fs::remove_dir_all(fx.profile().join("mods/pack")).unwrap();
+    fx.install();
+    for (name, refusal) in [
+        ("pack", "the game's copy"),
+        ("other", "not a pack the game bundles"),
+        ("../worlds/city.sqlite", "not a pack the game bundles"),
+        ("city.sqlite", "not a pack the game bundles"),
+    ] {
+        let error = restore(&manifest, &fx.profile(), name).unwrap_err();
+        assert!(error.contains(refusal), "{name}: {error}");
+    }
+    // A player's world is no pack: never offered.
+    fx.write("profile/worlds/city.sqlite", "the player's city");
+    fx.write("bundle/worlds/city.sqlite", "city v2");
+    let plan = fx.plan();
+    fx.apply(&plan);
+    assert_eq!(fx.receipt()["worlds/city.sqlite"].owner, Owner::Player);
+    assert!(restorable(&fx.manifest(), &fx.profile()).is_empty());
+    // A player's pack that is a file, not a folder.
+    fs::remove_dir_all(fx.profile().join("mods/pack")).unwrap();
+    fx.write("profile/mods/pack", "a file");
+    fx.write("bundle/mods/pack/pack.toml", "pack v2");
+    let plan = fx.plan();
+    fx.apply(&plan);
+    assert_eq!(fx.receipt()["mods/pack"].owner, Owner::Player);
+    let error = restore(&fx.manifest(), &fx.profile(), "pack").unwrap_err();
+    assert!(error.contains("not an installed pack folder"), "{error}");
+}
+
 #[test]
 fn a_deleted_entry_is_seeded_again_even_when_it_was_the_players() {
     let fx = Fixture::new();

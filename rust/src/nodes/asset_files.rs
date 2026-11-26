@@ -418,6 +418,29 @@ impl AssetAuthoringFiles {
         bundled_plan_dictionary(&manifest.to_string(), profile)
     }
 
+    /// The bundled packs in the profile at `profile` whose installed copy the receipt holds as
+    /// the player's (`TOOLS-17`), which Options > Mods offers to restore. Reads the receipt and
+    /// stats each bundled pack; hashes nothing.
+    #[func]
+    pub fn bundled_restorable(profile: GString) -> PackedStringArray {
+        bundled::restorable(bundled::MANIFEST, &native_path(profile))
+            .iter()
+            .map(GString::from)
+            .collect()
+    }
+
+    /// The step that restores the game's version of the bundled pack `pack` over the player's
+    /// copy in the profile at `profile`: one action dictionary as `bundled_plan` gives
+    /// (`trash_and_replace`), to carry out as the start-up does and then pass to
+    /// `bundled_record`; or `error` when the pack is not the player's bundled copy.
+    #[func]
+    pub fn bundled_restore(profile: GString, pack: GString) -> VarDictionary {
+        match bundled::restore(bundled::MANIFEST, &native_path(profile), &pack.to_string()) {
+            Ok(action) => action_dictionary(&action),
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
     /// The profile side of one planned step, after the caller staged the bundled copy (and, for
     /// `trash_and_replace`, moved the installed entry to the Trash): renames and removals
     /// inside `profile`. Returns an error message, empty on success.
@@ -691,13 +714,7 @@ fn bundled_plan_dictionary(manifest: &str, profile: GString) -> VarDictionary {
     };
     let mut actions = Array::<VarDictionary>::new();
     for action in &plan.actions {
-        actions.push(&vdict! {
-            "path": action.path.as_str(),
-            "operation": action.operation.name(),
-            "revision": action.revision.as_str(),
-            "staging": action.staging(),
-            "pack": action.is_pack(),
-        });
+        actions.push(&action_dictionary(action));
     }
     let problems = plan
         .problems
@@ -705,6 +722,17 @@ fn bundled_plan_dictionary(manifest: &str, profile: GString) -> VarDictionary {
         .map(GString::from)
         .collect::<PackedStringArray>();
     vdict! { "actions": actions, "problems": problems }
+}
+
+// One planned step as GDScript carries it out and hands it back.
+fn action_dictionary(action: &Action) -> VarDictionary {
+    vdict! {
+        "path": action.path.as_str(),
+        "operation": action.operation.name(),
+        "revision": action.revision.as_str(),
+        "staging": action.staging(),
+        "pack": action.is_pack(),
+    }
 }
 
 // A planned step handed back by the bootstrap.
