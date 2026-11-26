@@ -12125,7 +12125,11 @@ line goes; per-instance calls and object churn do.
   by key. Inside the node the water's, the terrain's and the vegetation's units share one order
   (`VEG-35` R1): the vegetation's waiting holes run among the patch holes and its replacements of
   drawn patches among the level changes, by class and then nearest, the patch unit first on a
-  tie; the reserve is then the room all three owners' holes spend before any level change. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
+  tie; the reserve is then the room all three owners' holes spend before any level change. Since
+  `VEG-35` R1b: the vegetation's units among the patch units take only products this frame's
+  residency keeps wanted; a held patch hole beyond the vegetation's reach does not hold its
+  replacements, which then take the room left without the reserve; and a level change runs only for
+  a patch still wanted and in the terrain's square (`TERRAIN-50`). Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
   stage, T65 option (3)), the post-load window (5.2 ms, until the patches first settle, at most
   30 s) and a load's road hydration (4.0 ms); the building publication and the sites are charged,
   not split (each building chunk's changes atomic, `RENDER-42`; the sites' frame, `RENDER-30`).
@@ -21936,6 +21940,132 @@ complete within 0.5 s: not met (+0.64-0.79 s): those replacements run among the 
 level change runs on the budget while the terrain's far holes are held back. The shipped Kuopio: met
 (all phases level pooled). The terrain's last patch no more than 0.1 s later than the control's: not
 met (+0.17 s at the mean of four runs), and the settle +0.65 s later.
+
+**Round R1b: R1's misses at their causes (2026-11-26).** Each cause was verified with a diagnostic
+build before its change (counters and A/B switches, not committed), on untimed single 60 km `trip`
+rows while another session's rows loaded the machine (load 4-7): counts and orders are solid, the
+milliseconds of those rows are not acceptance. Three rules stay, each stated at the code; a fourth
+was measured and taken out:
+
+1. **The cursor takes only products this frame's residency keeps** (`VegetationResidency::keeps`,
+   `VegetationLayer::begin_units(.., kept)`). The patch units run before the vegetation
+   residency's evaluation, so a product delivered in the frame before for a patch the camera has
+   since left installed and was put away in the same pass. Verified: 24 such installs a trip (of
+   about 900). A product is kept when it is wanted now, its terrain block is resident and inside the
+   terrain's wanted square (hides and releases take only patches outside it, so it stays resident
+   through the patch units), and the tier rule (`block_state`) wants it at this frame's camera; an
+   evaluation this frame, at a crossing or a residency change, takes that camera over the blocks then
+   resident, so a kept product is still wanted after it, and one not kept waits for the install after
+   the evaluation, which drops it or installs it. `O(subdivision²)` a waiting product. After: 0
+   installs dropped in their own pass (a random-walk test checks the claim against the evaluation).
+   What it did not buy: the installs stay 830-950 a trip against `dev`'s 457. The rest of the excess
+   are patches the residency still wanted when they installed and that the 4.5 km disc, sliding with
+   the eye's ground point during the zoom, left later: no rule on the current frame removes those;
+   `VEG-36` (the wanted set from the eye's height) does.
+2. **`TERRAIN-50`: no level change for a patch no longer wanted.** A queued level change runs only
+   for a resident patch that is wanted (terrain: in the square) and inside the layer's step square
+   (water: the terrain's wanted square, `PatchStream::set_step_square`, since a water patch is wanted
+   while its ground is resident). Its entry stays queued as the scripts' sweep queued it, so a patch
+   that comes back before its hide runs the change it was queued for. A leaving patch keeps its step
+   until its hide (it draws only until then); no settled view changes. Bought: the trip's settle
+   1,890-2,071 ms after the zoom to 1,340-1,444 (untimed). On the shipped Kuopio's jump it moves
+   work rather than removing it (instrumented pair): the first frame still runs 82 terrain and 84
+   water level changes, the ledger's limit, now all for patches that stay, and the second frame's
+   graded work (1.0 ms) is the cell sets of those; the first two frames 29.9 / 11.9 ms against
+   29.9 / 12.3, so `TERRAIN-50` is not `VEG-33`'s lever. The two layer tests that encoded the
+   sweep's leaving patches now expect only the wanted ones, with the reason at each: in
+   `level_checks_queue_exactly_the_patches_the_scripts_sweep_finds` a leaving patch is hidden in the
+   same frame (the budget is unbounded), and the in-view guarantee test counts queued changes that can
+   run. The golden replays check the square, the gate and each check's candidates from the
+   recordings, not the queue's runs: unchanged, nothing re-recorded. New:
+   `a_water_patch_whose_ground_left_the_square_takes_no_level_change`.
+3. **Products that land after the patch units (measured, taken out).** The frame has two passes:
+   `process` (the patch units with the vegetation's cursor, the road hydration, the vegetation
+   residency's evaluation, frees and requests, the pull of finished products, an install in the room
+   left) and `pre_draw` just before the draw (a pull, an install in the room left, the backdrop). A
+   product pulled in either after the cursor meets a ledger the first pass's patch units spent.
+   Verified (instrumented run): of 64 stalled passes in the zoom 59 were such installs, 49 of them
+   with a waiting hole that orders before a patch hole the frame had run, 42 with a hole in view;
+   such a product installs in the next frame's first pass, in its order. The exact rule tried: a
+   hole product that orders before the last hole unit the frame ran installs whatever the room, as
+   the unit it would have preceded (the frame's order decided once, in its first pass). It bought
+   stalled passes 125-138 to 53 (none starved, none with a hole in view) and installs past 5 frames
+   114 to 32, but its overrun is the products that land after the patch units, and the prepared set
+   (`RENDER-32-N`) hands a view's held products over in the residency's request in one frame: the
+   shipped Kuopio's jump back read 19.2-19.3 ms in its first frame against 7.2-7.3 on the control,
+   in both runs of a session. Taken out; the installs after the patch units admit by the budget, as
+   in R1. A bounded form (only the jobs' pulls, at most the 32 jobs out; or the place of each unit it
+   displaces, once) is not built: the user's choice.
+4. **Held holes beyond the vegetation's reach do not hold its replacements.** Verified: after the
+   zoom the 23-24 replacements of out-of-view drawn patches waited in 79 of 79 frames behind held
+   holes, every held hole beyond the vegetation's reach, and the budget less the reserve had room for
+   one in none of them (the full budget in 58). Rule (`FrameState::reach_hole_deferred`,
+   `UnitSource::reach_sq`, `VegetationResidency::reach`): a held patch hole beyond the reach (the
+   coarse tier's far range and a side, or the fine tier's radius and a half-diagonal, with half a
+   diagonal more for the grid's short last patches) does not hold the vegetation's replacements, and
+   behind such held holes a replacement takes the room left without the reserve: every waiting hole
+   was tried and each held one met a room smaller than its price, which only grew since, so no held
+   hole takes that room this frame. A held hole within the reach, or a refused vegetation hole,
+   holds them as before; the patch layers' level changes keep L1's rule; with no vegetation product
+   waiting the units are those without it. Bought: the vegetation complete +0.61-0.76 s to +0.01 s
+   after the zoom (untimed), after the zoom no wait over 1 frame.
+
+The merge of `dev` `d56904ab5` (`TERRAIN-59`, the load's preload): the vegetation's units join the
+patch units only on the frame's budget, so neither in the post-load window nor anywhere in the
+load's hold (unbudgeted, or the preload's slice); the preload's fill phase still does not wait for
+the vegetation.
+
+**R1b's rows** (the final library, `dev` `d56904ab5`'s release library and scripts as the control,
+512 MB, the eight P-cores, perf off; two C B B C sessions, the second because the first read
+worse). The 60 km `trip` row, ms after the zoom's end:
+
+| | `dev` (4 runs) | R1b (4 runs) | bar |
+|---|---|---|---|
+| near ring (800 m) drawn | not counted | -269 … -284 (before the zoom ends) | met |
+| vegetation complete | +1,140 … +1,256 | +7 … +8 | met |
+| after the zoom: wait max (past 5) / stalled passes | | 0-1 frame (0) / 0 | met |
+| install waits, whole trip: mean / max frames (past 5) | | 1.8-3.0 / 22-43 (28-115), all during the zoom | not met |
+| stalled passes, whole trip | | 128-141, all during the zoom | not met |
+| terrain and water complete | +438 … +548 (mean +512) | +618 … +706 (mean +678) | not met (+0.17 s) |
+| settled | +1,213 … +1,305 | +1,335 … +1,408 | |
+| frame p50, pooled | | `trip_in` +0.40 / 0.34 ms, `trip_hold` +0.75 / 0.12 ms worse; maxima level | not met |
+| installs (replacements) | | 908-1,023 (119-135); measured 11-12 us against 23-24 predicted | |
+
+The hold's frame median: the round draws the trees for the whole hold, the control from +1.2 s on
+(the hold's median frame 2,257 draw calls and 1.40 M primitives against 1,700 and 1.07 M, render
+CPU +0.2-0.4 ms); no install runs in the hold after +8 ms. The zoom's: the trees installed and
+drawn during the zoom. The terrain's last patch: the vegetation's installs that order before the far
+terrain holes (the R1 rule) take that ledger first, and half of them are patches the zoom passes
+(`VEG-36`); with the third rule (taken out) the same row read +0.08 s in one session.
+
+The shipped Kuopio with the trip, pooled over both sessions: every phase level at the median and
+the maximum but `turn_repeat 0.5 s`'s maximum, +1.01 / 0.69 ms (8.8-9.6 against 8.1-8.5 ms over
+three sessions); an instrumented pair shows that phase's slowest frames are reflection and
+level-change frames on both sides with no vegetation install in them: not attributed. The jump back's
+first frame is level again (7.2-7.3 ms). On that map the vegetation is complete 3-4 ms after the
+trip's zoom on both sides and no product waits after it.
+
+Settle digests (one run a side of the final library, untimed): the shipped Kuopio (14 points) equal
+to the control in every family at every point but the vegetation's band flags of one patch at point 4
+(`turn_repeat`) and eight at point 10 (`far_to_ground`), the products equal (`VEG-34`'s family:
+the flags at a settle follow when the band check ran; point 10 is the one recorded since round L1);
+the control equal to the earlier control at every point. An earlier branch run under another
+session's load (frames twice as long) also differed at the trip's settle (fine against coarse tier
+at two blocks); a trip-only pair with `--detail` read the same wanted set and digest on both sides
+and the final run equals the control there. The 30k pond (16 points, the build with the third rule,
+whose difference is the vegetation's installs only): terrain and water equal at every point, one
+graded tile at equal level and token from point 8 on (`TERRAIN-27`: the two controls differ the same
+way) and 15 tiles in a hysteresis band at point 4; water mesh check 0. Golden replays: 30k 3,144
+frames / 85 checks, Kuopio 10,036 / 87, every mismatch 0, nothing re-recorded.
+
+The terrain's own counts on the 60 km `flight_high` (report only, one untimed instrumented pair of the
+final library): missing at most 175 against 106, in-view holes 143 against 100, wanted-to-drawn p95
+81 against 54 frames, frame p50 +0.3 ms, settles +0.43 s after the start and +1.28 s after the turn;
+the vegetation done 0.4 s into the settle against 4.0 s. R1's pairs read 115-152 against 87-104;
+the build with the third rule read 114 against 98. The later settle after the turn is not
+`TERRAIN-50`'s: the terrain's holes finish about 1 s later (the vegetation now installs through the
+flight), then the remaining hides wait behind the graded book's and the water mesh's work (owners
+ahead of the node, about 2.1 ms a frame once no hole waits, so the reserve is off).
 
 ### The load's terrain preload (`TERRAIN-59`, 2026-11-26)
 
