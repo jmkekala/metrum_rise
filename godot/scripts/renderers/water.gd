@@ -54,7 +54,6 @@ const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 # The pool takes what a steady flight returns: the budget's releases (`TERRAIN-41` B1).
 const WATER_PATCH_RESOURCE_POOL_MAX := 256
 const WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
-const WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME := 128
 const WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME := 8
 const WATER_PATCH_MESH_BUSY_REQUEST_BUDGET_PER_FRAME := 4
 const WATER_PATCH_MESH_BACKLOG_REQUEST_THRESHOLD := 96
@@ -118,8 +117,6 @@ var patch_payload_requested: Dictionary = {}
 var _prewarm_requests: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var pending_water_ack_states: PackedInt64Array = PackedInt64Array()
-var height_texture_rebind_queue: Array[Vector2i] = []
-var height_texture_rebind_lookup: Dictionary = {}
 # The mesh requests by cause (`TERRAIN-41` L2): `mesh_refresh_queue` for holes (a wet resident
 # patch whose node draws no mesh of its cover and depth), `mesh_upgrade_queue` for upgrades (it
 # draws one at another step), which are submitted and applied only inside the install ledger's
@@ -187,7 +184,6 @@ var _water_debug_frame_ms_total: float = 0.0
 var _water_debug_frame_ms_max: float = 0.0
 var _water_debug_upload_ms_total: float = 0.0
 var _water_debug_border_ms_total: float = 0.0
-var _water_debug_height_rebind_ms_total: float = 0.0
 var _water_debug_patch_creates: int = 0
 var _water_debug_patch_removes: int = 0
 var _water_debug_patch_uploads: int = 0
@@ -240,7 +236,6 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_water_border_visual()
 	_prewarm_water_patch_resource_pool()
 	_prewarm_full_water_grid_mesh_variants()
-	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	_rebuild_water_border()
 	if _terrain_debug_enabled:
 		_water_debug_log("renderer ready visual=%d" % MetrumDebug.visual_mode_index("terrain_visual"))
@@ -257,14 +252,10 @@ func _process(delta: float) -> void:
 		else WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	_report_extras()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
-	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var mesh_refresh_elapsed_ms := 0.0
 	var mesh_refresh_perf_stats: Dictionary = {}
-	var height_rebind_start_us := Time.get_ticks_usec()
-	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
-	height_rebind_elapsed_ms = float(Time.get_ticks_usec() - height_rebind_start_us) / 1000.0
 
 	var border_changed := _current_terrain_border_revision() != terrain_border_revision
 	var water_ack_ready := _retry_pending_water_ack()
@@ -307,8 +298,7 @@ func _process(delta: float) -> void:
 			delta,
 			frame_elapsed_ms,
 			upload_elapsed_ms,
-			border_elapsed_ms,
-			height_rebind_elapsed_ms
+			border_elapsed_ms
 		)
 	if perf_enabled:
 		var water_frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
@@ -327,7 +317,6 @@ func _process(delta: float) -> void:
 			"payload_ready_count": float(patch_payload_ready.size()),
 			"upload": upload_elapsed_ms,
 			"border": border_elapsed_ms,
-			"height_rebind": height_rebind_elapsed_ms,
 			"mesh_refresh": mesh_refresh_elapsed_ms,
 		}
 		for key_variant in mesh_refresh_perf_stats.keys():
@@ -376,7 +365,6 @@ func get_pending_render_work_counts() -> Dictionary:
 		"prewarm_requested": _prewarm_requests.size(),
 		"payload_ready": patch_payload_ready.size(),
 		"pending_ack": int(pending_water_ack_states.size() / 3),
-		"height_rebind": height_texture_rebind_queue.size(),
 		"mesh_refresh": mesh_refresh_queue.size(),
 		"mesh_requested": mesh_refresh_requested_lod.size(),
 		"mesh_pending": mesh_pending_lod.size(),
@@ -389,14 +377,13 @@ func get_pending_render_work_counts() -> Dictionary:
 		"stream_pending": 1 if _stream.has_water_pending_work() else 0,
 	}
 
-## Payloads requested (the prewarm's only with the background cache), an acknowledgement, a
-## height rebind or mesh work waiting, or the streaming core's water patches with work; with the
-## background cache also payloads held for a later build.
+## Payloads requested (the prewarm's only with the background cache), an acknowledgement or mesh
+## work waiting, or the streaming core's water patches with work; with the background cache also
+## payloads held for a later build.
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
 	return (
 		patch_payload_requested.size() > _prewarm_requests.size()
 		or not pending_water_ack_states.is_empty()
-		or not height_texture_rebind_queue.is_empty()
 		or not mesh_refresh_queue.is_empty()
 		or not mesh_refresh_requested_lod.is_empty()
 		or not mesh_pending_lod.is_empty()
@@ -741,7 +728,10 @@ func stream_activate(key: Vector2i, step: int) -> Vector2i:
 		_queue_patch_mesh_refresh(key, int(patch.get("lod_step", 1)))
 	elif int(patch.get("depth_nonzero_count", 0)) > 0:
 		_water_mesh_reshow_kept_count += 1
-	_queue_height_texture_rebind(key)
+	# In the show itself (`TERRAIN-66`): the stream node shows after this script's _process, so a
+	# bind queued for it came a frame late, and a patch built before its ground drew that frame on
+	# the 2 x 2 zero fallback, its surface near 0 m under its own lake bed. O(1).
+	bind_patch_height_texture(key)
 	_refresh_terrain_patch_binding(key)
 	return Vector2i(0, _water_state(patch))
 
@@ -862,8 +852,6 @@ func _clear_patches() -> void:
 	_prewarm_requests.clear()
 	patch_payload_ready.clear()
 	pending_water_ack_states = PackedInt64Array()
-	height_texture_rebind_queue.clear()
-	height_texture_rebind_lookup.clear()
 	mesh_refresh_queue.clear()
 	mesh_upgrade_queue.clear()
 	mesh_refresh_requested_lod.clear()
@@ -2422,27 +2410,16 @@ func _terrain_height_texture(key: Vector2i) -> Texture2D:
 			return texture
 	return fallback_height_texture
 
-func _queue_height_texture_rebind(key: Vector2i) -> void:
-	if height_texture_rebind_lookup.has(key):
-		return
-	height_texture_rebind_lookup[key] = true
-	height_texture_rebind_queue.append(key)
-
-func _process_height_texture_rebinds(budget: int) -> void:
-	var remaining_budget := budget
-	while remaining_budget > 0 and not height_texture_rebind_queue.is_empty():
-		var key: Vector2i = height_texture_rebind_queue.pop_front()
-		height_texture_rebind_lookup.erase(key)
-		_bind_patch_height_texture(key)
-		remaining_budget -= 1
-
-func _bind_patch_height_texture(key: Vector2i) -> void:
+## Binds built `key`'s material to its terrain patch's current height texture (the 2 x 2 zero
+## fallback while the terrain has none): at the show, and from the terrain's commit, which
+## replaces that texture (`TERRAIN-66`). Calls nothing back, so a stream unit may call it. O(1).
+func bind_patch_height_texture(key: Vector2i) -> void:
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
 		return
 	var material: ShaderMaterial = patch["material"]
 	var next_texture := _terrain_height_texture(key)
-	if patch["height_texture"] == next_texture:
+	if patch.get("height_texture") == next_texture:
 		return
 	patch["height_texture"] = next_texture
 	material.set_shader_parameter("heightmap", next_texture)
@@ -2571,8 +2548,7 @@ func _record_water_debug_frame(
 	delta: float,
 	frame_elapsed_ms: float,
 	upload_elapsed_ms: float,
-	border_elapsed_ms: float,
-	height_rebind_elapsed_ms: float
+	border_elapsed_ms: float
 ) -> void:
 	_water_debug_elapsed_s += delta
 	_water_debug_frames += 1
@@ -2580,13 +2556,12 @@ func _record_water_debug_frame(
 	_water_debug_frame_ms_max = maxf(_water_debug_frame_ms_max, frame_elapsed_ms)
 	_water_debug_upload_ms_total += upload_elapsed_ms
 	_water_debug_border_ms_total += border_elapsed_ms
-	_water_debug_height_rebind_ms_total += height_rebind_elapsed_ms
 	if _water_debug_elapsed_s < WATER_DEBUG_LOG_INTERVAL_S:
 		return
 
 	var frames := maxf(1.0, float(_water_debug_frames))
 	_water_debug_log(
-		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d avg_ms=%.3f max_ms=%.3f upload_ms=%.3f border_ms=%.3f rebind_ms=%.3f visual=%d"
+		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d avg_ms=%.3f max_ms=%.3f upload_ms=%.3f border_ms=%.3f visual=%d"
 		% [
 			resident_patch_lookup.size(),
 			_water_debug_patch_creates,
@@ -2598,7 +2573,6 @@ func _record_water_debug_frame(
 			_water_debug_frame_ms_max,
 			_water_debug_upload_ms_total / frames,
 			_water_debug_border_ms_total / frames,
-			_water_debug_height_rebind_ms_total / frames,
 			MetrumDebug.visual_mode_index("terrain_visual"),
 		]
 	)
@@ -2611,7 +2585,6 @@ func _reset_water_debug_counters() -> void:
 	_water_debug_frame_ms_max = 0.0
 	_water_debug_upload_ms_total = 0.0
 	_water_debug_border_ms_total = 0.0
-	_water_debug_height_rebind_ms_total = 0.0
 	_water_debug_patch_creates = 0
 	_water_debug_patch_removes = 0
 	_water_debug_patch_uploads = 0
