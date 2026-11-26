@@ -9,8 +9,15 @@
 ## hand-over every hidden wet patch gets a kept mesh of the coarsest step, a still camera then asks,
 ## applies and drops nothing, a water re-solve under a kept patch drops its stale mesh in that frame
 ## and a new one comes when it is wet again, a zoom-out over them meets no hole, a tight target drops kept meshes and
-## releases patches, and no mesh job state outlives its patch. Headless.
+## releases patches, and no mesh job state outlives its patch. Part three (round W2) loads that
+## world as a player does: the preload hands over only once every hidden wet patch holds its kept
+## mesh (the units at `units_total - 1` exactly then), a still camera after it asks, applies and
+## drops nothing; at a target with room for only a few kept meshes the load waits for those and
+## hands over; and a player's load is cancelled while the preload waits for kept meshes, back at
+## the main menu. Headless.
 extends SceneTree
+
+const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
 
 const WaterRenderer := preload("res://scripts/renderers/water.gd")
 const SETTLE_TIMEOUT_MS := 90000
@@ -22,6 +29,7 @@ const LAKE_DEPTH_M := 40.0
 const LAKE_LEVEL_M := -8.0
 const KEPT_FRAMES := 3000
 const RESOLVE_FRAMES := 240
+const SAVE_PATH := "user://water_kept_mesh_test/lakes.sqlite"
 
 # The mesh jobs as the water renderer sees them: requests by key, what a poll hands back.
 class RecordingSimulation extends Node:
@@ -81,6 +89,7 @@ func _expect(condition: bool, message: String) -> void:
 func _run() -> void:
 	_test_books()
 	await _test_world()
+	await _test_preload()
 	print("Water kept mesh tests: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
 
@@ -253,37 +262,16 @@ func _free_books(parts: Array) -> void:
 # Part two: the game scene.
 
 func _test_world() -> void:
-	var main: Node = load("res://scenes/Main.tscn").instantiate()
-	main.set_script(null)
-	root.add_child(main)
-	current_scene = main
-	await process_frame
-	var input: Node = main.get_node("InputManager")
-	input.set_process(false)
-	input.set_process_input(false)
-	input.set_process_unhandled_input(false)
-	var camera: Node = main.get_node("CameraNode")
-	camera.set_process(false)
-	camera.set_process_input(false)
-	camera.set_process_unhandled_input(false)
+	var main: Node = await _lake_world()
 	var sim: Node = main.get_node("SimulationNode")
+	var input: Node = main.get_node("InputManager")
+	var camera: Node = main.get_node("CameraNode")
+	# Saved for part three, which loads it as a player does.
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVE_PATH.get_base_dir()))
+	_expect(sim.save_game(ProjectSettings.globalize_path(SAVE_PATH)), "the lakes' world must save")
 	var stream: Node = main.get_node("StreamNode")
 	var terrain: Node = main.get_node("Terrain")
 	var water: Node = main.get_node("Water")
-	_expect(sim.create_blank_world(20480.0, 20480.0, 8.0, 0.0), "the 20 km blank world must load")
-	sim.set_simulation_speed(0.0)
-	# Lakes dug and filled beyond the view before the renderers are built (as a world that comes
-	# with them); the edits' road publication is acknowledged, as no renderer drew the world yet.
-	for lake: Vector2 in LAKES:
-		sim.sculpt_terrain(lake, LAKE_RADIUS_M, -LAKE_DEPTH_M)
-		sim.begin_world_lake_fill_preview(lake, LAKE_LEVEL_M)
-		_expect(sim.commit_world_lake_fill_preview(), "the lake at %s must commit" % lake)
-	for frame in 600:
-		if not sim.is_network_dirty():
-			break
-		sim.acknowledge_network_render(sim.get_road_tool_surface_generation())
-		await process_frame
-	_expect(not sim.is_network_dirty(), "the edits' publication acknowledged")
 	input._refresh_after_world_load()
 	# No vegetation: on this headless blank world its products never settle, and the budget's fill
 	# and the kept meshes' requests both wait for a vegetation the view waits for.
@@ -391,6 +379,124 @@ func _test_world() -> void:
 	await _edit_under_kept(camera, stream, water, sim, _kept_keys(water))
 	main.queue_free()
 	await process_frame
+
+# The game scene on a 20 km blank world with LAKES dug and filled beyond the view before the
+# renderers are built (as a world that comes with them); the edits' road publication is
+# acknowledged, as no renderer drew the world yet. The test drives the camera and the load's hold
+# itself (the input manager's and the camera's processing off).
+func _lake_world() -> Node:
+	var main: Node = load("res://scenes/Main.tscn").instantiate()
+	main.set_script(null)
+	root.add_child(main)
+	current_scene = main
+	await process_frame
+	for node: Node in [main.get_node("InputManager"), main.get_node("CameraNode")]:
+		node.set_process(false)
+		node.set_process_input(false)
+		node.set_process_unhandled_input(false)
+	var sim: Node = main.get_node("SimulationNode")
+	_expect(sim.create_blank_world(20480.0, 20480.0, 8.0, 0.0), "the 20 km blank world must load")
+	sim.set_simulation_speed(0.0)
+	for lake: Vector2 in LAKES:
+		sim.sculpt_terrain(lake, LAKE_RADIUS_M, -LAKE_DEPTH_M)
+		sim.begin_world_lake_fill_preview(lake, LAKE_LEVEL_M)
+		_expect(sim.commit_world_lake_fill_preview(), "the lake at %s must commit" % lake)
+	for frame in 600:
+		if not sim.is_network_dirty():
+			break
+		sim.acknowledge_network_render(sim.get_road_tool_surface_generation())
+		await process_frame
+	_expect(not sim.is_network_dirty(), "the edits' publication acknowledged")
+	return main
+
+# ---------------------------------------------------------------------------------------------
+# Part three (`TERRAIN-63` round W2): the load's preload waits for the kept meshes.
+
+func _test_preload() -> void:
+	var main: Node = load("res://scenes/Main.tscn").instantiate()
+	main.set_script(null)
+	root.add_child(main)
+	current_scene = main
+	await process_frame
+	var sim: Node = main.get_node("SimulationNode")
+	var stream: Node = main.get_node("StreamNode")
+	var water: Node = main.get_node("Water")
+	var camera: Node = main.get_node("CameraNode")
+	var input: Node = main.get_node("InputManager")
+	var path := ProjectSettings.globalize_path(SAVE_PATH)
+	# A player's load of the whole map: every hidden wet patch holds its kept mesh at the hand-over.
+	_expect(await input.player_load(input.LoadKind.SAVE, path), "the lakes' save must load")
+	camera.focus_on(Vector3(EYE.x, sim.get_world_surface_height(EYE), EYE.y), 120.0)
+	var whole: Dictionary = await _preload_until_hand_over(main, "whole map")
+	_expect(int(whole.get("kept_water_meshes", -1)) == _hidden_wet_count(water) and _hidden_wet_count(water) >= LAKES.size(),
+		"whole map: every hidden wet patch holds a kept mesh at the hand-over (%s of %d)" % [whole.get("kept_water_meshes"), _hidden_wet_count(water)])
+	_check_books(stream, water, sim, "the preload's hand-over")
+	# A still camera: nothing asked, applied or dropped.
+	for frame in 120:
+		await process_frame
+	var still: Dictionary = stream.get_terrain_budget()
+	for field: String in ["kept_asked_total", "kept_dropped_total", "kept_water_meshes", "kept_water_mesh_bytes"]:
+		_expect(still.get(field) == whole.get(field), "after the preload a still camera leaves %s alone (%s, %s)" % [field, whole.get(field), still.get(field)])
+	# A target set at the load's start, 3 kept meshes above what the whole map counted: the load
+	# hands over with nothing waited for that the target admits.
+	var target := int(whole.get("counted_bytes", 0)) + 3 * int(whole.get("kept_mesh_max_bytes", 0))
+	_expect(input.menu_load_game_from_path(path, true), "the lakes' save must load again")
+	camera.focus_on(Vector3(EYE.x, sim.get_world_surface_height(EYE), EYE.y), 120.0)
+	stream.set_terrain_budget_mb(float(target) / 1e6)
+	var tight: Dictionary = await _preload_until_hand_over(main, "a target")
+	# (The places' hysteresis leaves at least two rings of room below a target the view fits, so
+	# every hidden wet patch usually fits; a full target is the book's Rust test's.)
+	_expect(int(tight.get("counted_bytes", 0)) + int(tight.get("kept_water_mesh_bytes", 0)) <= int(tight.get("budget_bytes", 0)),
+		"a target: the kept meshes fit the room the places leave")
+	stream.set_terrain_budget_mb(0.0)
+	# A player's load cancelled while the preload waits for kept meshes: back at the main menu.
+	await input.player_load(input.LoadKind.SAVE, path)
+	camera.focus_on(Vector3(EYE.x, sim.get_world_surface_height(EYE), EYE.y), 120.0)
+	var cancelled := false
+	var start := Time.get_ticks_msec()
+	while not cancelled and not input.is_world_ready() and Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
+		await process_frame
+		if bool(stream.get_terrain_preload().get("kept_waits", false)):
+			cancelled = true
+			LoadingScreen.current(self).cancel_requested.emit()
+	_expect(cancelled, "the player's load waited for kept meshes under the screen")
+	for frame in 30:
+		await process_frame
+		if current_scene != null and current_scene.scene_file_path == "res://scenes/MainMenu.tscn" \
+				and LoadingScreen.current(self) == null:
+			break
+	_expect(current_scene != null and current_scene.scene_file_path == "res://scenes/MainMenu.tscn"
+		and LoadingScreen.current(self) == null, "a cancel in the kept meshes' wait returns to the main menu, the screen gone")
+
+# Frames of a load's preload until its hand-over, each checked: the units reach `units_total - 1`
+# exactly when the preload is done, and done only with no kept mesh waited for; at the hand-over
+# nothing is wanting within the target nor asked. Returns the budget's status at the hand-over.
+func _preload_until_hand_over(main: Node, what: String) -> Dictionary:
+	var input: Node = main.get_node("InputManager")
+	var stream: Node = main.get_node("StreamNode")
+	var start := Time.get_ticks_msec()
+	var waited := 0
+	var status: Dictionary = {}
+	while not input.is_world_ready() and Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
+		await process_frame
+		var state: Dictionary = stream.get_terrain_preload()
+		status = stream.get_terrain_budget()
+		var total := int(state.get("units_total", 0))
+		if not stream.is_terrain_preloading() or total == 0:
+			continue
+		var done := bool(state.get("done", false))
+		var kept_waits := bool(state.get("kept_waits", true))
+		waited += int(kept_waits)
+		_expect((int(state.get("units_done", -1)) == total - 1) == done, "%s: units %s of %d, done %s" % [what, state.get("units_done"), total, done])
+		_expect(not (done and kept_waits), "%s: done while kept meshes are waited for" % what)
+	_expect(input.is_world_ready(), "%s: the preload hands over" % what)
+	print("[water_kept_mesh] preload %s: %d frames waited for kept meshes; at the hand-over %s" % [what, waited, _budget_line(stream)])
+	_expect(waited > 0, "%s: the preload waited for kept meshes" % what)
+	_expect(int(status.get("kept_asked", -1)) == 0, "%s: no kept request out at the hand-over" % what)
+	var room := (int(status.get("budget_bytes", -1)) < 0 or int(status.get("counted_bytes", 0))
+		+ int(status.get("kept_water_mesh_bytes", 0)) + int(status.get("kept_mesh_max_bytes", 0)) <= int(status.get("budget_bytes", 0)))
+	_expect(int(status.get("kept_wanting", -1)) == 0 or not room, "%s: nothing wanting within the target at the hand-over (%s)" % [what, _budget_line(stream)])
+	return status
 
 # A water re-solve under a kept hidden patch (`TERRAIN-38`'s path for a terrain edit too): its lake
 # drained, then filled again. In the frame its depth changes its stale mesh is gone; wet again, a kept
