@@ -21880,7 +21880,10 @@ digests' `built_digest`). The tools' path is unchanged: the shipped Kuopio's 12 
 branch without the preload against the control are equal in every family (graded, buildings, roads,
 parked cars, vegetation, land cover, water meshes) and in the terrain and water residency at all 12,
 the steps at point 9 (`far_to_ground`) differing as `TERRAIN-45` describes; the streaming core's
-goldens replay with no mismatch (30k 3,144 frames, Kuopio 10,036).
+goldens replay with no mismatch (30k 3,144 frames, Kuopio 10,036). The shipped Kuopio's stream row on the tools'
+hand-over (`turns,pan,zoom,jump`, two C B B C sessions after a quiet machine): all 16 phases level
+at the median and the maximum pooled over four runs a side; per session `turn_repeat` (first) and
+`pan_out` (second) read worse at the median, none in both.
 
 
 ## Implemented Runtime Contract
