@@ -106,8 +106,8 @@ func _open_new_game_options(path: String) -> void:
 	_new_game_dialog.popup_for_world(path)
 
 func _finish_new_game_world_selection(path: String, vegetation: Dictionary) -> void:
-	# A player's new game preloads its terrain before the hand-over (`TERRAIN-59`).
-	if input_manager and not input_manager.menu_start_new_game(path, vegetation, true):
+	# A player's new game preloads its terrain behind the loading screen (`TERRAIN-59`, `UI-15`).
+	if input_manager and not await input_manager.player_load(input_manager.LoadKind.NEW_GAME, path, vegetation):
 		# The running city stays; the world browser opens again saying why the world was refused.
 		SaveBrowser.open(_overlay_parent(), SaveBrowser.MODE_WORLD, WORLDS_DIR,
 			_open_new_game_options).show_refusal(input_manager.world_load_error())
@@ -128,8 +128,9 @@ func _apply_launch_request(request: Dictionary) -> void:
 	var save_path := str(request.get("save_path", ""))
 	if not save_path.is_empty():
 		if input_manager:
-			# A player's load from the menu preloads its terrain (`TERRAIN-59`).
-			if not input_manager.menu_load_game_from_path(save_path, true):
+			# A player's load from the menu preloads its terrain behind the loading screen the
+			# menu opened (`TERRAIN-59`, `UI-15`); a refusal leaves it up for the menu to close.
+			if not await input_manager.player_load(input_manager.LoadKind.SAVE, save_path):
 				LaunchState.note_refusal("save", input_manager.world_load_error())
 				get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 		else:
@@ -140,7 +141,7 @@ func _apply_launch_request(request: Dictionary) -> void:
 	if not world_path.is_empty():
 		if input_manager:
 			var vegetation: Dictionary = request.get("vegetation", {})
-			if not input_manager.menu_start_new_game(world_path, vegetation, true):
+			if not await input_manager.player_load(input_manager.LoadKind.NEW_GAME, world_path, vegetation):
 				LaunchState.note_refusal("world", input_manager.world_load_error())
 				get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 		else:

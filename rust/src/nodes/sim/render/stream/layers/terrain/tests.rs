@@ -1338,6 +1338,48 @@ fn after_a_preload_a_still_view_builds_requests_and_releases_nothing() {
     assert_eq!(layer.fill_left(), 0);
 }
 
+// `UI-15`: the loading screen's units over a preload's frames. Every frame: the keep
+// rectangle's patches are the total, `total - done` is what `preload_left` reads, and done never
+// passes the total; at the end every unit is done. A patch whose own condition (`draws`, the
+// water's) fails is not done while it is wanted, and only it.
+#[test]
+fn the_preload_units_count_what_the_preload_still_waits_for() {
+    let eye = [-12000.0, 800.0, -3000.0];
+    let mut layer = wide_layer(Some(3500));
+    let mut scripts = Scripts::default();
+    layer.set_preload(true);
+    let mut frames = 0;
+    loop {
+        layer.hold_prewarm(frames < 3);
+        layer.set_square(WIDE.target(eye, 1.0e6, false));
+        let mut budget = FrameBudget::new(2_000.0);
+        layer.frame(Some(eye), 0.05, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+        for key in std::mem::take(&mut scripts.requested) {
+            layer.payload(key, Payload::Ready);
+        }
+        let _ = layer.take_changes().count();
+        let _ = layer.take_generations().count();
+        let (done, total) = layer.preload_units(|_| true);
+        let halo = layer.halo().unwrap();
+        assert_eq!(total, square_keys(halo).len(), "frame {frames}");
+        assert_eq!(total - done, layer.preload_left(), "frame {frames}");
+        frames += 1;
+        if frames > 3 && !layer.has_pending_work() && layer.fill_left() == 0 {
+            break;
+        }
+        assert!(frames < 20_000, "the preload never ended");
+    }
+    let (done, total) = layer.preload_units(|_| true);
+    assert!(total > 0 && done == total && layer.preload_left() == 0);
+    // One wanted patch whose water does not draw: its unit alone is left.
+    let wanted = layer.resident_keys().next().unwrap();
+    assert_eq!(layer.preload_units(|key| key != wanted), (total - 1, total));
+    // A kept (unwanted) patch is done once built, whatever its own condition.
+    let keep = layer.halo().unwrap();
+    let kept = square_keys(keep).into_iter().find(|key| !layer.resident_keys().any(|r| r == *key)).unwrap();
+    assert_eq!(layer.preload_units(|key| key != kept), (total, total));
+}
+
 #[test]
 fn the_preload_lifts_the_request_limit_and_only_while_it_runs() {
     let eye = [-12000.0, 800.0, -3000.0];

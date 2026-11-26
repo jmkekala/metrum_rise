@@ -66,6 +66,11 @@ const WATER_MESH: u8 = 16;
 // The patch's own draw is held (as last sent to the graded book).
 const HELD: u8 = 32;
 
+// Whether a patch's water draws, by its state bits: dry, or shown holding a mesh.
+fn water_draws(state: u8) -> bool {
+    state & WATER_DRY != 0 || state & (WATER_SHOWN | WATER_MESH) == WATER_SHOWN | WATER_MESH
+}
+
 /// What the water says of a patch's water (`water.gd`'s answers and reports, `TERRAIN-58`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaterState {
@@ -241,6 +246,16 @@ impl Cells {
             .is_some_and(|index| self.states[index] & HELD != 0)
     }
 
+    /// Whether patch `key`'s water holds its ground back while it is resident (`TERRAIN-58`):
+    /// holds are on, its block draws its cells, and its water does not draw (neither dry nor
+    /// shown with a mesh). What the loading screen's water unit waits for (`UI-15`): a load's
+    /// preload ends only once no resident patch is held. `O(1)`.
+    pub(crate) fn water_waits(&self, key: PatchKey) -> bool {
+        self.index(key).is_some_and(|index| {
+            self.holds_on && !water_draws(self.states[index]) && self.ready[self.place(index).0]
+        })
+    }
+
     // The water's report of the patch at `index`: dry, or wet with or without a mesh.
     fn put_water(&mut self, index: usize, state: WaterState) {
         self.put(index, WATER_DRY, state == WaterState::Dry);
@@ -260,8 +275,7 @@ impl Cells {
     // is resident, not blank and not held. `O(1)`.
     fn update(&mut self, index: usize) {
         let state = self.states[index];
-        let water_draws =
-            state & WATER_DRY != 0 || state & (WATER_SHOWN | WATER_MESH) == WATER_SHOWN | WATER_MESH;
+        let water_draws = water_draws(state);
         let (block, local) = self.place(index);
         let hold = self.holds_on && state & RESIDENT != 0 && !water_draws && self.ready[block];
         if hold != (state & HELD != 0) {
