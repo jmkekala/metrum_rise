@@ -798,6 +798,12 @@ impl BackdropLayer {
         self.cells.is_held(key)
     }
 
+    /// Whether patch `key`'s water would hold its ground back while it is resident (`UI-15`:
+    /// the loading screen's water unit). `O(1)`.
+    pub(crate) fn water_waits(&self, key: PatchKey) -> bool {
+        self.cells.water_waits(key)
+    }
+
     /// Whether patch `key` is drawn as a patch: resident, drawing something and not held for its water. `O(1)`.
     pub(crate) fn patch_draws(&self, key: PatchKey) -> bool {
         self.cells.patch_draws(key)

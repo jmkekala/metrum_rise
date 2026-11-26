@@ -1171,8 +1171,14 @@ impl StreamNode {
     /// (both layers' patches of the keep rectangle not built, and wanted ones built but not yet
     /// shown: `built + left` is the preload's whole), `in_step` (a frame has set the wanted square
     /// and no patch unit of either layer waits), and `done`: the fill phase has nothing left, the
-    /// view is in step and the backdrop is ready (or there is none). `O(keep rectangle)`
-    /// for `left`: read once a frame while the load holds the game.
+    /// view is in step and the backdrop is ready (or there is none). And the loading screen's
+    /// counts (`UI-15`): `units_total`, one unit per patch of the keep rectangle in each layer
+    /// (refused ones excluded), one for the preload's end (`done`) and one for the hand-over's
+    /// own checks, which only the load flow sees; `units_done`, the patches built and, if wanted,
+    /// shown (a water patch also with its water drawing: dry or holding a mesh, as the ground's
+    /// hold waits for it), plus one when `done`. So `units_done <= units_total - 1`, equal exactly
+    /// when `done`; both 0 before a frame has set the wanted square. `O(keep rectangle)` for
+    /// `left` and the units: read once a frame while the load holds the game.
     #[func]
     pub fn get_terrain_preload(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
@@ -1189,10 +1195,20 @@ impl StreamNode {
         out.set("built", built as i64);
         out.set("left", left as i64);
         out.set("in_step", in_step);
-        out.set(
-            "done",
-            self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready(),
-        );
+        let done = self.preload == Preload::Fill && left == 0 && in_step && self.backdrop_ready();
+        out.set("done", done);
+        let (terrain_done, terrain_total) = self.terrain.preload_units(|_| true);
+        let (water_done, water_total) = self
+            .water
+            .preload_units(|key| !self.backdrop_layer.water_waits(key));
+        let patches = terrain_total + water_total;
+        let (units_done, units_total) = if patches == 0 {
+            (0, 0)
+        } else {
+            (terrain_done + water_done + usize::from(done), patches + 2)
+        };
+        out.set("units_done", units_done as i64);
+        out.set("units_total", units_total as i64);
         out
     }
 

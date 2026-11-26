@@ -283,6 +283,10 @@ fn the_ground_waits_for_its_water_and_exactly_one_of_patch_and_cell_draws() {
         for key in all_keys() {
             assert_eq!(layer.is_held(key), held.contains(&key), "{label} {key:?}");
             assert_eq!(layer.patch_draws(key), drawn.contains(&key), "{label} {key:?}");
+            // The loading screen's water unit (`UI-15`): waits exactly where a resident patch
+            // would be held.
+            let facts = facts.get(&key).copied().unwrap_or_default();
+            assert_eq!(layer.water_waits(key), holds_on && !facts.water_draws(), "{label} {key:?}");
         }
     };
     // Scripted. A patch resident before its water is known waits (its cell draws).
