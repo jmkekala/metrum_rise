@@ -330,6 +330,16 @@ fn hash_copy(
 // Parse `checksums.sha256` as export writes it: `<sha256 hex>  <path>` lines, each path safe,
 // relative to the pack root, listed once and sorted. Returns path -> digest.
 fn parse_checksums(text: &str) -> Result<BTreeMap<&str, &str>, String> {
+    parse_sha256_lines(text, CHECKSUMS)
+}
+
+/// Parse a `sha256sum`-form list named `file` in errors: `<sha256 hex>  <path>` lines, each
+/// path safe and relative, listed once and sorted, none naming `file` itself.
+/// Returns path -> digest. O(lines).
+pub(crate) fn parse_sha256_lines<'a>(
+    text: &'a str,
+    file: &str,
+) -> Result<BTreeMap<&'a str, &'a str>, String> {
     let mut listed = BTreeMap::new();
     let mut previous = "";
     for line in text.lines() {
@@ -341,13 +351,11 @@ fn parse_checksums(text: &str) -> Result<BTreeMap<&str, &str>, String> {
                         .bytes()
                         .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
                     && files::safe_relative(path)
-                    && *path != CHECKSUMS
+                    && *path != file
             })
-            .ok_or_else(|| format!("{CHECKSUMS}: malformed line '{line}'"))?;
+            .ok_or_else(|| format!("{file}: malformed line '{line}'"))?;
         if path <= previous {
-            return Err(format!(
-                "{CHECKSUMS} must list each file once, sorted by path"
-            ));
+            return Err(format!("{file} must list each file once, sorted by path"));
         }
         previous = path;
         listed.insert(path, digest);
@@ -355,7 +363,8 @@ fn parse_checksums(text: &str) -> Result<BTreeMap<&str, &str>, String> {
     Ok(listed)
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Lowercase hex of a digest.
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

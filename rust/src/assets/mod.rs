@@ -16,6 +16,9 @@ pub(crate) mod archive;
 pub mod asset;
 pub(crate) mod authoring;
 pub(crate) mod browser;
+// The start-up bootstrap calls it through the bridge from round T17-2 (`TOOLS-17`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod bundled;
 pub mod lod_policy;
 pub mod pack;
 pub mod registry;
