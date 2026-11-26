@@ -812,7 +812,9 @@ impl StreamNode {
     /// slots live, spare, created and freed, installs, and this frame's units with their
     /// predicted and measured microseconds and the longest unit; the vegetation's prepared set
     /// (`prepared`, `prepared_bytes`, `prepared_cap_bytes`, `preparing`, `prepared_over_cap`,
-    /// `prepared_used`, `prepared_dropped`, `prepared_replaced`); the installs' waits and costs
+    /// `prepared_used`, `prepared_dropped`, `prepared_replaced`); the residency's jobs and frees
+    /// since the node was made (`requests_total`, `prepares_total`, `frees_total`, `VEG-36`); the
+    /// installs' waits and costs
     /// since setup (`VEG-35` R0, [`Self::take_vegetation_install_waits`]'s fields with `install_`
     /// before each).
     #[func]
@@ -843,6 +845,11 @@ impl StreamNode {
         layer.set("prepared_used", used);
         layer.set("prepared_dropped", dropped);
         layer.set("prepared_replaced", replaced);
+        // The residency's jobs and frees since the node was made (`VEG-36`).
+        let [requests, prepares, frees] = self.residency.totals();
+        layer.set("requests_total", requests as i64);
+        layer.set("prepares_total", prepares as i64);
+        layer.set("frees_total", frees as i64);
         let [waits, _] = self.vegetation.install_waits();
         set_install_waits(&mut layer, "install_", &waits);
         let mut out = VarDictionary::new();

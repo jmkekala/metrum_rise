@@ -215,6 +215,8 @@ pub(crate) struct VegetationResidency {
     generated: u64,
     generation_us_max: i64,
     work: ResidencyWork,
+    // Jobs requests started, jobs prepares started and patches freed since the node was made.
+    totals: [u64; 3],
     // The products prepared ahead along the camera's reach (`RENDER-32-N`, [`prepared`]).
     prepared: prepared::Prepared,
 }
@@ -264,6 +266,7 @@ impl Default for VegetationResidency {
             generated: 0,
             generation_us_max: 0,
             work: ResidencyWork::default(),
+            totals: [0; 3],
             prepared: prepared::Prepared::default(),
         }
     }
@@ -366,6 +369,13 @@ impl VegetationResidency {
     /// The frame's work.
     pub(crate) fn work(&self) -> ResidencyWork {
         self.work
+    }
+
+    /// Since the node was made (`VEG-36`, the stream benchmark's): jobs requests started, jobs
+    /// prepares started ahead of need, and patches freed (out of the cache or put away beyond the
+    /// far range). `O(1)`.
+    pub(crate) fn totals(&self) -> [u64; 3] {
+        self.totals
     }
 
     /// Whether anything waits: a first evaluation, a queued or a requested patch
@@ -1026,6 +1036,7 @@ impl VegetationResidency {
             if distance > far + key_span(key, terrain_span) || (key[2] > 1 && distance > fine_keep) {
                 self.cache.remove(&key);
                 layer.free(backend, key);
+                self.totals[2] += 1;
             }
         }
         candidates.clear();
@@ -1118,6 +1129,7 @@ impl VegetationResidency {
             );
             budget -= 1;
             self.work.requests += 1;
+            self.totals[0] += 1;
         }
     }
 
@@ -1174,6 +1186,7 @@ impl VegetationResidency {
             self.cache_unchecked.push(key);
         } else {
             layer.free(backend, key);
+            self.totals[2] += 1;
         }
     }
 }

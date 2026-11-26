@@ -559,6 +559,7 @@ impl VegetationResidency {
         let Some(serial) = jobs.request(&order, settings) else {
             return Step::Full;
         };
+        self.totals[1] += 1;
         self.prepared.considered.insert((key, bands));
         self.prepared.preparing.insert(
             key,

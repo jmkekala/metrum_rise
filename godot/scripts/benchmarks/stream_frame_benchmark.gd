@@ -1666,7 +1666,12 @@ func _vegetation_counters() -> Dictionary:
 		# past the bar, passes stalled with a hole product waiting.
 		"install_wait_frames_sum": int(status.get("install_wait_frames_sum", -1)),
 		"install_waited_over_bar": int(status.get("install_waited_over_bar", -1)),
-		"install_stalled_passes": int(status.get("install_stalled_passes", -1))}
+		"install_stalled_passes": int(status.get("install_stalled_passes", -1)),
+		# The residency's jobs and frees (`VEG-36`; -1 on a build without them): requests and
+		# prepares started, patches freed.
+		"requests_total": int(status.get("requests_total", -1)),
+		"prepares_total": int(status.get("prepares_total", -1)),
+		"frees_total": int(status.get("frees_total", -1))}
 
 # Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
 # set every frame): a patch that enters the wanted set drawing nothing waits from that frame,
