@@ -172,9 +172,20 @@ func _run() -> void:
 	for key: Vector2i in far.keys():
 		far[key]["generation"] = int(resident[key]["generation"])
 	_mark_changed(resident)
-	for frame in 4:
+	# The frame that takes the patches' leaving queues one count per tile of their lists, after
+	# its results; each later frame applies the queued counts while the graded share of the
+	# frame's install ledger lasts, and always one (book/results.rs, Run::run), and a tile's last
+	# count evicts it. A fixed frame count fails where the share buys fewer counts (a loaded
+	# machine; the gate's strict-safeguard library under RUST_BACKTRACE=1), so the wait ends
+	# once every tile is out, bounded by the slowest the rule allows: one frame per count.
+	var counts := 0
+	for key: Vector2i in resident.keys():
+		counts += graded._book.list_tiles(key).size() / 2
+	for frame in 1 + counts:
 		_frame(graded, Vector3(0.0, 120.0, 10.0), {})
 		await process_frame
+		if int(graded.get_pool_counters()["installed"]) == 0 and not graded._book.has_counts():
+			break
 	counters = graded.get_pool_counters()
 	_expect(int(counters["installed"]) == 0, "no tile may stay installed without resident patches")
 	for code in 4:
