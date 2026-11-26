@@ -468,17 +468,23 @@ func _test_preload() -> void:
 	_expect(current_scene != null and current_scene.scene_file_path == "res://scenes/MainMenu.tscn"
 		and LoadingScreen.current(self) == null, "a cancel in the kept meshes' wait returns to the main menu, the screen gone")
 
-# Frames of a load's preload until its hand-over, each checked: the units reach `units_total - 1`
-# exactly when the preload is done, and done only with no kept mesh waited for; at the hand-over
-# nothing is wanting within the target nor asked. Returns the budget's status at the hand-over.
+# Frames of a load's preload until its hand-over, each checked: the loading screen's fraction never
+# goes back and is 1 exactly from the hand-over; the units reach `units_total - 1` exactly when the
+# preload is done, and done only with no kept mesh waited for; at the hand-over nothing is wanting
+# within the target nor asked. Returns the budget's status at the hand-over.
 func _preload_until_hand_over(main: Node, what: String) -> Dictionary:
 	var input: Node = main.get_node("InputManager")
 	var stream: Node = main.get_node("StreamNode")
 	var start := Time.get_ticks_msec()
 	var waited := 0
 	var status: Dictionary = {}
+	var fraction := 0.0
 	while not input.is_world_ready() and Time.get_ticks_msec() - start < SETTLE_TIMEOUT_MS:
 		await process_frame
+		var shown: float = input.load_fraction()
+		_expect(shown >= fraction and (shown == 1.0) == input.is_world_ready(),
+			"%s: the fraction %f after %f, world ready %s" % [what, shown, fraction, input.is_world_ready()])
+		fraction = shown
 		var state: Dictionary = stream.get_terrain_preload()
 		status = stream.get_terrain_budget()
 		var total := int(state.get("units_total", 0))
