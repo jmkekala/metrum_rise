@@ -242,10 +242,11 @@ Done 2026-11-26 (rounds T17-1 and T17-2). At every start `UserDataBootstrap.run`
 
 The player's rule: a bundled pack or world the player has not changed follows the game's
 updates. Once the player changes it (editing a pack in the asset editor, saving over a world),
-the copy is theirs and stops updating; the game says so only on the debug channel (decision
-D3 (a)). To get the game's version back, delete the pack folder (Options > Mods > Show folder;
-the game refuses to remove a bundled pack itself) or the world file; the next start installs the
-game's current one.
+the copy is theirs and stops updating; for a pack Options > Mods says so under the pack's name,
+for a world only the debug channel does (decision D3 (a)). To get the game's version of a pack
+back, press its `Restore…` in Options > Mods (below), or delete the pack folder (Options > Mods >
+Show folder; the game refuses to remove a bundled pack itself); for a world, delete the world
+file. A deleted entry is installed again at the next start.
 
 Rule: an entry (a world file `worlds/<name>` or a pack folder `mods/<name>`) is wholly the
 game's or wholly the player's, never merged file by file. The game records the digest of every
@@ -299,6 +300,25 @@ copy the player changed stays theirs.
   the step is not recorded, and the next start, now with a receipt, keeps the copy as the
   player's. Verified on Linux headless with an isolated profile (the folder landed in that
   profile's own `Trash`); Windows and macOS are not tried.
+- **Restore** (Options > Mods, round T17-3b): a bundled pack whose receipt entry says `owner =
+  player` and whose installed copy is a folder offers `Restore…`
+  (`AssetAuthoringFiles.bundled_restorable`, one receipt read and a stat per bundled pack).
+  After the player confirms, `bundled_restore` plans the start-up's own `trash_and_replace` step
+  for that pack at the manifest's revision (refused for a pack the game does not bundle, a copy
+  the receipt holds as the game's, no receipt, a link or file, or a staging or retired sibling
+  an earlier step left); `UserDataBootstrap.restore_bundled` carries it out with the bootstrap's
+  own helpers (the player's copy to the system Trash, the bundled copy staged and committed) and
+  `bundled_record` writes the entry as `owner = game`. If the Trash fails nothing is deleted or
+  recorded and the panel says so; if the copy or commit fails after the Trash, the pack is absent
+  (or a sibling is left) and the next start installs the game's version. A pack enabled in the
+  running city is refused, as Remove and an import over it are; at the main menu the restored
+  files load when a city starts. Worlds have no Restore. What the receipt can tell: that the
+  copy is the player's and stops updating. It cannot tell whether the copy still differs from
+  the game's (a player's entry is never hashed again) nor whether the game's version changed
+  since the copy became theirs (the player's `revision` follows the manifest at every start), so
+  the note says only that the copy no longer follows the game's updates, and adds "The game's
+  version is v<version>." when the bundled `pack.toml` names a version other than the copy's
+  (the `TOOLS-47` rule raises it with each content change). The receipt gains no field.
 - The development `kenney` pack (`res://tests/mods`, not in exports) is still only copied when
   missing (decision D7 (a)).
 

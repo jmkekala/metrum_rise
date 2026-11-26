@@ -55,7 +55,8 @@ Current deterministic rules:
 - startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then installs the
   bundled worlds and packs from `res://bootstrap/worlds/` and `res://bootstrap/mods/`: missing
   ones are copied, the game's untouched older copies are replaced after an update, and a copy
-  the player changed stays theirs (`TOOLS-17`,
+  the player changed stays theirs until they restore the game's version in Options > Mods
+  (`TOOLS-17`,
   [rules](asset_editor.md#bundled-packs-and-worlds-after-an-update-tools-17)); the development
   `kenney` pack is copied only when missing
 - when `user://settings.cfg` is missing, startup seeds default general UI/runtime settings
@@ -76,6 +77,9 @@ Current deterministic rules:
   gameplay continues
 - if gameplay is opened without a pending request and without benchmark-style command-line flags,
   it returns to `MainMenu.tscn`
+- the Load Game and New Game lists grey out a file Rust would refuse, with the reason, before it
+  is picked (`UI-16`, see the save browser below); the refusal after a pick stays as the backstop
+  for a file damaged past its header
 - if Rust refuses the selected save or world (an older file off the world rules, a file that is
   not a save), gameplay returns to `MainMenu.tscn`, which reopens the Load Game or New Game
   browser with Rust's message in its status line; the in-game Load and New Game do the same over
@@ -180,7 +184,23 @@ and matches at word starts and in runs rank higher, so `bigint` finds `big-inter
 A search lists the best match first, with the matched letters in the accent colour; clicking a
 header then sorts the matches by that column. Esc clears a search before it cancels. Load and
 New Game select the top row, also after each keystroke, so Enter takes the best match; a click
-selects, a double click or Enter confirms, Up/Down move through the shown rows. Save has a `Save as` name field filled with the current save's name:
+selects, a double click or Enter confirms, Up/Down move through the shown rows.
+Load and New Game grey out a file the game would refuse (`UI-16`): the row's name, time and size
+fade, a short reason sits after the name ("Made before the grid change, cannot load", "Made by a
+newer version, cannot load", "Made by an older version, cannot load", "Damaged file, cannot
+load"), and its tooltip holds the load's own message ("Cannot load: ..."). Such a row is never
+picked: not by a click, a double click, the first-row pick or Up/Down, so Enter never loads it.
+When every shown row is refused nothing is picked, `Load` / `Continue` stays disabled and the
+status line gives no pick hint. The files are not hidden: a hidden save would look lost.
+`scripts/ui/save_list.gd` reads the folder (name, time, size) and asks Rust once per file per
+opening, `SaveFiles.verdict(path, world)`, which runs the loaders' own header read (save: format
+and world config; world: format, name and config): a read-only open and one or two one-row
+queries, O(1) pages whatever the file's size, never per frame. Measured 2026-11-26 (debug
+library, NVMe): 50 saves of 71-78 MB listed in 173 ms with a cold page cache, 41 ms warm, 0.8 ms
+without the check; no cache is kept. A file damaged past its header lists as loadable and is
+refused after the pick, in the status line as before. Save checks nothing: any file may be
+written over. The browser has no delete action; a refused save is removed through `Open folder`.
+Save has a `Save as` name field filled with the current save's name:
 clicking a row fills it in, a name that matches an existing save turns the button into `Replace`,
 and an empty name or one with `: / \ ? * " | % < >` disables it with the reason on the status
 line. Esc cancels. While it is open, keys and the wheel stay with it (TopMenu reports it as an
@@ -288,7 +308,18 @@ Display settings apply through the Options footer and on boot. `Mods` embeds the
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
 `user://active_packs.cfg` and take effect after restart. Packs list as rows in the page's own
 scroll (a nested scroll area there collapsed to zero height); a pack the running city has
-loaded cannot be replaced or removed while Options is open in game. The previous gameplay toolbar `Mods`
+loaded cannot be replaced or removed while Options is open in game. A bundled pack the install
+receipt holds as the player's (`TOOLS-17`: they edited it, so updates no longer replace it) shows
+a third line, "Your changed copy: it no longer follows the game's updates.", followed by "The
+game's version is v<version>." when the bundled `pack.toml` names another version than the
+copy's, and a `Restore…` button. It asks first ("Restore the game's version?": the copy moves to
+the system Trash, the game's version is installed in its place and follows the game's updates
+again, and loads when a city starts), then runs the start-up's own trash-and-replace step for
+that pack and reports "Restored the game's version of <pack>. Your copy is in the system Trash."
+If the Trash fails, nothing changes and the status line says "Could not move your copy of <pack>
+to the Trash (...). Nothing was changed." A pack enabled in the running city is refused as Remove
+is ("Return to the main menu to restore it.");
+[rules](asset_editor.md#bundled-packs-and-worlds-after-an-update-tools-17). The previous gameplay toolbar `Mods`
 button is intentionally removed so content-pack management lives under global options rather than
 construction tools.
 
@@ -977,6 +1008,7 @@ godot/
       options_menu.gd             In-UI Options overlay: Display and Mods tabs
       options_rows.gd             Options row, heading, value cycler and slider helpers
       save_browser.gd             In-UI Save / Load / New Game file lists
+      save_list.gd                The browser's files and Rust's load verdicts (UI-16)
       fuzzy_match.gd              Fuzzy subsequence scoring for list search
       graphics_options.gd         Options -> Display graphics section
       accessibility_options.gd    Options -> Display interface (UI Scale) section
